@@ -266,14 +266,40 @@ def get_node_blocks():
 @app.post("/api/v1/wallet/decrypt-memo")
 def decrypt_memo_endpoint(req: dict):
     alias = req.get("alias")
-    memo_hex = req.get("memo_hex")
+    memo_hex = req.get("memo_hex", "").strip()
+    epk_hex = req.get("epk_hex", "").strip()
     wallet = get_wallet(alias)
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found")
 
     try:
-        from darkbatch.core.crypto import decrypt_512_memo, derive_shared_key
+        from darkbatch.core.crypto import decrypt_orchard_note, decrypt_512_memo, derive_shared_key
         memo_bytes = bytes.fromhex(memo_hex)
+
+        # 1. Authentic Orchard Note Plaintext decryption (580 bytes encCiphertext)
+        if len(memo_bytes) == 580:
+            epk_bytes = bytes.fromhex(epk_hex) if epk_hex else None
+            if not epk_bytes:
+                for b in NODE.blocks:
+                    for t in b.transactions:
+                        for ag in t.get("action_groups", []):
+                            for act in ag.get("actions", []):
+                                if act.get("memo_hex") == memo_hex and "epk" in act:
+                                    epk_bytes = bytes.fromhex(act["epk"])
+                                    break
+            if not epk_bytes:
+                epk_bytes = bytes(32)
+
+            val, memo_512 = decrypt_orchard_note(memo_bytes, wallet.ivk, epk_bytes)
+            memo_text = memo_512.rstrip(b"\x00").decode("utf-8")
+            return {
+                "status": "SUCCESS",
+                "decryption_method": "Zcash Protocol § 5.4.3.4 (Incoming Viewing Key)",
+                "value_zat": val,
+                "receipt": json.loads(memo_text)
+            }
+
+        # 2. Legacy / 512-byte raw memo fallback
         shared_key = derive_shared_key(wallet.ivk)
         plaintext = decrypt_512_memo(memo_bytes, shared_key)
         return {"status": "SUCCESS", "receipt": json.loads(plaintext.decode("utf-8"))}
@@ -340,8 +366,8 @@ def get_testnet_tx(txid: str):
                 if t.get("tx_id") == txid:
                     return {
                         "txid": txid,
-                        "status": "MINED_ON_TESTNET",
-                        "network": "Zcash Testnet (NU6.3 Ironwood)",
+                        "status": "VERIFIED_LOCAL_CONSENSUS",
+                        "network": "Local Zebra NU6.3 Consensus Engine",
                         "block_height": b.height,
                         "block_hash": b.hash,
                         "confirmations": NODE.height - b.height + 1,

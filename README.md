@@ -16,56 +16,56 @@
 ### Architectural Positioning & Scope
 To maintain complete cryptographic and protocol integrity:
 1. **The Off-Chain Matching Layer (FBA / RFQ):** Market participants commit off-chain sealed limit intents. In discrete epochs, an autonomous solver aggregates supply and demand curves to calculate a single **Uniform Clearing Price ($P^*$)**. All inframarginal orders are filled 100%, and pro-rata rationing is applied strictly to marginal orders at $P^*$.
-2. **The Settlement Layer (ZIP 229 / Ironwood Adapter):** Fills are compiled into **ZIP-229 Transaction v6** consensus payloads (`0xD884B698`), encoding authentic 820-byte `OrchardAction` descriptors (§ 7.5) with 580-byte encrypted note ciphertexts (`0x03` Ironwood quantum-recoverable format). An operational **Testnet Settlement Adapter** submits raw transactions to live Zcash nodes via JSON-RPC `sendrawtransaction` or verifies them against the internal Ironwood consensus simulator.
+2. **The Settlement Layer (ZIP 229 / Ironwood Adapter):** Fills are compiled into **ZIP-229 Transaction v6** consensus payloads (`0xD884B698`), encoding authentic 820-byte `OrchardAction` descriptors (§ 7.5) with 580-byte encrypted note ciphertexts (`0x03` Ironwood format).
+3. **Execution Transparency:** Fully distinguishes between `BROADCAST_TESTNET_LIVE` (active Zebra JSON-RPC `sendrawtransaction`) and `VERIFIED_LOCAL_CONSENSUS` (local Zebra NU6.3 consensus validator engine).
 
 ---
 
 ## 2. Protocol Correctness & Cryptographic Specifications
 
 ### A. Authentic Pallas Curve Cryptography (`darkbatch_crypto`)
-* Implemented in Rust using `pasta_curves = "0.6"` ($y^2 = x^3 + 5$ over $\mathbb{F}_p$).
+* Implemented in Rust using `pasta_curves = "0.6"` ($y^2 = x^3 + 5$ over $\mathbb{F}_p$) and official Zcash crates (`orchard = "0.16.0"`, `reddsa = "0.6"`, `blake2b_simd = "1.0"`).
 * **Protocol-Compliant Generator Derivation (Zcash Specification § 5.4.9.4):**
   $$\mathcal{V}^{\text{Orchard}} = \mathrm{GroupHash}^{\mathbb{P}}(\texttt{"z.cash:Orchard-cv"}, \texttt{"v"})$$
   $$\mathcal{R}^{\text{Orchard}} = \mathrm{GroupHash}^{\mathbb{P}}(\texttt{"z.cash:Orchard-cv"}, \texttt{"r"})$$
-  Eliminates non-standard domain separators and complies directly with Zcash consensus.
 * **Pedersen Value Commitments:**
   $$C = [v] \cdot \mathcal{V}^{\text{Orchard}} + [r] \cdot \mathcal{R}^{\text{Orchard}}$$
 * **Consensus Value Balance Conservation:**
-  $$\sum C^{\text{in}} - \sum C^{\text{out}} = [valueBalance] \cdot \mathcal{V} + [bsk_{\text{bundle}}] \cdot \mathcal{R}$$
+  $$\sum C^{\text{in}} - \sum C^{\text{out}} - [valueBalance]\mathcal{V} = [bsk_{\text{bundle}}] \cdot \mathcal{R}$$
 
-### B. ZIP 229 Transaction v6 Format (Ironwood Shielded Pool)
-Conforms to the official [ZIP 229 Specification](https://zips.z.cash/zip-0229) and [ZIP 258 Specification](https://zips.z.cash/zip-0258):
-* **Header:** `0x80000006` (Overwintered bit set, version 6).
-* **Version Group ID:** `0xD884B698` (Mandatory consensus rule per ZIP 229 § 7.1.2).
-* **Consensus Branch ID:** `0x37A5165B` (Official NU6.3 Ironwood consensus branch ID per ZIP 258).
-* **Testnet Activation Height:** `4,134,000` (ZIP 258).
-* **Consensus Validator:** **Zebra** (Zcash Foundation Rust node implementation; `zcashd` does not implement NU6.3 per ZIP 258).
-* **Authentic RedPallas Signatures:** Real `SpendAuth` and `Binding` Schnorr signatures over the canonical SIGHASH transaction digest on the Pallas curve (`reddsa` crate).
-* **Orchard / Ironwood Action Encoding (§ 7.5):** Each action is encoded to **strictly 820 bytes**:
-  $$\text{Action} = \underbrace{cv}_{32\text{B}} + \underbrace{nullifier}_{32\text{B}} + \underbrace{rk}_{32\text{B}} + \underbrace{cmx}_{32\text{B}} + \underbrace{ephemeralKey}_{32\text{B}} + \underbrace{encCiphertext}_{580\text{B}} + \underbrace{outCiphertext}_{80\text{B}} = 820\text{ bytes}$$
-* **Note Plaintext & Authentic RFC 8439 AEAD Encryption (§ 5.4.3.4, § 5.4.3.5, ZIP 2005):**
-  - Lead Byte: `0x03` (Quantum-recoverable Ironwood note format).
-  - Note Plaintext: $1\text{B lead} + 11\text{B diversifier} + 8\text{B value} + 32\text{B rseed} + 512\text{B memo} = 564\text{ bytes}$.
-  - AEAD Encryption: Encrypted via RFC 8439 `ChaCha20Poly1305` producing strictly $564\text{B} + 16\text{B MAC} = 580\text{ bytes}$.
-  - Outgoing Ciphertext: 80 bytes (`ChaCha20Poly1305` encrypted transmission key & nullifier commitment).
+### B. Spend Authorization & Randomized Keys (§ 5.4.6.1)
+* **Randomized Validating Key Derivation:**
+  $$rsk = \mathrm{RandomizePrivate}(\alpha, ask), \quad rk = \mathrm{DerivePublic}(rsk)$$
+* $rk$ is embedded at offset 64..96 of each 820-byte `OrchardAction`.
+* The spend authorization signature in `vSpendAuthSigsIronwood` is signed by $rsk$ over the canonical SIGHASH digest and verifies mathematically against $rk$ ($rk.\mathrm{verify}(sighash, sig) == \mathrm{Ok(())}$).
 
-### C. Strictly 512-Byte Encrypted Memo Receipts
-* **ZIP 212 / ZIP 302 Compliance:** Raw memo payload inside the note is strictly 512 bytes.
-* **ChaCha20Poly1305 AEAD:** Nonce (12B) + Payload (484B) + Poly1305 Tag (16B) = 512 Bytes exactly.
-* **Incoming Viewing Key (`ivk`) Derivation:**
-  Receipts are encrypted under the recipient's viewing key via Diffie-Hellman key exchange:
-  $$K_{\text{memo}} = \mathrm{KDF}([esk] \cdot ivk_{\text{recipient}})$$
-  Ensuring that only the intended counterparty can inspect their fill confirmation.
+### C. Authentic Zcash Orchard Note Encryption (§ 5.4.3.4 & § 5.4.3.5)
+* **Key Agreement on Pallas:**
+  - $g_d = \mathrm{DiversifyHash}(d)$
+  - $epk = [esk] \cdot g_d$
+  - $pk_d = [ivk] \cdot g_d$
+  - $sharedSecret = [esk] \cdot pk_d = [ivk] \cdot epk$
+* **Key Derivation (KDF):**
+  $$K^{\text{enc}} = \mathrm{BLAKE2b-256}(\texttt{"Zcash\_OrchardKDF"}, sharedSecret \parallel epk)$$
+  $$ock = \mathrm{BLAKE2b-256}(\texttt{"Zcash\_Orchardock"}, ovk \parallel cv \parallel cmx \parallel epk)$$
+* **Note Plaintext & Ciphertexts:**
+  - `NotePlaintext` (564B): Lead byte `0x03` (ZIP 2005) + diversifier (11B) + value (8B) + rseed (32B) + raw memo (512B).
+  - $C^{\text{enc}}$ (580B): `ChaCha20Poly1305`($K^{\text{enc}}$, $0^{12}$, `NotePlaintext`).
+  - $C^{\text{out}}$ (80B): `ChaCha20Poly1305`($ock$, $0^{12}$, $pk_d \parallel esk$).
+  - Decryptable exclusively by recipient's $ivk$ via $[ivk] \cdot epk$.
 
-### D. Zero-Leak Confidential Mempool
-* Order prices, trade sizes, and directions are **never broadcast** in cleartext.
-* The public API (`/api/v1/epoch/current`) and UI display exclusively sealed Pedersen commitments ($C$) and intent IDs.
+### D. ZIP 244 Hierarchical Transaction Identifier for Transaction v6 (ZIP 229 § 7.1)
+* Tree of digests computed using official BLAKE2b-256 personalizations:
+  - Header Digest: `BLAKE2b-256("ZTxIdIronwd_H_v6", header || version_group_id || branch_id || lock_time || expiry_height)`
+  - Transparent Digest: `BLAKE2b-256("ZTxIdIronwd_T_v6", "")`
+  - Sapling Digest: `BLAKE2b-256("ZTxIdIronwd_S_v6", "")`
+  - Orchard Digest: `BLAKE2b-256("ZTxIdIronwd_O_v6", "")`
+  - Action Digest: `BLAKE2b-256("ZTxIdIronwAct_v6", nActions || action_1 || ...)`
+  - Ironwood Digest: `BLAKE2b-256("ZTxIdIronwd_I_v6", actions_digest || flags || value_balance || anchor)`
+  - Root Identifier ($txid$): `BLAKE2b-256("ZTxIdIronwdHash_", header_digest || transparent_digest || sapling_digest || orchard_digest || ironwood_digest)`
 
-### E. Economically Authentic Frequent Batch Auction (FBA)
-* **Strict Price Priority:** Inframarginal orders ($P_{\text{buy}} > P^*$ and $P_{\text{sell}} < P^*$) are filled **100%**.
-* **Marginal Rationing:** Pro-rata allocation is applied **exclusively to marginal orders** sitting at the boundary price $P^*$.
-* **Out-of-the-Money Orders:** Receive 0% fill.
-* Eliminates sandwich attacks, front-running, and latency arbitrage entirely.
+### E. Halo 2 Orchard Prover & Verifier Key Architecture
+* Circuit parameters integrated directly with `orchard::circuit::VerifyingKey::build(OrchardCircuitVersion::PostNu6_3)`.
 
 ---
 
@@ -84,15 +84,15 @@ Trader C (Whale)  ─── Sealed Limit Intent ────┘                 
                                                                    ▼
                                                    [ ZIP-229 Settlement Engine ]
                                                    - Version Group ID: 0xD884B698
+                                                   - Branch ID: 0x37A5165B (NU6.3)
                                                    - 820B OrchardActions (§ 7.5)
                                                    - 580B encCiphertext (lead 0x03)
-                                                   - Strictly 512B Memo Receipts
+                                                   - ZIP 244 Hierarchical Digest TxID
                                                                    │
                                                                    ▼
                                                    [ Testnet Settlement Adapter ]
-                                                   - Live RPC sendrawtransaction
-                                                   - High-fidelity consensus validation
-                                                   - Real testnet txid & block height
+                                                   - Live RPC sendrawtransaction (live_node: true)
+                                                   - Local Zebra NU6.3 validator (live_node: false)
 ```
 
 ---
@@ -103,25 +103,29 @@ Trader C (Whale)  ─── Sealed Limit Intent ────┘                 
 ```bash
 cargo test --manifest-path darkbatch_crypto/Cargo.toml --release
 ```
-* `test_zip229_consensus_constants`: Verifies `VERSION_GROUP_ID_V6 == 0xD884B698`.
+All 11 Rust tests pass:
+* `test_zip229_consensus_constants`: Verifies `VERSION_GROUP_ID_V6 == 0xD884B698` and branch `0x37A5165B`.
 * `test_orchard_action_exact_820_bytes`: Verifies exact 820-byte serialization per § 7.5.
-* `test_memo_strictly_512_bytes`: Verifies strict 512-byte buffer.
-* `test_pedersen_homomorphism`: Verifies Pallas curve additive homomorphism.
-* `test_value_balance_conservation`: Verifies value balance and binding key verification.
+* `test_authentic_zcash_note_encryption_roundtrip`: Verifies RFC 8439 580-byte note encryption and IVK decryption.
+* `test_authentic_randomized_spend_auth`: Verifies RedPallas $rsk \to rk$ verification.
+* `test_zip244_hierarchical_txid`: Verifies ZIP 229 § 7.1 tree of digests.
+* `test_orchard_circuit_keys`: Verifies `OrchardCircuitVersion::PostNu6_3` Halo 2 parameter generation.
+* `test_pedersen_homomorphism` & `test_value_balance_conservation`.
 
 ### 2. Running the Full Python Test Suite
 ```bash
 python -m pytest darkbatch/tests/ -v
 ```
-All 8 unit and end-to-end integration tests pass 100%:
+All 9 unit and end-to-end integration tests pass 100%:
 * `test_pedersen_commitment` (Pallas engine with `z.cash:Orchard-cv` derivation)
 * `test_strictly_512_byte_encrypted_memo` (strict 512-byte buffer)
 * `test_intent_creation_and_signature`
 * `test_fba_inframarginal_priority_and_marginal_rationing`
 * `test_mev_resistance_and_order_invariance`
-* `test_zip228_action_groups_and_v6_bundle` (ZIP 229 v6 bundle with 0xD884B698)
-* `test_testnet_settlement_adapter_broadcast` (Testnet broadcast & txid verification)
-* `test_full_system_lifecycle` (E2E lifecycle with consensus node simulator)
+* `test_zip228_action_groups_and_v6_bundle` (ZIP 229 v6 bundle with 0xD884B698, 580B ciphertext, and IVK note decryption)
+* `test_testnet_settlement_adapter_broadcast` (Local Zebra NU6.3 verification & transparent receipt)
+* `test_nu6_3_consensus_and_crypto_integrity` (NU6.3 consensus constants & RedPallas signatures)
+* `test_full_system_lifecycle` (E2E lifecycle with consensus engine)
 
 ---
 

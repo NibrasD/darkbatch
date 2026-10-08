@@ -147,8 +147,8 @@ class TestnetSettlementAdapter:
         block_height = self.node_simulator.height
         record = {
             "txid": bundle.tx_id,
-            "status": "MINED_ON_TESTNET",
-            "network": "Zcash Testnet (NU6.3 Ironwood Protocol)",
+            "status": "VERIFIED_LOCAL_CONSENSUS",
+            "network": "Local Zebra NU6.3 Consensus Engine",
             "version_group_id": hex(bundle.version_group_id),
             "consensus_branch_id": hex(bundle.consensus_branch_id),
             "block_height": block_height,
@@ -157,8 +157,9 @@ class TestnetSettlementAdapter:
             "actions_count": len(bundle.action_groups),
             "raw_tx_len": bundle.raw_tx_bytes_len,
             "confirmations": 1,
-            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{bundle.tx_id}",
+            "explorer_url": None,
             "live_node": False,
+            "note": "Validated under Ironwood NU6.3 consensus rules locally. Connect live testnet node RPC to broadcast to network.",
         }
         self.broadcast_history[bundle.tx_id] = record
         return record

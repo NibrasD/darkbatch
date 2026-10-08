@@ -10,6 +10,8 @@ from darkbatch.core.crypto import (
     generate_scalar,
     encrypt_512_memo,
     decrypt_512_memo,
+    encrypt_orchard_note,
+    decrypt_orchard_note,
     aggregate_binding_keys,
     derive_shared_key,
     MEMO_TOTAL_SIZE,
@@ -141,17 +143,21 @@ def test_zip228_action_groups_and_v6_bundle():
     for ag in bundle.action_groups:
         assert ag.swap_action.action_type == "SWAP"
         assert ag.fee_action.action_type == "FEE"
-        assert len(bytes.fromhex(ag.swap_action.encrypted_memo_hex)) == 512
+        assert len(bytes.fromhex(ag.swap_action.enc_ciphertext_hex)) == 580
+        assert len(bytes.fromhex(ag.swap_action.out_ciphertext_hex)) == 80
+        assert len(bytes.fromhex(ag.swap_action.epk_hex)) == 32
+        assert len(bytes.fromhex(ag.swap_action.rk_hex)) == 32
 
     # Verify binary serialization
     assert len(bundle.raw_tx_hex) > 0
     assert bundle.raw_tx_bytes_len > 1000
 
-    # Verify Bob can decrypt his confidential memo using his IVK
+    # Verify Bob can decrypt his confidential memo using his IVK per § 5.4.3.4
     bob_action = bundle.action_groups[0].swap_action
-    bob_memo_bytes = bytes.fromhex(bob_action.encrypted_memo_hex)
-    bob_shared_key = derive_shared_key(bob.ivk)
-    decrypted_json = json.loads(decrypt_512_memo(bob_memo_bytes, bob_shared_key).decode("utf-8"))
+    bob_enc_bytes = bytes.fromhex(bob_action.enc_ciphertext_hex)
+    bob_epk_bytes = bytes.fromhex(bob_action.epk_hex)
+    dec_val, bob_memo_bytes = decrypt_orchard_note(bob_enc_bytes, bob.ivk, bob_epk_bytes)
+    decrypted_json = json.loads(bob_memo_bytes.rstrip(b"\x00").decode("utf-8"))
     assert decrypted_json["protocol"] == "DarkBatch-ZIP228"
     assert decrypted_json["filled_zec"] == 5.0
 
@@ -181,14 +187,14 @@ def test_testnet_settlement_adapter_broadcast():
     adapter = TestnetSettlementAdapter(node_simulator=node)
 
     receipt = adapter.broadcast(bundle)
-    assert receipt["status"] == "MINED_ON_TESTNET"
-    assert receipt["network"] == "Zcash Testnet (NU6.3 Ironwood Protocol)"
+    assert receipt["status"] == "VERIFIED_LOCAL_CONSENSUS"
+    assert receipt["network"] == "Local Zebra NU6.3 Consensus Engine"
     assert receipt["version_group_id"] == "0xd884b698"
     assert receipt["consensus_branch_id"] == "0x37a5165b"
     assert receipt["block_height"] >= 4134010
     assert receipt["confirmations"] == 1
-    assert "explorer_url" in receipt
     assert receipt["txid"] == bundle.tx_id
+    assert receipt["live_node"] is False
 
 def test_nu6_3_consensus_and_crypto_integrity():
     """
@@ -223,26 +229,34 @@ def test_nu6_3_consensus_and_crypto_integrity():
     assert "0x37A5165B" in err
 
     # 3. Authentic 580-byte Orchard / Ironwood Note Encryption (RFC 8439 ChaCha20Poly1305)
-    dummy_key = b"\x42" * 32
-    enc_ct = encrypt_orchard_note(
+    enc_ct, out_ct, epk = encrypt_orchard_note(
         lead_byte=0x03,
         diversifier=bytes(11),
         value_zat=500_000_000,
         rseed=bytes(32),
         memo_512=bytes(512),
-        shared_key=dummy_key
+        pk_d=bytes(32),
+        ovk=bytes(32),
+        cv=bytes(32),
+        cmx=bytes(32)
     )
     assert len(enc_ct) == 580
+    assert len(out_ct) == 80
+    assert len(epk) == 32
     assert enc_ct != bytes(580)
 
     # 4. Authentic RedPallas Signatures on Pallas curve
     sighash = blake2b_digest(b"canonical_sighash_data", personalization=b"ZcashTxHashIronw")
     bsk = 12345678901234567890
-    spend_sigs, binding_sig = sign_redpallas_bundle(sighash, bsk, 2)
+    spend_sigs, rk_list, binding_sig = sign_redpallas_bundle(sighash, bsk, 2)
     assert len(spend_sigs) == 2
+    assert len(rk_list) == 2
     for s in spend_sigs:
         assert len(s) == 64
         assert s != bytes(64)  # STRICTLY non-zero
+    for r in rk_list:
+        assert len(r) == 32
+        assert r != bytes(32)  # STRICTLY non-zero
     assert len(binding_sig) == 64
     assert binding_sig != bytes(64)  # STRICTLY non-zero
 

@@ -18,7 +18,12 @@ from darkbatch.core.crypto import (
     aggregate_binding_keys,
     encrypt_512_memo,
     encrypt_orchard_note,
+    decrypt_orchard_note,
+    derive_pk_d,
     sign_redpallas_bundle,
+    generate_spend_auth_keys,
+    sign_redpallas_bundle_with_keys,
+    compute_zip244_v6_txid,
     pedersen_commit,
     generate_scalar,
     derive_shared_key,
@@ -38,7 +43,10 @@ class SwapActionDescription:
     nullifier_hex: str
     rk_hex: str
     cm_star_hex: str
-    encrypted_memo_hex: str  # Exactly 512 bytes (1024 hex characters)
+    epk_hex: str
+    enc_ciphertext_hex: str  # Exactly 580 bytes (1160 hex characters) per § 5.4.3.4
+    out_ciphertext_hex: str  # Exactly 80 bytes (160 hex characters) per § 5.4.3.5
+    encrypted_memo_hex: str  # Backward-compatible alias for enc_ciphertext_hex
 
 @dataclass
 class FeeActionDescription:
@@ -130,6 +138,11 @@ class SettlementBundleBuilder:
 
         actions_encoded_bytes = bytearray()
 
+        # Pre-derive authentic RedPallas randomized spend-authorization keys for each action
+        spend_keys = generate_spend_auth_keys(len(all_fills))
+        rsk_list = [k[0] for k in spend_keys]
+        rk_list = [k[1] for k in spend_keys]
+
         for idx, fill in enumerate(all_fills):
             intent = intents_map.get(fill.intent_id)
             if not intent:
@@ -152,14 +165,13 @@ class SettlementBundleBuilder:
             cv_net_hex = pedersen_commit(fill.filled_zat, val_r)
             cv_fee_hex = pedersen_commit(100_000, generate_scalar())
 
-            # 3. Strict 512-Byte Encrypted Memo Receipt (ZIP 212 / ZIP 302)
+            # 3. Authentic 512-Byte Raw Memo Plaintext (ZIP 212 / ZIP 302)
             receiver_ivk = b""
             if wallets_ivk_map and fill.shielded_address in wallets_ivk_map:
                 receiver_ivk = wallets_ivk_map[fill.shielded_address]
             else:
                 receiver_ivk = blake2b_digest(fill.shielded_address.encode(), personalization=b"ReceiverIVKDeriv")
 
-            memo_key = derive_shared_key(receiver_ivk)
             memo_dict = {
                 "protocol": "DarkBatch-ZIP228",
                 "epoch": clear_result.epoch_id,
@@ -171,21 +183,44 @@ class SettlementBundleBuilder:
                 "ts": int(time.time()),
                 "status": "CONFIDENTIAL_SETTLED"
             }
-            memo_payload = json.dumps(memo_dict).encode("utf-8")
-            memo_512_bytes = encrypt_512_memo(memo_payload, memo_key)
-            assert len(memo_512_bytes) == 512, "Memo MUST be strictly 512 bytes!"
+            memo_512_bytes = json.dumps(memo_dict).encode("utf-8").ljust(512, b"\x00")[:512]
+            assert len(memo_512_bytes) == 512
 
-            # 4. Construct ZIP 228 Swap Action
+            # 4. Authentic Zcash Orchard Note Encryption (§ 5.4.3.4 & § 5.4.3.5)
+            # Produces 580B encCiphertext, 80B outCiphertext, and 32B ephemeral key
+            pk_d = derive_pk_d(receiver_ivk, diversifier=bytes(11))
+            ovk = blake2b_digest(f"ovk:{fill.shielded_address}".encode(), personalization=b"ReceiverOvkDeriv")
+
+            enc_ct, out_ct, epk_bytes = encrypt_orchard_note(
+                lead_byte=0x03,
+                diversifier=bytes(11),
+                value_zat=fill.filled_zat,
+                rseed=val_r.to_bytes(32, "little")[:32],
+                memo_512=memo_512_bytes,
+                ovk=ovk,
+                cv=bytes.fromhex(cv_net_hex),
+                cmx=cm_bytes,
+                pk_d=pk_d
+            )
+            assert len(enc_ct) == 580
+            assert len(out_ct) == 80
+            assert len(epk_bytes) == 32
+
+            # 5. Construct ZIP 228 Swap Action
+            action_rk = rk_list[idx]
             swap_action = SwapActionDescription(
                 action_type="SWAP",
                 cv_net_hex=cv_net_hex,
                 nullifier_hex=nullifier_bytes.hex(),
-                rk_hex=intent.auth_pubkey_hex,
+                rk_hex=action_rk.hex(),
                 cm_star_hex=cm_bytes.hex(),
-                encrypted_memo_hex=memo_512_bytes.hex()
+                epk_hex=epk_bytes.hex(),
+                enc_ciphertext_hex=enc_ct.hex(),
+                out_ciphertext_hex=out_ct.hex(),
+                encrypted_memo_hex=enc_ct.hex()
             )
 
-            # 5. Construct ZIP 228 Fee Action (Matcher Fee + Miner Fee)
+            # 6. Construct ZIP 228 Fee Action (Matcher Fee + Miner Fee)
             matcher_fee_zat = int(round(fill.filled_zat * (clear_result.solver_fee_zec / max(1e-6, clear_result.total_cleared_zec))))
             miner_fee_zat = 10_000  # 0.0001 ZEC standard miner fee
             total_matcher_fee += matcher_fee_zat
@@ -213,42 +248,27 @@ class SettlementBundleBuilder:
             )
             action_groups.append(ag)
 
-            # Build strictly compliant 820-byte OrchardAction (§ 7.5)
-            # 1. cv (32B)
-            actions_encoded_bytes.extend(bytes.fromhex(cv_net_hex))
-            # 2. nullifier (32B)
-            actions_encoded_bytes.extend(nullifier_bytes)
-            # 3. rk (32B)
-            actions_encoded_bytes.extend(bytes.fromhex(intent.auth_pubkey_hex))
-            # 4. cmx (32B)
-            actions_encoded_bytes.extend(cm_bytes)
-            # 5. ephemeralKey (32B)
-            ephemeral_key = blake2b_digest(f"epk:{intent.intent_id}".encode(), personalization=b"IronwoodEphemKey")
-            actions_encoded_bytes.extend(ephemeral_key)
-            
-            # 6. encCiphertext (580B): Authentic RFC 8439 ChaCha20Poly1305 AEAD per ZIP 2005 / § 5.4.3.4
-            # 564B Plaintext (leadByte 0x03 + 11B diversifier + 8B value + 32B rseed + 512B memo) + 16B Poly1305 MAC tag
-            enc_ct = encrypt_orchard_note(
-                lead_byte=0x03,
-                diversifier=bytes(11),
-                value_zat=fill.filled_zat,
-                rseed=val_r.to_bytes(32, "little")[:32],
-                memo_512=memo_512_bytes,
-                shared_key=memo_key
-            )
-            assert len(enc_ct) == 580
-            actions_encoded_bytes.extend(enc_ct)
+            # Build strictly compliant 820-byte OrchardAction (§ 7.5):
+            # cv (32B) + nullifier (32B) + rk (32B) + cmx (32B) + epk (32B) + encCiphertext (580B) + outCiphertext (80B) = 820B
+            single_action_bytes = bytearray()
+            single_action_bytes.extend(bytes.fromhex(cv_net_hex))
+            single_action_bytes.extend(nullifier_bytes)
+            single_action_bytes.extend(action_rk)
+            single_action_bytes.extend(cm_bytes)
+            single_action_bytes.extend(epk_bytes)
+            single_action_bytes.extend(enc_ct)
+            single_action_bytes.extend(out_ct)
+            assert len(single_action_bytes) == 820
 
-            # 7. outCiphertext (80B): Authentic RFC 8439 ChaCha20Poly1305 AEAD per § 5.4.3.5
-            # 64B Plaintext (cm || epk) + 16B Poly1305 MAC tag
-            ock = derive_shared_key(receiver_ivk, b"ock_orchard_kdf\x00")
-            chacha_out = ChaCha20Poly1305(ock)
-            out_ct = chacha_out.encrypt(bytes(12), cm_bytes + ephemeral_key, None)
-            assert len(out_ct) == 80
-            actions_encoded_bytes.extend(out_ct)
+            actions_encoded_bytes.extend(single_action_bytes)
 
         # Append all 820-byte actions
         raw_bytes.extend(actions_encoded_bytes)
+
+        actions_list = [
+            bytes(actions_encoded_bytes[i*820 : (i+1)*820])
+            for i in range(len(all_fills))
+        ]
 
         # Append Ironwood component trailing fields if nActions > 0
         if len(all_fills) > 0:
@@ -286,7 +306,7 @@ class SettlementBundleBuilder:
             # vSpendAuthSigsIronwood (64B * nActions) and bindingSigIronwood (64B)
             # Authentic RedPallas signatures on Pallas curve (reddsa::orchard::SpendAuth & Binding)
             aggregated_bsk = aggregate_binding_keys(bsk_shares) if bsk_shares else 0
-            spend_sigs, binding_sig = sign_redpallas_bundle(sighash, aggregated_bsk, len(all_fills))
+            spend_sigs, _, binding_sig = sign_redpallas_bundle_with_keys(sighash, aggregated_bsk, rsk_list)
 
             for sig in spend_sigs:
                 assert len(sig) == 64
@@ -298,8 +318,17 @@ class SettlementBundleBuilder:
         else:
             aggregated_binding_pubkey_hex = "00" * 32
 
-        tx_digest = blake2b_digest(bytes(raw_bytes), personalization=b"ZcashTxHashIronw")
-        tx_id = tx_digest.hex()
+        # Authentic ZIP 244 Hierarchical Digest for Transaction v6 (ZIP 229 § 7.1)
+        tx_id = compute_zip244_v6_txid(
+            header=TX_VERSION_6,
+            version_group_id=VERSION_GROUP_ID_V6,
+            consensus_branch_id=CONSENSUS_BRANCH_ID_IRONWOOD,
+            expiry_height=bundle_expiry_height,
+            anchor_bytes=anchor_bytes,
+            actions_820_list=actions_list,
+            flags_ironwood=0x03,
+            value_balance_ironwood=0
+        )
 
         return SettlementBundle(
             tx_id=tx_id,

@@ -73,6 +73,13 @@ pub fn random_scalar() -> Scalar {
     Scalar::from_repr(repr).unwrap_or(Scalar::one())
 }
 
+/// Deterministically decodes 32 bytes into a valid Pallas scalar
+pub fn scalar_from_bytes(bytes: &[u8; 32]) -> Scalar {
+    let mut repr = *bytes;
+    repr[31] &= 0x3f; // mask to fit within Pallas field order
+    Scalar::from_repr(repr).unwrap_or(Scalar::one())
+}
+
 /// Computes RedPallas randomized spend authorization validating key:
 /// rk = [alpha] * G + ak
 pub fn derive_randomized_key(ak: &Point, alpha: &Scalar) -> Point {
