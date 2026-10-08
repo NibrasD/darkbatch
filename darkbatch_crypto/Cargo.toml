@@ -1,0 +1,15 @@
+[package]
+name = "darkbatch_crypto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pasta_curves = { version = "0.6", features = ["bits", "blake2b_simd"] }
+group = "0.14"
+ff = "0.14"
+blake2b_simd = "1.0"
+subtle = "2.6"
+rand = "0.8"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

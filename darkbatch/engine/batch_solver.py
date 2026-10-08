@@ -1,9 +1,10 @@
 """
 DarkBatch Frequent Batch Auction (FBA) Solver Engine
-Implements the uniform clearing price discovery algorithm inspired by Archer Exchange:
-- MEV-neutral: Orders within an epoch are treated as a simultaneous discrete batch.
-- Fair uniform price: Maximizes aggregate cleared volume at single market equilibrium P*.
-- Proportional rationing: Fair pro-rata fill for marginal limit orders at the clearing boundary.
+Implements authentic economic market-clearing equilibrium (Budish, Cramton, Shim):
+- Strict Price Priority: Inframarginal orders (Buy price > P*, Sell price < P*) are filled 100%.
+- Marginal Rationing: Pro-rata allocation is applied ONLY to marginal orders sitting at P*.
+- Out-of-the-money orders (Buy price < P*, Sell price > P*) receive 0% fill.
+- MEV immunity: Discrete epoch batching eliminates latency games and sandwiching.
 """
 
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ class MatchedFill:
     quote_filled_usd: float
     shielded_address: str
     fill_percentage: float
+    is_marginal: bool
 
 @dataclass
 class BatchClearResult:
@@ -36,25 +38,19 @@ class BatchClearResult:
 
 class BatchAuctionSolver:
     """
-    Core Batch Auction Solver executing periodic discrete clearing cycles.
+    Frequent Batch Auction Solver with strict Inframarginal priority and Marginal pro-rata rationing.
     """
     def __init__(self, solver_fee_bps: int = 10):
-        # 10 bps = 0.1% protocol fee for solver coordination
         self.solver_fee_bps = solver_fee_bps
 
     def solve(self, epoch_id: int, intents: List[SwapOrderIntent]) -> BatchClearResult:
-        """
-        Calculates the Uniform Clearing Price P* that maximizes executed volume.
-        """
         start_time = time.perf_counter()
-        
-        # Filter valid and non-expired intents
+
         valid_intents = [i for i in intents if i.verify_signature()]
         buys = [i for i in valid_intents if i.direction == OrderDirection.BUY_ZEC]
         sells = [i for i in valid_intents if i.direction == OrderDirection.SELL_ZEC]
-        
+
         if not buys or not sells:
-            # Cannot clear without two-sided liquidity
             return BatchClearResult(
                 epoch_id=epoch_id,
                 clearing_price_usd=0.0,
@@ -64,14 +60,11 @@ class BatchAuctionSolver:
                 solver_execution_time_ms=(time.perf_counter() - start_time) * 1000.0
             )
 
-        # Sort buyers descending by willingness to pay (highest limit price first)
         buys_sorted = sorted(buys, key=lambda x: x.limit_price_cents, reverse=True)
-        # Sort sellers ascending by willingness to accept (lowest limit price first)
         sells_sorted = sorted(sells, key=lambda x: x.limit_price_cents)
 
-        # Check if any overlap exists (highest bid >= lowest ask)
+        # If highest bid < lowest ask, no clearing possible
         if buys_sorted[0].limit_price_cents < sells_sorted[0].limit_price_cents:
-            # No crossing orders
             return BatchClearResult(
                 epoch_id=epoch_id,
                 clearing_price_usd=0.0,
@@ -81,29 +74,27 @@ class BatchAuctionSolver:
                 solver_execution_time_ms=(time.perf_counter() - start_time) * 1000.0
             )
 
-        # Collect candidate clearing price thresholds
-        price_candidates = set()
+        # Collect candidate clearing prices
+        candidate_prices = set()
         for b in buys_sorted:
-            price_candidates.add(b.limit_price_cents)
+            candidate_prices.add(b.limit_price_cents)
         for s in sells_sorted:
-            price_candidates.add(s.limit_price_cents)
+            candidate_prices.add(s.limit_price_cents)
 
         best_clearing_price_cents = 0
         max_cleared_zat = 0
 
-        # Evaluate candidate clearing prices
-        for p in sorted(price_candidates):
-            # Demand at price p: sum of all buys with limit_price >= p
+        # Find price P* that maximizes cleared volume min(Demand(P), Supply(P))
+        for p in sorted(candidate_prices):
             demand_zat = sum(b.base_amount_zat for b in buys_sorted if b.limit_price_cents >= p)
-            # Supply at price p: sum of all sells with limit_price <= p
             supply_zat = sum(s.base_amount_zat for s in sells_sorted if s.limit_price_cents <= p)
-            
             matched_zat = min(demand_zat, supply_zat)
+
             if matched_zat > max_cleared_zat:
                 max_cleared_zat = matched_zat
                 best_clearing_price_cents = p
             elif matched_zat == max_cleared_zat and max_cleared_zat > 0:
-                # If tied, pick the midpoint of the price range to balance buyer/seller surplus
+                # Midpoint tie-break rule
                 best_clearing_price_cents = (best_clearing_price_cents + p) // 2
 
         if max_cleared_zat == 0:
@@ -118,24 +109,43 @@ class BatchAuctionSolver:
 
         clearing_price_usd = best_clearing_price_cents / 100.0
 
-        # Allocate fills to buyers
-        eligible_buys = [b for b in buys_sorted if b.limit_price_cents >= best_clearing_price_cents]
-        eligible_sells = [s for s in sells_sorted if s.limit_price_cents <= best_clearing_price_cents]
+        # === PROPER FBA RATIONING ===
+        # 1. Buyers:
+        # - Inframarginal: limit_price > P* -> 100% filled
+        # - Marginal: limit_price == P* -> prorated on remaining volume
+        # - Out-of-money: limit_price < P* -> 0% filled
+        infra_buys = [b for b in buys_sorted if b.limit_price_cents > best_clearing_price_cents]
+        marginal_buys = [b for b in buys_sorted if b.limit_price_cents == best_clearing_price_cents]
+        out_buys = [b for b in buys_sorted if b.limit_price_cents < best_clearing_price_cents]
 
-        total_buy_demand_zat = sum(b.base_amount_zat for b in eligible_buys)
-        total_sell_supply_zat = sum(s.base_amount_zat for s in eligible_sells)
+        total_infra_buy_zat = sum(b.base_amount_zat for b in infra_buys)
+        remaining_buy_zat = max(0, max_cleared_zat - total_infra_buy_zat)
+        total_marginal_buy_zat = sum(b.base_amount_zat for b in marginal_buys)
+
+        marginal_buy_ratio = (remaining_buy_zat / total_marginal_buy_zat) if total_marginal_buy_zat > 0 else 0.0
+        marginal_buy_ratio = min(1.0, marginal_buy_ratio)
 
         buy_fills: List[MatchedFill] = []
-        sell_fills: List[MatchedFill] = []
-        unfilled: List[str] = []
+        unfilled: List[str] = [b.intent_id for b in out_buys]
 
-        # If buy demand exceeds supply, pro-rata ration the buyers
-        buy_ratio = min(1.0, max_cleared_zat / total_buy_demand_zat) if total_buy_demand_zat > 0 else 0.0
-        # If sell supply exceeds demand, pro-rata ration the sellers
-        sell_ratio = min(1.0, max_cleared_zat / total_sell_supply_zat) if total_sell_supply_zat > 0 else 0.0
+        # Fill inframarginal buyers 100%
+        for b in infra_buys:
+            quote_val = (b.base_amount_zat / 100_000_000.0) * clearing_price_usd
+            buy_fills.append(MatchedFill(
+                intent_id=b.intent_id,
+                direction=b.direction,
+                original_zat=b.base_amount_zat,
+                filled_zat=b.base_amount_zat,
+                clearing_price_usd=clearing_price_usd,
+                quote_filled_usd=quote_val,
+                shielded_address=b.shielded_address,
+                fill_percentage=100.0,
+                is_marginal=False
+            ))
 
-        for b in eligible_buys:
-            filled_zat = int(round(b.base_amount_zat * buy_ratio))
+        # Fill marginal buyers proportionally
+        for b in marginal_buys:
+            filled_zat = int(round(b.base_amount_zat * marginal_buy_ratio))
             if filled_zat > 0:
                 quote_val = (filled_zat / 100_000_000.0) * clearing_price_usd
                 buy_fills.append(MatchedFill(
@@ -146,13 +156,49 @@ class BatchAuctionSolver:
                     clearing_price_usd=clearing_price_usd,
                     quote_filled_usd=quote_val,
                     shielded_address=b.shielded_address,
-                    fill_percentage=buy_ratio * 100.0
+                    fill_percentage=marginal_buy_ratio * 100.0,
+                    is_marginal=True
                 ))
             else:
                 unfilled.append(b.intent_id)
 
-        for s in eligible_sells:
-            filled_zat = int(round(s.base_amount_zat * sell_ratio))
+        # 2. Sellers:
+        # - Inframarginal: limit_price < P* -> 100% filled
+        # - Marginal: limit_price == P* -> prorated on remaining volume
+        # - Out-of-money: limit_price > P* -> 0% filled
+        infra_sells = [s for s in sells_sorted if s.limit_price_cents < best_clearing_price_cents]
+        marginal_sells = [s for s in sells_sorted if s.limit_price_cents == best_clearing_price_cents]
+        out_sells = [s for s in sells_sorted if s.limit_price_cents > best_clearing_price_cents]
+
+        total_infra_sell_zat = sum(s.base_amount_zat for s in infra_sells)
+        remaining_sell_zat = max(0, max_cleared_zat - total_infra_sell_zat)
+        total_marginal_sell_zat = sum(s.base_amount_zat for s in marginal_sells)
+
+        marginal_sell_ratio = (remaining_sell_zat / total_marginal_sell_zat) if total_marginal_sell_zat > 0 else 0.0
+        marginal_sell_ratio = min(1.0, marginal_sell_ratio)
+
+        sell_fills: List[MatchedFill] = []
+        for s in out_sells:
+            unfilled.append(s.intent_id)
+
+        # Fill inframarginal sellers 100%
+        for s in infra_sells:
+            quote_val = (s.base_amount_zat / 100_000_000.0) * clearing_price_usd
+            sell_fills.append(MatchedFill(
+                intent_id=s.intent_id,
+                direction=s.direction,
+                original_zat=s.base_amount_zat,
+                filled_zat=s.base_amount_zat,
+                clearing_price_usd=clearing_price_usd,
+                quote_filled_usd=quote_val,
+                shielded_address=s.shielded_address,
+                fill_percentage=100.0,
+                is_marginal=False
+            ))
+
+        # Fill marginal sellers proportionally
+        for s in marginal_sells:
+            filled_zat = int(round(s.base_amount_zat * marginal_sell_ratio))
             if filled_zat > 0:
                 quote_val = (filled_zat / 100_000_000.0) * clearing_price_usd
                 sell_fills.append(MatchedFill(
@@ -163,17 +209,10 @@ class BatchAuctionSolver:
                     clearing_price_usd=clearing_price_usd,
                     quote_filled_usd=quote_val,
                     shielded_address=s.shielded_address,
-                    fill_percentage=sell_ratio * 100.0
+                    fill_percentage=marginal_sell_ratio * 100.0,
+                    is_marginal=True
                 ))
             else:
-                unfilled.append(s.intent_id)
-
-        # Add ineligible intents to unfilled list
-        for b in buys_sorted:
-            if b.limit_price_cents < best_clearing_price_cents:
-                unfilled.append(b.intent_id)
-        for s in sells_sorted:
-            if s.limit_price_cents > best_clearing_price_cents:
                 unfilled.append(s.intent_id)
 
         total_cleared_zec = max_cleared_zat / 100_000_000.0

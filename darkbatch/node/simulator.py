@@ -63,9 +63,10 @@ class ZcashNodeSimulator:
         for ag in action_groups:
             for act in ag.get("actions", []):
                 nf = act.get("nullifier") or act.get("nullifier_hex")
-                if nf in self.nullifier_set:
-                    return False, f"Consensus Error: Nullifier {nf[:16]}... already spent!"
-                incoming_nullifiers.append(nf)
+                if nf:
+                    if nf in self.nullifier_set:
+                        return False, f"Consensus Error: Nullifier {nf[:16]}... already spent!"
+                    incoming_nullifiers.append(nf)
 
         # 2. Append new Note Commitments to the tree
         for ag in action_groups:

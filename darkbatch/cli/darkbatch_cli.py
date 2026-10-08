@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DarkBatch Persistent CLI Tool
-Integrated with SQLite storage for stateful operations across multiple terminal sessions.
+Integrated with SQLite storage, zero-leak sealed mempool, and viewing key memo decrypter.
 """
 
 import argparse
@@ -9,7 +9,6 @@ import json
 import os
 import sys
 
-# Ensure repository root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from darkbatch.core.repo import (
@@ -24,10 +23,10 @@ from darkbatch.core.repo import (
 )
 from darkbatch.core.wallet import ShieldedWallet
 from darkbatch.core.intent import create_intent, OrderDirection
+from darkbatch.core.crypto import decrypt_512_memo, derive_shared_key
 from darkbatch.node.simulator import ZcashNodeSimulator
 from darkbatch.solver.engine import AutonomousSolverDaemon
 
-# Instantiate persistent simulator and solver
 NODE = ZcashNodeSimulator()
 SOLVER = AutonomousSolverDaemon(NODE)
 
@@ -52,6 +51,12 @@ def main():
     # Epoch
     p_epoch = subparsers.add_parser("epoch", help="Inspect or clear batch auction epoch")
     p_epoch.add_argument("action", choices=["status", "clear", "seed"])
+
+    # Memo Decrypter
+    p_memo = subparsers.add_parser("memo", help="Decrypt 512-byte shielded execution receipt")
+    p_memo.add_argument("action", choices=["decrypt"])
+    p_memo.add_argument("--alias", type=str, required=True, help="Wallet alias whose IVK should decrypt the memo")
+    p_memo.add_argument("--hex", type=str, required=True, help="512-byte encrypted memo hex string")
 
     # Node
     p_node = subparsers.add_parser("node", help="Inspect Zcash Ironwood node state")
@@ -88,27 +93,26 @@ def main():
             )
             epoch_id = get_active_epoch_id()
             save_intent(intent, epoch_id)
-            print(f"\n[PERSISTED SHIELDED INTENT CREATED]")
-            print(f"Intent ID: {intent.intent_id}")
-            print(f"Direction: {intent.direction.value}")
-            print(f"Amount:    {intent.base_amount_zec} ZEC")
-            print(f"Limit:     ${intent.limit_price_usd}")
-            print(f"Commitment:{intent.value_commitment[:24]}...")
-            print(f"Epoch:     #{epoch_id}\n")
+            print(f"\n[SEALED LIMIT INTENT COMMITTED TO MEMPOOL]")
+            print(f"Intent ID:       {intent.intent_id}")
+            print(f"Pallas Commit:   {intent.value_commitment[:32]}...")
+            print(f"ZIP-228 bsk:     {hex(intent.bsk_share)[:20]}...")
+            print(f"Status:          SEALED_AND_COMMITTED")
+            print(f"Epoch:           #{epoch_id}\n")
         elif args.action == "list":
             pending = get_pending_intents()
-            print(f"\nPending Intents ({len(pending)} total):")
+            print(f"\nConfidential Sealed Mempool ({len(pending)} intents):")
             for i in pending:
-                print(f" - [{i.direction.value}] {i.base_amount_zec} ZEC @ ${i.limit_price_usd} (Address: {i.shielded_address[:28]}...)")
+                print(f" * [SEALED] ID: {i.intent_id[:16]}... | Commitment: {i.value_commitment[:24]}... | Expires: #{i.expiry_height}")
 
     elif args.command == "epoch":
         epoch_id = get_active_epoch_id()
         if args.action == "status":
             pending = get_pending_intents()
             print(f"Current Epoch: #{epoch_id}")
-            print(f"Pending Orders: {len(pending)}")
+            print(f"Sealed Orders: {len(pending)}")
             for i in pending:
-                print(f" * [{i.direction.value}] {i.base_amount_zec} ZEC @ ${i.limit_price_usd}")
+                print(f" * [SEALED] ID: {i.intent_id[:16]}... | Commitment: {i.value_commitment[:24]}...")
         elif args.action == "seed":
             bob = get_wallet("bob")
             alice = get_wallet("alice")
@@ -118,16 +122,16 @@ def main():
             save_intent(create_intent(OrderDirection.BUY_ZEC, 25.0, 42.80, whale.unified_address), epoch_id)
             save_intent(create_intent(OrderDirection.SELL_ZEC, 20.0, 41.20, alice.unified_address), epoch_id)
             save_intent(create_intent(OrderDirection.SELL_ZEC, 15.0, 42.40, maker.unified_address), epoch_id)
-            print(f"Seeded 4 realistic orders into Epoch #{epoch_id}.")
+            print(f"Seeded 4 sealed orders into Epoch #{epoch_id} (Concealed with Pallas commitments).")
         elif args.action == "clear":
             pending = get_pending_intents()
             if not pending:
                 print("No pending orders to clear in this epoch.")
                 return
-            print(f"Solving & Clearing Epoch #{epoch_id} ({len(pending)} orders)...")
-            res = SOLVER.run_epoch_settlement(epoch_id, pending)
+            print(f"Solving & Clearing Epoch #{epoch_id} ({len(pending)} sealed orders)...")
+            all_wallets = {w["unified_address"]: get_wallet(w["alias"]).ivk for w in list_wallets() if get_wallet(w["alias"])}
+            res = SOLVER.run_epoch_settlement(epoch_id, pending, wallets_ivk_map=all_wallets)
             
-            # Apply wallet balance changes to DB
             if res.get("status") == "SETTLED_AND_MINED":
                 record_epoch_clear(
                     epoch_id=epoch_id,
@@ -139,8 +143,24 @@ def main():
                 )
                 mark_intents_settled([i.intent_id for i in pending])
             
-            print("\n=== BATCH CLEARING & SETTLEMENT RESULT ===")
+            print("\n=== BATCH CLEARING & TRANSACTION V6 SETTLEMENT ===")
             print(json.dumps(res, indent=2))
+
+    elif args.command == "memo":
+        if args.action == "decrypt":
+            wallet = get_wallet(args.alias)
+            if not wallet:
+                print(f"Wallet '{args.alias}' not found.")
+                return
+            try:
+                memo_bytes = bytes.fromhex(args.hex)
+                shared_key = derive_shared_key(wallet.ivk)
+                plaintext = decrypt_512_memo(memo_bytes, shared_key)
+                receipt = json.loads(plaintext.decode("utf-8"))
+                print(f"\n[CONFIDENTIAL 512-BYTE MEMO DECRYPTED VIA {args.alias.upper()}'S IVK]")
+                print(json.dumps(receipt, indent=2))
+            except Exception as e:
+                print(f"Decryption failed: {e}")
 
     elif args.command == "node":
         if args.action == "info":

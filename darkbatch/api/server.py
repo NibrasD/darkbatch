@@ -1,6 +1,6 @@
 """
 DarkBatch Persistent Coordinator API Server
-Integrated with SQLite repository, real-time WebSockets, and interactive multi-wallet frontend.
+Integrated with SQLite repository, real-time WebSockets, and ZERO-LEAK Confidential Mempool.
 """
 
 import asyncio
@@ -29,7 +29,6 @@ from darkbatch.core.intent import SwapOrderIntent, OrderDirection, create_intent
 from darkbatch.node.simulator import ZcashNodeSimulator
 from darkbatch.solver.engine import AutonomousSolverDaemon
 
-# Global node and solver
 NODE = ZcashNodeSimulator()
 SOLVER = AutonomousSolverDaemon(NODE)
 
@@ -64,7 +63,6 @@ epoch_start_time = time.time()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Background epoch ticker task
     async def epoch_ticker():
         global epoch_start_time
         while True:
@@ -72,17 +70,18 @@ async def lifespan(app: FastAPI):
             elapsed = time.time() - epoch_start_time
             remaining = max(0.0, EPOCH_DURATION_SECONDS - elapsed)
             epoch_id = get_active_epoch_id()
+            pending = get_pending_intents()
             await manager.broadcast({
                 "type": "TICK",
                 "epoch_id": epoch_id,
                 "seconds_remaining": round(remaining, 1),
-                "pending_count": len(get_pending_intents())
+                "sealed_count": len(pending)
             })
             if remaining <= 0.0:
-                pending = get_pending_intents()
                 if pending:
-                    # Auto-clear batch on epoch expiry
-                    res = SOLVER.run_epoch_settlement(epoch_id, pending)
+                    # Collect wallet IVKs to encrypt receipts to individual recipient viewing keys
+                    all_wallets = {w["unified_address"]: get_wallet(w["alias"]).ivk for w in list_wallets() if get_wallet(w["alias"])}
+                    res = SOLVER.run_epoch_settlement(epoch_id, pending, wallets_ivk_map=all_wallets)
                     if res.get("status") == "SETTLED_AND_MINED":
                         record_epoch_clear(
                             epoch_id=epoch_id,
@@ -107,7 +106,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="DarkBatch Protocol API",
     description="Confidential Intent-Based Batch Auction & RFQ for Shielded Zcash (Ironwood Era)",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -124,7 +123,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Keep-alive receive
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -141,7 +139,7 @@ def get_health():
         "protocol_version": "ZIP-228 / ZIP-229 v6",
         "current_epoch": epoch_id,
         "seconds_until_clear": round(remaining, 1),
-        "pending_intent_count": len(pending),
+        "sealed_intent_count": len(pending),
         "total_blocks_mined": len(NODE.blocks),
         "ironwood_anchor": NODE.current_anchor()
     }
@@ -161,17 +159,16 @@ async def submit_intent(req: IntentSubmitRequest):
     epoch_id = get_active_epoch_id()
     save_intent(intent, epoch_id)
 
-    # Broadcast event to connected frontend clients
+    # ZERO-LEAK BROADCAST: broadcast ONLY the sealed commitment hash!
     await manager.broadcast({
-        "type": "NEW_INTENT",
-        "direction": intent.direction.value,
-        "amount_zec": intent.base_amount_zec,
-        "limit_usd": intent.limit_price_usd,
-        "commitment": intent.value_commitment[:16] + "..."
+        "type": "NEW_SEALED_INTENT",
+        "intent_id": intent.intent_id,
+        "commitment": intent.value_commitment[:24] + "...",
+        "epoch_id": epoch_id
     })
 
     return {
-        "status": "ACCEPTED",
+        "status": "SEALED_AND_COMMITTED",
         "intent_id": intent.intent_id,
         "epoch": epoch_id,
         "commitment": intent.value_commitment,
@@ -181,26 +178,32 @@ async def submit_intent(req: IntentSubmitRequest):
 
 @app.get("/api/v1/epoch/current")
 def get_current_epoch():
+    """
+    CONFIDENTIAL MEMPOOL: Returns ONLY sealed order commitments.
+    Prices, amounts, directions, and user addresses are strictly shielded!
+    """
     elapsed = time.time() - epoch_start_time
     remaining = max(0.0, EPOCH_DURATION_SECONDS - elapsed)
     epoch_id = get_active_epoch_id()
     pending = get_pending_intents()
 
-    buys = [
-        {"id": i.intent_id, "amount_zec": i.base_amount_zec, "limit_usd": i.limit_price_usd, "commitment": i.value_commitment[:16] + "...", "address": i.shielded_address}
-        for i in pending if i.direction == OrderDirection.BUY_ZEC
-    ]
-    sells = [
-        {"id": i.intent_id, "amount_zec": i.base_amount_zec, "limit_usd": i.limit_price_usd, "commitment": i.value_commitment[:16] + "...", "address": i.shielded_address}
-        for i in pending if i.direction == OrderDirection.SELL_ZEC
+    sealed_orders = [
+        {
+            "id": i.intent_id[:16] + "...",
+            "value_commitment": i.value_commitment,
+            "status": "SEALED_COMMITMENT",
+            "expiry_height": i.expiry_height,
+            "timestamp": i.created_at_timestamp
+        }
+        for i in pending
     ]
 
     return {
         "epoch_id": epoch_id,
         "seconds_remaining": round(remaining, 1),
-        "pending_buys": buys,
-        "pending_sells": sells,
-        "total_pending_volume_zec": sum(i.base_amount_zec for i in pending)
+        "sealed_orders_count": len(sealed_orders),
+        "sealed_orders": sealed_orders,
+        "confidentiality_guarantee": "ZERO_LEAK_MEV_IMMUNE"
     }
 
 @app.post("/api/v1/epoch/clear")
@@ -212,8 +215,9 @@ async def clear_current_epoch():
     if not pending:
         return {"status": "EMPTY", "message": "No pending orders to clear."}
 
-    res = SOLVER.run_epoch_settlement(epoch_id, pending)
-    
+    all_wallets = {w["unified_address"]: get_wallet(w["alias"]).ivk for w in list_wallets() if get_wallet(w["alias"])}
+    res = SOLVER.run_epoch_settlement(epoch_id, pending, wallets_ivk_map=all_wallets)
+
     if res.get("status") == "SETTLED_AND_MINED":
         record_epoch_clear(
             epoch_id=epoch_id,
@@ -256,6 +260,23 @@ def get_node_blocks():
             "transactions": b.transactions
         } for b in NODE.blocks
     ]}
+
+@app.post("/api/v1/wallet/decrypt-memo")
+def decrypt_memo_endpoint(req: dict):
+    alias = req.get("alias")
+    memo_hex = req.get("memo_hex")
+    wallet = get_wallet(alias)
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+
+    try:
+        from darkbatch.core.crypto import decrypt_512_memo, derive_shared_key
+        memo_bytes = bytes.fromhex(memo_hex)
+        shared_key = derive_shared_key(wallet.ivk)
+        plaintext = decrypt_512_memo(memo_bytes, shared_key)
+        return {"status": "SUCCESS", "receipt": json.loads(plaintext.decode("utf-8"))}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Decryption failed: {str(e)}")
 
 @app.post("/api/v1/demo/seed")
 async def seed_demo():

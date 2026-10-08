@@ -1,7 +1,7 @@
 """
 DarkBatch Autonomous Solver Daemon
 Executes continuous Frequent Batch Auction (FBA) clearing, settles on Ironwood node simulator,
-and distributes encrypted receipts to market participants.
+and distributes strictly 512-byte encrypted receipts directly to each participant's viewing key.
 """
 
 from dataclasses import dataclass, field
@@ -38,17 +38,15 @@ class AutonomousSolverDaemon:
         self,
         epoch_id: int,
         intents: List[SwapOrderIntent],
-        wallets_map: Optional[Dict[str, ShieldedWallet]] = None
+        wallets_map: Optional[Dict[str, ShieldedWallet]] = None,
+        wallets_ivk_map: Optional[Dict[str, bytes]] = None
     ) -> Dict[str, Any]:
-        """
-        Executes end-to-end clearing of an epoch:
-        1. Solves FBA uniform clearing price.
-        2. Builds ZIP 228 / v6 Settlement Bundle.
-        3. Submits bundle to the Zcash Node (mining a block and verifying nullifiers).
-        4. Updates wallet balances and gives execution receipts to traders.
-        """
         start = time.perf_counter()
         self.bundle_builder.ironwood_anchor = self.node.current_anchor()
+
+        # If wallets_map is provided and wallets_ivk_map is not, derive it
+        if wallets_map and not wallets_ivk_map:
+            wallets_ivk_map = {addr: w.ivk for addr, w in wallets_map.items()}
 
         # 1. Solve Batch
         clear_result = self.matching_engine.solve(epoch_id, intents)
@@ -64,11 +62,11 @@ class AutonomousSolverDaemon:
                 "block_hash": None
             }
 
-        # 2. Build Bundle
+        # 2. Build ZIP 228 Bundle
         intents_map = {i.intent_id: i for i in intents}
-        bundle = self.bundle_builder.build_bundle(clear_result, intents_map)
+        bundle = self.bundle_builder.build_bundle(clear_result, intents_map, wallets_ivk_map=wallets_ivk_map)
 
-        # 3. Submit to Simulated Node
+        # 3. Format bundle for Node consensus verification
         bundle_dict = {
             "tx_id": bundle.tx_id,
             "version": bundle.tx_version,
@@ -76,20 +74,28 @@ class AutonomousSolverDaemon:
             "clearing_price_usd": bundle.clearing_price_usd,
             "total_volume_zec": bundle.total_volume_zec,
             "aggregated_binding_pubkey": bundle.aggregated_binding_pubkey_hex,
+            "raw_tx_hex": bundle.raw_tx_hex,
             "action_groups": [
                 {
-                    "group_id": ag.action_group_id,
+                    "group_id": ag.group_id,
                     "intent_id": ag.intent_id,
                     "direction": ag.direction,
-                    "anchor": ag.anchor_root_hex,
+                    "anchor": ag.anchor_hex,
                     "actions": [
                         {
-                            "action_index": a.action_index,
-                            "nullifier": a.nullifier_hex,
-                            "cm_point": a.cm_point_hex,
-                            "cv_point": a.cv_point_hex,
-                            "encrypted_memo": a.encrypted_memo_hex
-                        } for a in ag.actions
+                            "type": "SWAP",
+                            "cv_net": ag.swap_action.cv_net_hex,
+                            "nullifier": ag.swap_action.nullifier_hex,
+                            "rk": ag.swap_action.rk_hex,
+                            "cm_point": ag.swap_action.cm_star_hex,
+                            "encrypted_memo": ag.swap_action.encrypted_memo_hex
+                        },
+                        {
+                            "type": "FEE",
+                            "cv_fee": ag.fee_action.cv_fee_hex,
+                            "matcher_fee_zat": ag.fee_action.matcher_fee_zat,
+                            "miner_fee_zat": ag.fee_action.miner_fee_zat
+                        }
                     ]
                 } for ag in bundle.action_groups
             ]
@@ -99,15 +105,13 @@ class AutonomousSolverDaemon:
         if not success:
             raise RuntimeError(f"Node rejected settlement bundle: {block_hash}")
 
-        # 4. Update Wallets & Balances if provided
+        # 4. Update Wallets & Balances
         if wallets_map:
-            # Buyers receive ZEC and spend USD
             for fill in clear_result.buy_fills:
                 wallet = wallets_map.get(fill.shielded_address)
                 if wallet:
                     wallet.shielded_balance_zat += fill.filled_zat
                     wallet.quote_balance_cents -= int(round(fill.quote_filled_usd * 100))
-            # Sellers spend ZEC and receive USD
             for fill in clear_result.sell_fills:
                 wallet = wallets_map.get(fill.shielded_address)
                 if wallet:
@@ -134,7 +138,8 @@ class AutonomousSolverDaemon:
             "buy_fills_count": len(clear_result.buy_fills),
             "sell_fills_count": len(clear_result.sell_fills),
             "solver_fee_zec": clear_result.solver_fee_zec,
-            "execution_latency_ms": round(elapsed_ms, 2)
+            "execution_latency_ms": round(elapsed_ms, 2),
+            "raw_tx_bytes_len": bundle.raw_tx_bytes_len
         }
         self.solved_history.append(summary)
         return summary
