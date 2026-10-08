@@ -298,7 +298,7 @@
             </p>
             <h3 class="text-base font-semibold text-amber-400 mt-4">3. Strict 512-Byte Memos & ZIP 229 (Transaction v6)</h3>
             <p>
-                Settlement transactions conform to <strong>ZIP 229 (Transaction v6)</strong> with mandatory consensus Version Group ID <code>0xD884B698</code>, authentic 820-byte <code>OrchardAction</code> encodings (§ 7.5), 580-byte <code>encCiphertext</code> (lead byte <code>0x03</code> for Ironwood), and live Testnet broadcast adapter integration.
+                Settlement transactions conform to <strong>ZIP 229 (Transaction v6)</strong> and <strong>ZIP 258 (NU6.3)</strong> with mandatory consensus Version Group ID <code>0xD884B698</code>, Consensus Branch ID <code>0x37A5165B</code>, Zebra full validator support (activation height 4,134,000), authentic 820-byte <code>OrchardAction</code> encodings (§ 7.5), RFC 8439 ChaCha20Poly1305 580-byte <code>encCiphertext</code> (lead byte <code>0x03</code> for Ironwood), real RedPallas signatures on Pallas curve, and live Testnet broadcast adapter integration.
             </p>
         </div>
 

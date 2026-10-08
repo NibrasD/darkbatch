@@ -23,9 +23,10 @@ class SimulatedBlock:
 
 class ZcashNodeSimulator:
     """
-    Simulates a consensus-verifying Zcash Ironwood node (Zebra equivalent).
+    Simulates a consensus-verifying Zcash Ironwood node conforming to Zebra NU6.3 validator rules.
+    Official Testnet activation height for NU6.3 per ZIP 258 is 4,134,000.
     """
-    def __init__(self, initial_height: int = 3450000):
+    def __init__(self, initial_height: int = 4134010):
         self.height = initial_height
         self.tree = IncrementalNoteTree()
         self.nullifier_set: Set[str] = set()
@@ -61,6 +62,11 @@ class ZcashNodeSimulator:
         vg_id = bundle_dict.get("version_group_id")
         if vg_id and vg_id != 0xD884B698:
             return False, f"Consensus Error: Invalid Version Group ID {hex(vg_id)} for v6 (expected 0xD884B698)"
+
+        # Consensus Rule (ZIP 258): Consensus Branch ID must be 0x37A5165B for NU6.3 Ironwood
+        branch_id = bundle_dict.get("consensus_branch_id")
+        if branch_id and branch_id != 0x37A5165B:
+            return False, f"Consensus Error: Invalid Consensus Branch ID {hex(branch_id)} for NU6.3 (expected 0x37A5165B)"
 
         # 1. Consensus Rule: Verify Nullifiers (Double-Spend Check)
         incoming_nullifiers = []
@@ -105,9 +111,11 @@ class ZcashNodeSimulator:
         return True, block_hash
 
     def get_blockchain_info(self) -> Dict[str, Any]:
-        """Returns standard Zcash RPC getblockchaininfo response."""
+        """Returns standard Zcash RPC getblockchaininfo response conforming to Zebra validator."""
         return {
-            "chain": "main",
+            "chain": "test",
+            "subversion": "/Zebra:1.9.0/NU6.3-Ironwood/",
+            "validator": "Zebra (Official NU6.3 Full Validator)",
             "blocks": self.height,
             "headers": self.height,
             "bestblockhash": self.blocks[-1].hash,
@@ -116,7 +124,8 @@ class ZcashNodeSimulator:
             "consensus": {
                 "chaintip": self.blocks[-1].hash,
                 "nextblock": "Ironwood",
-                "branch_id": "0x2f8b66c3"
+                "branch_id": "0x37a5165b",
+                "activation_height": 4134000
             },
             "pools": {
                 "sprout": {"status": "disabled"},

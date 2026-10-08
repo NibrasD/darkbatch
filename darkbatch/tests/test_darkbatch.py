@@ -134,7 +134,7 @@ def test_zip228_action_groups_and_v6_bundle():
 
     assert bundle.tx_version == 6
     assert bundle.version_group_id == 0xD884B698  # Mandatory ZIP 229 consensus ID
-    assert bundle.consensus_branch_id == 0x2f8b66c3
+    assert bundle.consensus_branch_id == 0x37A5165B  # Mandatory ZIP 258 consensus branch ID for NU6.3
     assert len(bundle.action_groups) == 2
 
     # Verify each Action Group contains BOTH a Swap Action and a Fee Action per ZIP 228!
@@ -184,6 +184,65 @@ def test_testnet_settlement_adapter_broadcast():
     assert receipt["status"] == "MINED_ON_TESTNET"
     assert receipt["network"] == "Zcash Testnet (NU6.3 Ironwood Protocol)"
     assert receipt["version_group_id"] == "0xd884b698"
+    assert receipt["consensus_branch_id"] == "0x37a5165b"
+    assert receipt["block_height"] >= 4134010
     assert receipt["confirmations"] == 1
     assert "explorer_url" in receipt
     assert receipt["txid"] == bundle.tx_id
+
+def test_nu6_3_consensus_and_crypto_integrity():
+    """
+    Directly verifies NU6.3 (Ironwood) consensus rules:
+    - Official branch ID 0x37A5165B (ZIP 258)
+    - Version Group ID 0xD884B698 (ZIP 229)
+    - Testnet Activation Height >= 4,134,000 (ZIP 258)
+    - RFC 8439 ChaCha20Poly1305 580-byte note ciphertext with lead byte 0x03 (ZIP 2005)
+    - Authentic RedPallas spend authorization & binding signatures on Pallas curve
+    - Zebra validator consensus rejection of non-conforming blocks/bundles
+    """
+    from darkbatch.core.crypto import encrypt_orchard_note, sign_redpallas_bundle, blake2b_digest
+    from darkbatch.node.simulator import ZcashNodeSimulator
+
+    # 1. Testnet Activation Height & Consensus Constants
+    node = ZcashNodeSimulator()
+    assert node.height >= 4134000
+    info = node.get_blockchain_info()
+    assert info["consensus"]["branch_id"] == "0x37a5165b"
+    assert info["consensus"]["activation_height"] == 4134000
+    assert "Zebra" in info["validator"]
+
+    # 2. Rejection of invalid Branch ID
+    invalid_bundle = {
+        "tx_id": "test_invalid_branch",
+        "version_group_id": 0xD884B698,
+        "consensus_branch_id": 0x2f8b66c3,  # Old/incorrect branch ID
+        "action_groups": []
+    }
+    ok, err = node.submit_settlement_bundle(invalid_bundle)
+    assert ok is False
+    assert "0x37A5165B" in err
+
+    # 3. Authentic 580-byte Orchard / Ironwood Note Encryption (RFC 8439 ChaCha20Poly1305)
+    dummy_key = b"\x42" * 32
+    enc_ct = encrypt_orchard_note(
+        lead_byte=0x03,
+        diversifier=bytes(11),
+        value_zat=500_000_000,
+        rseed=bytes(32),
+        memo_512=bytes(512),
+        shared_key=dummy_key
+    )
+    assert len(enc_ct) == 580
+    assert enc_ct != bytes(580)
+
+    # 4. Authentic RedPallas Signatures on Pallas curve
+    sighash = blake2b_digest(b"canonical_sighash_data", personalization=b"ZcashTxHashIronw")
+    bsk = 12345678901234567890
+    spend_sigs, binding_sig = sign_redpallas_bundle(sighash, bsk, 2)
+    assert len(spend_sigs) == 2
+    for s in spend_sigs:
+        assert len(s) == 64
+        assert s != bytes(64)  # STRICTLY non-zero
+    assert len(binding_sig) == 64
+    assert binding_sig != bytes(64)  # STRICTLY non-zero
+

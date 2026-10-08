@@ -58,8 +58,9 @@ use ff::PrimeField;
 
 /// Generates a random Pallas scalar for blinding or secret keys
 pub fn random_scalar() -> Scalar {
+    use rand::Rng;
     let mut bytes = [0u8; 64];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let h = blake2b_simd::Params::new()
         .hash_length(32)
         .personal(b"DarkBatchScalarR")

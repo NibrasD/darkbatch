@@ -73,7 +73,7 @@ def create_intent(
     zec_amount: float,
     limit_price_usd: float,
     shielded_address: str,
-    current_height: int = 3450000,
+    current_height: int = 4134010,
     validity_blocks: int = 120,
     private_key: Optional[ed25519.Ed25519PrivateKey] = None
 ) -> SwapOrderIntent:

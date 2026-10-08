@@ -15,7 +15,7 @@ from darkbatch.core.crypto import CURVE_ORDER
 
 def test_full_system_lifecycle():
     # 1. Setup simulated Ironwood Node and Autonomous Solver Daemon
-    node = ZcashNodeSimulator(initial_height=3450000)
+    node = ZcashNodeSimulator(initial_height=4134010)
     solver = AutonomousSolverDaemon(node, solver_fee_bps=10)
     initial_anchor = node.current_anchor()
     assert len(initial_anchor) == 64
@@ -68,7 +68,7 @@ def test_full_system_lifecycle():
     assert result["cleared_zec"] == 15.0
     # Uniform price should be within [41.50, 43.50]
     assert 41.50 <= result["clearing_price_usd"] <= 43.50
-    assert result["block_height"] == 3450001
+    assert result["block_height"] == 4134011
     assert result["tx_id"] is not None
 
     # 7. Verify Blockchain State & Mining

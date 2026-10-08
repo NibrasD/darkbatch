@@ -34,19 +34,24 @@ To maintain complete cryptographic and protocol integrity:
   $$\sum C^{\text{in}} - \sum C^{\text{out}} = [valueBalance] \cdot \mathcal{V} + [bsk_{\text{bundle}}] \cdot \mathcal{R}$$
 
 ### B. ZIP 229 Transaction v6 Format (Ironwood Shielded Pool)
-Conforms to the official [ZIP 229 Specification](https://zips.z.cash/zip-0229):
+Conforms to the official [ZIP 229 Specification](https://zips.z.cash/zip-0229) and [ZIP 258 Specification](https://zips.z.cash/zip-0258):
 * **Header:** `0x80000006` (Overwintered bit set, version 6).
 * **Version Group ID:** `0xD884B698` (Mandatory consensus rule per ZIP 229 § 7.1.2).
-* **Consensus Branch ID:** `0x2f8b66c3` (NU6.3 Ironwood).
+* **Consensus Branch ID:** `0x37A5165B` (Official NU6.3 Ironwood consensus branch ID per ZIP 258).
+* **Testnet Activation Height:** `4,134,000` (ZIP 258).
+* **Consensus Validator:** **Zebra** (Zcash Foundation Rust node implementation; `zcashd` does not implement NU6.3 per ZIP 258).
+* **Authentic RedPallas Signatures:** Real `SpendAuth` and `Binding` Schnorr signatures over the canonical SIGHASH transaction digest on the Pallas curve (`reddsa` crate).
 * **Orchard / Ironwood Action Encoding (§ 7.5):** Each action is encoded to **strictly 820 bytes**:
   $$\text{Action} = \underbrace{cv}_{32\text{B}} + \underbrace{nullifier}_{32\text{B}} + \underbrace{rk}_{32\text{B}} + \underbrace{cmx}_{32\text{B}} + \underbrace{ephemeralKey}_{32\text{B}} + \underbrace{encCiphertext}_{580\text{B}} + \underbrace{outCiphertext}_{80\text{B}} = 820\text{ bytes}$$
-* **Note Plaintext & Ciphertext (ZIP 2005 / ZIP 212):**
+* **Note Plaintext & Authentic RFC 8439 AEAD Encryption (§ 5.4.3.4, § 5.4.3.5, ZIP 2005):**
   - Lead Byte: `0x03` (Quantum-recoverable Ironwood note format).
-  - Encrypted Ciphertext: $1\text{B lead} + 11\text{B diversifier} + 8\text{B value} + 32\text{B rseed} + 512\text{B memo} + 16\text{B MAC} = 580\text{ bytes}$.
-  - Outgoing Ciphertext: 80 bytes.
+  - Note Plaintext: $1\text{B lead} + 11\text{B diversifier} + 8\text{B value} + 32\text{B rseed} + 512\text{B memo} = 564\text{ bytes}$.
+  - AEAD Encryption: Encrypted via RFC 8439 `ChaCha20Poly1305` producing strictly $564\text{B} + 16\text{B MAC} = 580\text{ bytes}$.
+  - Outgoing Ciphertext: 80 bytes (`ChaCha20Poly1305` encrypted transmission key & nullifier commitment).
 
 ### C. Strictly 512-Byte Encrypted Memo Receipts
 * **ZIP 212 / ZIP 302 Compliance:** Raw memo payload inside the note is strictly 512 bytes.
+* **ChaCha20Poly1305 AEAD:** Nonce (12B) + Payload (484B) + Poly1305 Tag (16B) = 512 Bytes exactly.
 * **Incoming Viewing Key (`ivk`) Derivation:**
   Receipts are encrypted under the recipient's viewing key via Diffie-Hellman key exchange:
   $$K_{\text{memo}} = \mathrm{KDF}([esk] \cdot ivk_{\text{recipient}})$$

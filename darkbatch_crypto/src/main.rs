@@ -76,7 +76,7 @@ fn main() {
                         matcher_fee_zat: 100_000,
                         miner_fee_zat: 10_000,
                     },
-                    expiry_height: 3450100,
+                    expiry_height: 4134100,
                     bsk_share_hex: hex::encode(r.to_repr()),
                 },
             };
@@ -108,18 +108,54 @@ fn main() {
                         matcher_fee_zat: 100_000,
                         miner_fee_zat: 10_000,
                     },
-                    expiry_height: 3450100,
+                    expiry_height: 4134100,
                     bsk_share_hex: hex::encode(r.to_repr()),
                 },
             };
 
             let bundle = SwapBundle::new(vec![order1, order2], 42.50, 100_000_000).expect("Bundle failed");
-            let tx = TransactionV6::from_swap_bundle(bundle, 3450100, [99u8; 32]);
+            let tx = TransactionV6::from_swap_bundle(bundle, 4134100, [99u8; 32]);
             println!("{}", serde_json::json!({
                 "tx_id": hex::encode(tx.tx_id()),
                 "header_version": format!("0x{:08x}", tx.header),
                 "raw_bytes_len": tx.raw_tx_bytes.len(),
                 "raw_tx_hex": tx.to_hex()
+            }));
+        }
+        "sign-bundle" => {
+            let sighash_hex = args.get(2).cloned().unwrap_or_default();
+            let bsk_hex = args.get(3).cloned().unwrap_or_default();
+            let n_actions: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
+
+            let sighash_bytes = hex::decode(&sighash_hex).unwrap_or_else(|_| vec![0u8; 32]);
+            let mut sighash_arr = [0u8; 32];
+            if sighash_bytes.len() >= 32 {
+                sighash_arr.copy_from_slice(&sighash_bytes[..32]);
+            }
+
+            let bsk_bytes = hex::decode(&bsk_hex).unwrap_or_else(|_| vec![0u8; 32]);
+            let mut bsk_arr = [0u8; 32];
+            if bsk_bytes.len() >= 32 {
+                bsk_arr.copy_from_slice(&bsk_bytes[..32]);
+            }
+
+            let mut rng = rand::rng();
+            let mut spend_sigs = Vec::new();
+            for _ in 0..n_actions {
+                let sk = reddsa::SigningKey::<reddsa::orchard::SpendAuth>::new(&mut rng);
+                let sig = sk.sign(&mut rng, &sighash_arr);
+                let sig_bytes: [u8; 64] = sig.into();
+                spend_sigs.push(hex::encode(sig_bytes));
+            }
+
+            let bsk_sk = reddsa::SigningKey::<reddsa::orchard::Binding>::from_bytes(&bsk_arr)
+                .unwrap_or_else(|_| reddsa::SigningKey::new(&mut rng));
+            let binding_sig = bsk_sk.sign(&mut rng, &sighash_arr);
+            let binding_sig_bytes: [u8; 64] = binding_sig.into();
+
+            println!("{}", serde_json::json!({
+                "spend_auth_sigs": spend_sigs,
+                "binding_sig": hex::encode(binding_sig_bytes)
             }));
         }
         _ => {

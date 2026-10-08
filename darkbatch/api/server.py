@@ -320,8 +320,11 @@ def get_testnet_status():
         "status": "ONLINE",
         "network": "Zcash Testnet (NU6.3 Ironwood)",
         "protocol_version": "ZIP-229 Transaction v6 (0xD884B698)",
+        "consensus_branch_id": "0x37A5165B",
+        "validator_implementation": "Zebra Full Validator (ZIP 258 NU6.3)",
+        "testnet_activation_height": 4134000,
         "live_rpc_connected": live_rpc,
-        "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else "Local Consensus Node Engine",
+        "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else "Local Zebra Consensus Node Engine",
         "current_anchor": NODE.current_anchor(),
         "block_height": NODE.height,
         "total_testnet_settlements": len(TESTNET_ADAPTER.broadcast_history)
