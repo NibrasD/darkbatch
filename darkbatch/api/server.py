@@ -1,0 +1,297 @@
+"""
+DarkBatch Persistent Coordinator API Server
+Integrated with SQLite repository, real-time WebSockets, and interactive multi-wallet frontend.
+"""
+
+import asyncio
+from contextlib import asynccontextmanager
+import os
+import time
+from typing import Dict, List, Optional, Any
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+
+from darkbatch.core.repo import (
+    list_wallets,
+    get_wallet,
+    save_intent,
+    get_pending_intents,
+    mark_intents_settled,
+    get_active_epoch_id,
+    record_epoch_clear,
+    get_epoch_history,
+    update_wallet_balance
+)
+from darkbatch.core.wallet import ShieldedWallet
+from darkbatch.core.intent import SwapOrderIntent, OrderDirection, create_intent
+from darkbatch.node.simulator import ZcashNodeSimulator
+from darkbatch.solver.engine import AutonomousSolverDaemon
+
+# Global node and solver
+NODE = ZcashNodeSimulator()
+SOLVER = AutonomousSolverDaemon(NODE)
+
+class IntentSubmitRequest(BaseModel):
+    direction: OrderDirection
+    zec_amount: float
+    limit_price_usd: float
+    shielded_address: str
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(connection)
+
+manager = ConnectionManager()
+EPOCH_DURATION_SECONDS = 30
+epoch_start_time = time.time()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Background epoch ticker task
+    async def epoch_ticker():
+        global epoch_start_time
+        while True:
+            await asyncio.sleep(1)
+            elapsed = time.time() - epoch_start_time
+            remaining = max(0.0, EPOCH_DURATION_SECONDS - elapsed)
+            epoch_id = get_active_epoch_id()
+            await manager.broadcast({
+                "type": "TICK",
+                "epoch_id": epoch_id,
+                "seconds_remaining": round(remaining, 1),
+                "pending_count": len(get_pending_intents())
+            })
+            if remaining <= 0.0:
+                pending = get_pending_intents()
+                if pending:
+                    # Auto-clear batch on epoch expiry
+                    res = SOLVER.run_epoch_settlement(epoch_id, pending)
+                    if res.get("status") == "SETTLED_AND_MINED":
+                        record_epoch_clear(
+                            epoch_id=epoch_id,
+                            clearing_price_usd=res["clearing_price_usd"],
+                            total_cleared_zec=res["cleared_zec"],
+                            total_cleared_usd=res["cleared_usd"],
+                            tx_id=res["tx_id"],
+                            block_hash=res["block_hash"]
+                        )
+                        mark_intents_settled([i.intent_id for i in pending])
+                    await manager.broadcast({
+                        "type": "EPOCH_CLEARED",
+                        "epoch_id": epoch_id,
+                        "result": res
+                    })
+                epoch_start_time = time.time()
+
+    ticker_task = asyncio.create_task(epoch_ticker())
+    yield
+    ticker_task.cancel()
+
+app = FastAPI(
+    title="DarkBatch Protocol API",
+    description="Confidential Intent-Based Batch Auction & RFQ for Shielded Zcash (Ironwood Era)",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.websocket("/ws/feed")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep-alive receive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.get("/api/v1/health")
+def get_health():
+    elapsed = time.time() - epoch_start_time
+    remaining = max(0.0, EPOCH_DURATION_SECONDS - elapsed)
+    epoch_id = get_active_epoch_id()
+    pending = get_pending_intents()
+    return {
+        "status": "ONLINE",
+        "network": "Zcash Ironwood (NU6.3)",
+        "protocol_version": "ZIP-228 / ZIP-229 v6",
+        "current_epoch": epoch_id,
+        "seconds_until_clear": round(remaining, 1),
+        "pending_intent_count": len(pending),
+        "total_blocks_mined": len(NODE.blocks),
+        "ironwood_anchor": NODE.current_anchor()
+    }
+
+@app.get("/api/v1/wallets")
+def get_all_wallets():
+    return {"wallets": list_wallets()}
+
+@app.post("/api/v1/intent")
+async def submit_intent(req: IntentSubmitRequest):
+    intent = create_intent(
+        direction=req.direction,
+        zec_amount=req.zec_amount,
+        limit_price_usd=req.limit_price_usd,
+        shielded_address=req.shielded_address
+    )
+    epoch_id = get_active_epoch_id()
+    save_intent(intent, epoch_id)
+
+    # Broadcast event to connected frontend clients
+    await manager.broadcast({
+        "type": "NEW_INTENT",
+        "direction": intent.direction.value,
+        "amount_zec": intent.base_amount_zec,
+        "limit_usd": intent.limit_price_usd,
+        "commitment": intent.value_commitment[:16] + "..."
+    })
+
+    return {
+        "status": "ACCEPTED",
+        "intent_id": intent.intent_id,
+        "epoch": epoch_id,
+        "commitment": intent.value_commitment,
+        "bsk_share_hex": hex(intent.bsk_share)[:18] + "...",
+        "expiry_height": intent.expiry_height
+    }
+
+@app.get("/api/v1/epoch/current")
+def get_current_epoch():
+    elapsed = time.time() - epoch_start_time
+    remaining = max(0.0, EPOCH_DURATION_SECONDS - elapsed)
+    epoch_id = get_active_epoch_id()
+    pending = get_pending_intents()
+
+    buys = [
+        {"id": i.intent_id, "amount_zec": i.base_amount_zec, "limit_usd": i.limit_price_usd, "commitment": i.value_commitment[:16] + "...", "address": i.shielded_address}
+        for i in pending if i.direction == OrderDirection.BUY_ZEC
+    ]
+    sells = [
+        {"id": i.intent_id, "amount_zec": i.base_amount_zec, "limit_usd": i.limit_price_usd, "commitment": i.value_commitment[:16] + "...", "address": i.shielded_address}
+        for i in pending if i.direction == OrderDirection.SELL_ZEC
+    ]
+
+    return {
+        "epoch_id": epoch_id,
+        "seconds_remaining": round(remaining, 1),
+        "pending_buys": buys,
+        "pending_sells": sells,
+        "total_pending_volume_zec": sum(i.base_amount_zec for i in pending)
+    }
+
+@app.post("/api/v1/epoch/clear")
+async def clear_current_epoch():
+    global epoch_start_time
+    epoch_id = get_active_epoch_id()
+    pending = get_pending_intents()
+
+    if not pending:
+        return {"status": "EMPTY", "message": "No pending orders to clear."}
+
+    res = SOLVER.run_epoch_settlement(epoch_id, pending)
+    
+    if res.get("status") == "SETTLED_AND_MINED":
+        record_epoch_clear(
+            epoch_id=epoch_id,
+            clearing_price_usd=res["clearing_price_usd"],
+            total_cleared_zec=res["cleared_zec"],
+            total_cleared_usd=res["cleared_usd"],
+            tx_id=res["tx_id"],
+            block_hash=res["block_hash"]
+        )
+        mark_intents_settled([i.intent_id for i in pending])
+
+    epoch_start_time = time.time()
+
+    await manager.broadcast({
+        "type": "EPOCH_CLEARED",
+        "epoch_id": epoch_id,
+        "result": res
+    })
+
+    return {
+        "status": "CLEARED",
+        "cleared_epoch": epoch_id,
+        "result": res
+    }
+
+@app.get("/api/v1/epoch/history")
+def get_history():
+    return {"history": get_epoch_history()}
+
+@app.get("/api/v1/node/blocks")
+def get_node_blocks():
+    return {"blocks": [
+        {
+            "height": b.height,
+            "hash": b.hash,
+            "prev_hash": b.prev_hash,
+            "timestamp": b.timestamp,
+            "anchor_root": b.anchor_root,
+            "tx_count": b.tx_count,
+            "transactions": b.transactions
+        } for b in NODE.blocks
+    ]}
+
+@app.post("/api/v1/demo/seed")
+async def seed_demo():
+    epoch_id = get_active_epoch_id()
+    wallets = list_wallets()
+    if not wallets:
+        return {"status": "NO_WALLETS"}
+
+    w_alice = wallets[0]["unified_address"]
+    w_bob = wallets[1]["unified_address"] if len(wallets) > 1 else w_alice
+    w_whale = wallets[2]["unified_address"] if len(wallets) > 2 else w_alice
+    w_maker = wallets[3]["unified_address"] if len(wallets) > 3 else w_bob
+
+    orders = [
+        (OrderDirection.BUY_ZEC, 20.0, 43.60, w_bob),
+        (OrderDirection.BUY_ZEC, 35.0, 42.90, w_whale),
+        (OrderDirection.BUY_ZEC, 15.0, 41.80, w_alice),
+        (OrderDirection.SELL_ZEC, 25.0, 41.50, w_maker),
+        (OrderDirection.SELL_ZEC, 20.0, 42.30, w_alice),
+        (OrderDirection.SELL_ZEC, 25.0, 44.00, w_whale),
+    ]
+
+    for direction, zec, price, addr in orders:
+        intent = create_intent(direction, zec, price, addr)
+        save_intent(intent, epoch_id)
+
+    await manager.broadcast({"type": "SEEDED", "epoch_id": epoch_id})
+
+    return {
+        "status": "SEEDED",
+        "orders_added": len(orders),
+        "total_zec_volume": sum(o[1] for o in orders)
+    }
+
+@app.get("/", response_class=HTMLResponse)
+def serve_dashboard():
+    html_path = os.path.join(os.path.dirname(__file__), "..", "web", "index.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return f.read()

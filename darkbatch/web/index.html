@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DarkBatch — Confidential Intent-Based Batch Auction (Zcash Ironwood)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #080c14;
+            color: #e2e8f0;
+        }
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .glow-zec {
+            box-shadow: 0 0 30px rgba(245, 158, 11, 0.12);
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-amber-500 selection:text-slate-950">
+
+    <!-- Top Navbar -->
+    <header class="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 via-amber-400 to-yellow-300 flex items-center justify-center shadow-lg shadow-amber-500/25">
+                    <span class="text-slate-950 font-black text-xl">ⓩ</span>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-lg font-bold tracking-tight text-white">DarkBatch</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Ironwood NU6.3</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">ZIP-228 / v6</span>
+                    </div>
+                    <p class="text-xs text-slate-400">Frequent Batch Auction & MEV-Free Shielded Swaps</p>
+                </div>
+            </div>
+
+            <!-- Global Epoch & Countdown -->
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-3 bg-slate-900 border border-slate-800 px-3.5 py-1.5 rounded-xl text-xs mono">
+                    <div class="flex items-center gap-1.5">
+                        <span id="ws-indicator" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span class="text-slate-400">Epoch:</span>
+                        <strong id="header-epoch" class="text-amber-400">#1</strong>
+                    </div>
+                    <span class="text-slate-700">|</span>
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-slate-400">Clearing In:</span>
+                        <strong id="header-countdown" class="text-white">30.0s</strong>
+                    </div>
+                </div>
+
+                <!-- Wallet Switcher -->
+                <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl">
+                    <span class="text-xs text-slate-400">Wallet:</span>
+                    <select id="wallet-select" onchange="onWalletChange()" class="bg-slate-950 text-amber-400 text-xs font-semibold rounded-lg px-2 py-1 border border-slate-700 focus:outline-none">
+                        <option value="alice">Alice (Trader)</option>
+                        <option value="bob">Bob (Buyer)</option>
+                        <option value="whale">Whale (LP)</option>
+                        <option value="maker">Maker (Desk)</option>
+                    </select>
+                </div>
+
+                <button onclick="seedDemoLiquidity()" class="bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-bold px-3 py-2 rounded-xl border border-amber-500/30 transition flex items-center gap-1.5">
+                    <span>⚡</span> Seed Pool
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="max-w-7xl mx-auto px-6 py-6 flex-1 w-full space-y-6">
+
+        <!-- Navigation Tabs -->
+        <div class="flex border-b border-slate-800 text-sm">
+            <button onclick="switchTab('terminal')" id="tab-terminal" class="py-2.5 px-4 font-semibold text-amber-400 border-b-2 border-amber-400">
+                Trading & Sealed Intents
+            </button>
+            <button onclick="switchTab('depth')" id="tab-depth" class="py-2.5 px-4 font-semibold text-slate-400 hover:text-white border-b-2 border-transparent">
+                Equilibrium Depth Curve
+            </button>
+            <button onclick="switchTab('explorer')" id="tab-explorer" class="py-2.5 px-4 font-semibold text-slate-400 hover:text-white border-b-2 border-transparent">
+                Ironwood Block Explorer
+            </button>
+            <button onclick="switchTab('spec')" id="tab-spec" class="py-2.5 px-4 font-semibold text-slate-400 hover:text-white border-b-2 border-transparent">
+                Whitepaper & ZIP-228 Specs
+            </button>
+        </div>
+
+        <!-- TAB 1: TRADING & SEALED INTENTS -->
+        <div id="view-terminal" class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+            <!-- Left Form (4 Cols) -->
+            <div class="lg:col-span-4 space-y-5">
+                <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 glow-zec">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-sm font-bold text-white flex items-center gap-2">
+                            <span>🛡️</span> Submit Shielded Intent
+                        </h2>
+                        <span id="active-wallet-tag" class="text-[11px] text-amber-400 mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Alice</span>
+                    </div>
+
+                    <!-- Wallet Balance Card -->
+                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800/80 mb-4 text-xs space-y-1">
+                        <div class="flex justify-between text-slate-400">
+                            <span>Shielded Balance:</span>
+                            <span id="wallet-zec-bal" class="mono text-white font-bold">150.0000 ZEC</span>
+                        </div>
+                        <div class="flex justify-between text-slate-400">
+                            <span>Settlement Liquidity:</span>
+                            <span id="wallet-usd-bal" class="mono text-amber-400 font-bold">$10,000.00 USD</span>
+                        </div>
+                    </div>
+
+                    <!-- Buy/Sell Switch -->
+                    <div class="grid grid-cols-2 gap-2 p-1 bg-slate-950 rounded-xl mb-4 border border-slate-800">
+                        <button id="btn-buy" onclick="setDirection('BUY_ZEC')" class="py-2 text-xs font-bold rounded-lg transition bg-amber-500 text-slate-950">
+                            BUY ZEC
+                        </button>
+                        <button id="btn-sell" onclick="setDirection('SELL_ZEC')" class="py-2 text-xs font-bold rounded-lg transition text-slate-400 hover:text-white">
+                            SELL ZEC
+                        </button>
+                    </div>
+
+                    <form onsubmit="submitIntent(event)" class="space-y-3.5">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Amount (ZEC)</label>
+                            <input id="input-amount" type="number" step="0.1" value="10.0" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm mono text-white focus:outline-none focus:border-amber-500 transition">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Limit Price (USD per ZEC)</label>
+                            <input id="input-price" type="number" step="0.01" value="42.50" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm mono text-white focus:outline-none focus:border-amber-500 transition">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Shielded Receiver UA</label>
+                            <input id="input-address" type="text" readonly class="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2 text-[11px] mono text-slate-400 truncate">
+                        </div>
+
+                        <div class="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl text-xs space-y-1">
+                            <div class="flex justify-between text-slate-400">
+                                <span>Commitment Scheme:</span>
+                                <span class="mono text-amber-400">v*G + r*H (Pedersen)</span>
+                            </div>
+                            <div class="flex justify-between text-slate-400">
+                                <span>ZIP-228 Binding Key:</span>
+                                <span class="mono text-emerald-400">bsk_i Generated</span>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="w-full py-3 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-slate-950 font-bold rounded-xl text-sm transition shadow-lg shadow-amber-500/20">
+                            Sign & Commit Intent
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Right: Live Mempool & Latest Settlement (8 Cols) -->
+            <div class="lg:col-span-8 space-y-5">
+                <!-- Epoch Header Banner -->
+                <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Batch Auction Pool</span>
+                        <div class="flex items-baseline gap-3 mt-1">
+                            <span class="text-2xl font-bold text-white mono" id="banner-epoch">Epoch #1</span>
+                            <span class="text-xs text-emerald-400 font-semibold" id="banner-pending-count">0 sealed orders</span>
+                        </div>
+                    </div>
+                    <button onclick="clearEpochNow()" class="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 shadow-lg shadow-amber-500/20">
+                        <span>⚖️</span> Force Solve & Clear Epoch
+                    </button>
+                </div>
+
+                <!-- Orderbook Columns -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Buys -->
+                    <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400"></span> BUY INTENTS (BIDS)
+                            </h3>
+                            <span id="buy-count" class="text-xs mono text-slate-400">0 orders</span>
+                        </div>
+                        <div id="buy-list" class="space-y-2 max-h-48 overflow-y-auto pr-1 text-xs mono">
+                            <div class="text-slate-600 text-center py-6">No pending buy intents</div>
+                        </div>
+                    </div>
+
+                    <!-- Sells -->
+                    <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-xs font-bold text-rose-400 flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-rose-400"></span> SELL INTENTS (ASKS)
+                            </h3>
+                            <span id="sell-count" class="text-xs mono text-slate-400">0 orders</span>
+                        </div>
+                        <div id="sell-list" class="space-y-2 max-h-48 overflow-y-auto pr-1 text-xs mono">
+                            <div class="text-slate-600 text-center py-6">No pending sell intents</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settlement Bundle Output Box -->
+                <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h3 class="text-sm font-bold text-white">Latest Settlement Bundle (ZIP 228 / v6)</h3>
+                            <p class="text-xs text-slate-400">Settled into Ironwood Shielded Pool</p>
+                        </div>
+                        <span id="settlement-status" class="px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            Ready
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="text-slate-500 uppercase text-[10px]">Uniform Price P*</span>
+                            <p id="res-price" class="text-base font-bold text-amber-400 mono mt-0.5">$0.00</p>
+                        </div>
+                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="text-slate-500 uppercase text-[10px]">Cleared Volume</span>
+                            <p id="res-volume" class="text-base font-bold text-white mono mt-0.5">0.00 ZEC</p>
+                        </div>
+                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="text-slate-500 uppercase text-[10px]">Settled Value USD</span>
+                            <p id="res-usd" class="text-base font-bold text-white mono mt-0.5">$0.00</p>
+                        </div>
+                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
+                            <span class="text-slate-500 uppercase text-[10px]">Solver Latency</span>
+                            <p id="res-latency" class="text-base font-bold text-emerald-400 mono mt-0.5">0.0 ms</p>
+                        </div>
+                    </div>
+
+                    <div class="p-3.5 bg-slate-950 rounded-xl border border-slate-800/80 text-xs mono space-y-1.5 text-slate-400">
+                        <div class="flex justify-between truncate">
+                            <span>Bundle TXID:</span>
+                            <span id="res-txid" class="text-slate-200">Awaiting execution...</span>
+                        </div>
+                        <div class="flex justify-between truncate">
+                            <span>Mined Block Hash:</span>
+                            <span id="res-block" class="text-amber-400/90 truncate max-w-xs">None</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- TAB 2: EQUILIBRIUM DEPTH CURVE -->
+        <div id="view-depth" class="hidden bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <div>
+                <h2 class="text-base font-bold text-white">Uniform Price Equilibrium Curve (Frequent Batch Auction)</h2>
+                <p class="text-xs text-slate-400">Displays the cumulative demand vs supply intersection where P* maximizes executed volume without front-running.</p>
+            </div>
+            <div class="h-96 w-full">
+                <canvas id="depthChart"></canvas>
+            </div>
+        </div>
+
+        <!-- TAB 3: IRONWOOD BLOCK EXPLORER -->
+        <div id="view-explorer" class="hidden space-y-5">
+            <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
+                <h2 class="text-base font-bold text-white mb-1">Ironwood Shielded Block Explorer</h2>
+                <p class="text-xs text-slate-400 mb-4">Mined blocks and shielded Action Groups containing 512-byte encrypted memos.</p>
+                <div id="blocks-list" class="space-y-3">
+                    <div class="text-center text-slate-500 py-8 text-xs">Loading blocks...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 4: WHITEPAPER & SPECIFICATIONS -->
+        <div id="view-spec" class="hidden bg-slate-900/70 border border-slate-800 rounded-2xl p-6 text-sm text-slate-300 space-y-4 leading-relaxed">
+            <h2 class="text-lg font-bold text-white">DarkBatch: Technical Whitepaper & Architectural Summary</h2>
+            <p>
+                DarkBatch brings the venture-backed market structure innovation of <strong>Archer Exchange</strong> (4th Place DeFi in Colosseum Cypherpunk) directly to <strong>Zcash NU6.3 (Ironwood Era)</strong>.
+            </p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Why Frequent Batch Auctions (FBA)?</h3>
+            <p>
+                Continuous order books suffer from latency wars and MEV (Miner Extractable Value) where front-running bots steal spread from institutional traders. DarkBatch aggregates limit intents over discrete 30-second epochs. Arrival order is irrelevant. The solver determines a single <em>Uniform Clearing Price P*</em> where aggregate demand meets supply.
+            </p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">2. ZIP-228 Shielded Swaps & Action Groups</h3>
+            <p>
+                Each Swap Order (SO) forms an <code>ActionGroup</code>. The binding keys are summed up ($bsk_{\text{bundle}} = \sum bsk_i \pmod q$), proving that the bundle conserves value on-chain without disclosing individual amounts or counterparties.
+            </p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Ironwood Post-Orchard Compatibility</h3>
+            <p>
+                Settlement transactions conform to <strong>ZIP 229 (Transaction v6)</strong> targeting the Ironwood shielded pool, with 512-byte ChaCha20-Poly1305 encrypted execution receipts.
+            </p>
+        </div>
+
+    </main>
+
+    <script>
+        let currentDirection = 'BUY_ZEC';
+        let currentWallet = 'alice';
+        let wallets = {};
+        let depthChart = null;
+
+        function switchTab(tabId) {
+            ['terminal', 'depth', 'explorer', 'spec'].forEach(t => {
+                document.getElementById('view-' + t).classList.add('hidden');
+                document.getElementById('tab-' + t).className = 'py-2.5 px-4 font-semibold text-slate-400 hover:text-white border-b-2 border-transparent';
+            });
+            document.getElementById('view-' + tabId).classList.remove('hidden');
+            document.getElementById('tab-' + tabId).className = 'py-2.5 px-4 font-semibold text-amber-400 border-b-2 border-amber-400';
+            if (tabId === 'depth') renderDepthChart();
+            if (tabId === 'explorer') loadExplorer();
+        }
+
+        function setDirection(dir) {
+            currentDirection = dir;
+            const bBuy = document.getElementById('btn-buy');
+            const bSell = document.getElementById('btn-sell');
+            if (dir === 'BUY_ZEC') {
+                bBuy.className = 'py-2 text-xs font-bold rounded-lg transition bg-amber-500 text-slate-950';
+                bSell.className = 'py-2 text-xs font-bold rounded-lg transition text-slate-400 hover:text-white';
+            } else {
+                bSell.className = 'py-2 text-xs font-bold rounded-lg transition bg-amber-500 text-slate-950';
+                bBuy.className = 'py-2 text-xs font-bold rounded-lg transition text-slate-400 hover:text-white';
+            }
+        }
+
+        async function fetchWallets() {
+            try {
+                const res = await fetch('/api/v1/wallets');
+                const data = await res.json();
+                wallets = {};
+                data.wallets.forEach(w => wallets[w.alias] = w);
+                updateWalletUI();
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function onWalletChange() {
+            currentWallet = document.getElementById('wallet-select').value;
+            updateWalletUI();
+        }
+
+        function updateWalletUI() {
+            const w = wallets[currentWallet];
+            if (!w) return;
+            document.getElementById('active-wallet-tag').innerText = w.alias.toUpperCase();
+            document.getElementById('wallet-zec-bal').innerText = w.shielded_balance_zec.toFixed(4) + ' ZEC';
+            document.getElementById('wallet-usd-bal').innerText = '$' + w.quote_balance_usd.toLocaleString('en-US', {minimumFractionDigits: 2});
+            document.getElementById('input-address').value = w.unified_address;
+        }
+
+        async function fetchEpoch() {
+            try {
+                const res = await fetch('/api/v1/epoch/current');
+                const data = await res.json();
+                document.getElementById('header-epoch').innerText = '#' + data.epoch_id;
+                document.getElementById('banner-epoch').innerText = 'Epoch #' + data.epoch_id;
+                document.getElementById('header-countdown').innerText = data.seconds_remaining + 's';
+                document.getElementById('banner-pending-count').innerText = (data.pending_buys.length + data.pending_sells.length) + ' sealed orders';
+                renderOrderLists(data.pending_buys, data.pending_sells);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderOrderLists(buys, sells) {
+            const bList = document.getElementById('buy-list');
+            const sList = document.getElementById('sell-list');
+            document.getElementById('buy-count').innerText = buys.length + ' orders';
+            document.getElementById('sell-count').innerText = sells.length + ' orders';
+
+            bList.innerHTML = buys.length === 0 ? '<div class="text-slate-600 text-center py-6">No pending buy intents</div>' :
+                buys.map(b => `
+                    <div class="p-2 bg-slate-950 rounded-lg border border-emerald-500/20 flex justify-between items-center">
+                        <div>
+                            <span class="text-emerald-400 font-bold">${b.amount_zec} ZEC</span>
+                            <span class="text-[10px] text-slate-500 block truncate max-w-[120px]">${b.commitment}</span>
+                        </div>
+                        <span class="text-white font-semibold">≤ $${b.limit_usd.toFixed(2)}</span>
+                    </div>
+                `).join('');
+
+            sList.innerHTML = sells.length === 0 ? '<div class="text-slate-600 text-center py-6">No pending sell intents</div>' :
+                sells.map(s => `
+                    <div class="p-2 bg-slate-950 rounded-lg border border-rose-500/20 flex justify-between items-center">
+                        <div>
+                            <span class="text-rose-400 font-bold">${s.amount_zec} ZEC</span>
+                            <span class="text-[10px] text-slate-500 block truncate max-w-[120px]">${s.commitment}</span>
+                        </div>
+                        <span class="text-white font-semibold">≥ $${s.limit_usd.toFixed(2)}</span>
+                    </div>
+                `).join('');
+        }
+
+        async function submitIntent(e) {
+            e.preventDefault();
+            const zec = parseFloat(document.getElementById('input-amount').value);
+            const price = parseFloat(document.getElementById('input-price').value);
+            const addr = document.getElementById('input-address').value;
+
+            await fetch('/api/v1/intent', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    direction: currentDirection,
+                    zec_amount: zec,
+                    limit_price_usd: price,
+                    shielded_address: addr
+                })
+            });
+            fetchEpoch();
+            fetchWallets();
+        }
+
+        async function seedDemoLiquidity() {
+            await fetch('/api/v1/demo/seed', { method: 'POST' });
+            fetchEpoch();
+        }
+
+        async function clearEpochNow() {
+            const res = await fetch('/api/v1/epoch/clear', { method: 'POST' });
+            const data = await res.json();
+            if (data.result && data.result.status === 'SETTLED_AND_MINED') {
+                document.getElementById('res-price').innerText = '$' + data.result.clearing_price_usd.toFixed(2);
+                document.getElementById('res-volume').innerText = data.result.cleared_zec.toFixed(2) + ' ZEC';
+                document.getElementById('res-usd').innerText = '$' + data.result.cleared_usd.toFixed(2);
+                document.getElementById('res-latency').innerText = data.result.execution_latency_ms + ' ms';
+                document.getElementById('res-txid').innerText = data.result.tx_id;
+                document.getElementById('res-block').innerText = data.result.block_hash;
+            }
+            fetchEpoch();
+            fetchWallets();
+        }
+
+        async function loadExplorer() {
+            const res = await fetch('/api/v1/node/blocks');
+            const data = await res.json();
+            const container = document.getElementById('blocks-list');
+            container.innerHTML = data.blocks.map(b => `
+                <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 mono text-xs">
+                    <div class="flex justify-between items-center">
+                        <span class="text-amber-400 font-bold text-sm">Block #${b.height}</span>
+                        <span class="text-slate-500">${new Date(b.timestamp * 1000).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="text-slate-400 truncate">Hash: <span class="text-slate-200">${b.hash}</span></div>
+                    <div class="text-slate-400 truncate">Anchor Root: <span class="text-emerald-400">${b.anchor_root}</span></div>
+                    <div class="text-slate-400">Transactions: <span class="text-white">${b.tx_count} v6 settlement tx</span></div>
+                </div>
+            `).join('');
+        }
+
+        function renderDepthChart() {
+            const ctx = document.getElementById('depthChart').getContext('2d');
+            if (depthChart) depthChart.destroy();
+            depthChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['$40.00', '$41.00', '$42.00', '$42.60 (P*)', '$43.00', '$44.00', '$45.00'],
+                    datasets: [
+                        {
+                            label: 'Cumulative Demand (Bids)',
+                            data: [60, 55, 48, 35, 20, 10, 0],
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            fill: true,
+                            stepped: true
+                        },
+                        {
+                            label: 'Cumulative Supply (Asks)',
+                            data: [0, 10, 22, 35, 45, 52, 60],
+                            borderColor: '#f43f5e',
+                            backgroundColor: 'rgba(244, 63, 94, 0.1)',
+                            fill: true,
+                            stepped: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' }, title: { display: true, text: 'Volume (ZEC)', color: '#94a3b8' } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#e2e8f0' } }
+                    }
+                }
+            });
+        }
+
+        // Connect WebSocket for live push updates
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/feed');
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'TICK') {
+                    document.getElementById('header-epoch').innerText = '#' + data.epoch_id;
+                    document.getElementById('header-countdown').innerText = data.seconds_remaining + 's';
+                } else if (data.type === 'NEW_INTENT' || data.type === 'SEEDED' || data.type === 'EPOCH_CLEARED') {
+                    fetchEpoch();
+                    fetchWallets();
+                }
+            };
+            ws.onclose = () => setTimeout(initWebSocket, 2000);
+        }
+
+        // Initialize on load
+        fetchWallets();
+        fetchEpoch();
+        initWebSocket();
+        setInterval(fetchEpoch, 3000);
+    </script>
+</body>
+</html>
