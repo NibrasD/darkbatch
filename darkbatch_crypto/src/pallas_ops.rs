@@ -6,25 +6,15 @@ use pasta_curves::arithmetic::CurveExt;
 use pasta_curves::pallas::{Point, Scalar};
 use blake2b_simd::Params;
 
-/// Fixed Pallas generator points derived deterministically via Blake2b (Zcash standard)
+/// Fixed Pallas generator points derived per Zcash Protocol Specification § 5.4.9.4:
+/// V_Orchard = GroupHash^P("z.cash:Orchard-cv", "v")
+/// R_Orchard = GroupHash^P("z.cash:Orchard-cv", "r")
 pub fn generator_v() -> Point {
-    let h = Params::new()
-        .hash_length(32)
-        .personal(b"DarkBatchPallasV") // Exactly 16 bytes
-        .to_state()
-        .update(b"Generator_V_ValueCommit")
-        .finalize();
-    Point::hash_to_curve("z.cash:pallas-generator-v")(h.as_bytes())
+    Point::hash_to_curve("z.cash:Orchard-cv")(b"v")
 }
 
 pub fn generator_r() -> Point {
-    let h = Params::new()
-        .hash_length(32)
-        .personal(b"DarkBatchPallasR") // Exactly 16 bytes
-        .to_state()
-        .update(b"Generator_R_RandomCommit")
-        .finalize();
-    Point::hash_to_curve("z.cash:pallas-generator-r")(h.as_bytes())
+    Point::hash_to_curve("z.cash:Orchard-cv")(b"r")
 }
 
 pub fn generator_g() -> Point {

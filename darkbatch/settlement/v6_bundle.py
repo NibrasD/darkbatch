@@ -25,7 +25,7 @@ from darkbatch.core.intent import SwapOrderIntent, OrderDirection
 from darkbatch.engine.batch_solver import BatchClearResult, MatchedFill
 
 TX_VERSION_6 = 0x80000006
-VERSION_GROUP_ID_V6 = 0x26a7270a
+VERSION_GROUP_ID_V6 = 0xD884B698  # Mandatory ZIP 229 consensus ID for Transaction v6
 CONSENSUS_BRANCH_ID_IRONWOOD = 0x2f8b66c3
 
 @dataclass
@@ -72,6 +72,16 @@ class SettlementBundle:
     created_at: float
     total_matcher_fee_zat: int
     total_miner_fee_zat: int
+def encode_compact_size(val: int) -> bytes:
+    """Encodes an integer into Bitcoin/Zcash CompactSize bytes."""
+    if val < 253:
+        return bytes([val])
+    elif val <= 0xFFFF:
+        return b"\xfd" + val.to_bytes(2, "little")
+    elif val <= 0xFFFFFFFF:
+        return b"\xfe" + val.to_bytes(4, "little")
+    else:
+        return b"\xff" + val.to_bytes(8, "little")
 
 class SettlementBundleBuilder:
     """
@@ -95,19 +105,26 @@ class SettlementBundleBuilder:
         raw_bytes = bytearray()
         # 1. Header (4 bytes LE)
         raw_bytes.extend(TX_VERSION_6.to_bytes(4, "little", signed=False))
-        # 2. Version Group ID (4 bytes LE)
+        # 2. Version Group ID (4 bytes LE) - 0xD884B698
         raw_bytes.extend(VERSION_GROUP_ID_V6.to_bytes(4, "little", signed=False))
         # 3. Branch ID (4 bytes LE)
         raw_bytes.extend(CONSENSUS_BRANCH_ID_IRONWOOD.to_bytes(4, "little", signed=False))
         # 4. Lock time & Expiry height (8 bytes LE)
         raw_bytes.extend((0).to_bytes(4, "little"))
         raw_bytes.extend((3450200).to_bytes(4, "little"))
-        # 5. Net balance & Anchor (40 bytes)
-        raw_bytes.extend((0).to_bytes(8, "little", signed=True))
+        # 5. Transparent fields (0 inputs, 0 outputs)
+        raw_bytes.extend(encode_compact_size(0))
+        raw_bytes.extend(encode_compact_size(0))
+        # 6. Sapling fields (0 spends, 0 outputs)
+        raw_bytes.extend(encode_compact_size(0))
+        raw_bytes.extend(encode_compact_size(0))
+        # 7. Orchard fields (0 legacy orchard actions)
+        raw_bytes.extend(encode_compact_size(0))
+        # 8. Ironwood fields: nActionsIronwood
+        raw_bytes.extend(encode_compact_size(len(all_fills)))
         anchor_bytes = bytes.fromhex(self.ironwood_anchor)
-        raw_bytes.extend(anchor_bytes)
-        # 6. CompactSize: Number of Action Groups
-        raw_bytes.append(len(all_fills))
+
+        actions_encoded_bytes = bytearray()
 
         for idx, fill in enumerate(all_fills):
             intent = intents_map.get(fill.intent_id)
@@ -132,7 +149,6 @@ class SettlementBundleBuilder:
             cv_fee_hex = pedersen_commit(100_000, generate_scalar())
 
             # 3. Strict 512-Byte Encrypted Memo Receipt (ZIP 212 / ZIP 302)
-            # Use recipient's specific IVK if available, or deterministically derived receiver key
             receiver_ivk = b""
             if wallets_ivk_map and fill.shielded_address in wallets_ivk_map:
                 receiver_ivk = wallets_ivk_map[fill.shielded_address]
@@ -193,22 +209,63 @@ class SettlementBundleBuilder:
             )
             action_groups.append(ag)
 
-            # Append action group to raw tx bytes
-            raw_bytes.extend(anchor_bytes)
-            raw_bytes.append(2)  # 2 actions: SwapAction + FeeAction
-            raw_bytes.extend(bytes.fromhex(cv_net_hex))
-            raw_bytes.extend(nullifier_bytes)
-            raw_bytes.extend(bytes.fromhex(intent.auth_pubkey_hex))
-            raw_bytes.extend(cm_bytes)
-            raw_bytes.extend(memo_512_bytes)
-            raw_bytes.extend(bytes.fromhex(cv_fee_hex))
-            raw_bytes.extend(matcher_fee_zat.to_bytes(8, "little"))
-            raw_bytes.extend(miner_fee_zat.to_bytes(8, "little"))
+            # Build strictly compliant 820-byte OrchardAction (§ 7.5)
+            # 1. cv (32B)
+            actions_encoded_bytes.extend(bytes.fromhex(cv_net_hex))
+            # 2. nullifier (32B)
+            actions_encoded_bytes.extend(nullifier_bytes)
+            # 3. rk (32B)
+            actions_encoded_bytes.extend(bytes.fromhex(intent.auth_pubkey_hex))
+            # 4. cmx (32B)
+            actions_encoded_bytes.extend(cm_bytes)
+            # 5. ephemeralKey (32B)
+            ephemeral_key = blake2b_digest(f"epk:{intent.intent_id}".encode(), personalization=b"IronwoodEphemKey")
+            actions_encoded_bytes.extend(ephemeral_key)
+            
+            # 6. encCiphertext (580B):
+            # leadByte 0x03 (1B per ZIP 2005) + diversifier (11B) + value (8B) + rseed (32B) + memo (512B) + MAC (16B)
+            enc_ct = bytearray()
+            enc_ct.append(0x03)  # Ironwood quantum-recoverable lead byte
+            enc_ct.extend(bytes(11))  # diversifier
+            enc_ct.extend(fill.filled_zat.to_bytes(8, "little"))  # value zatoshis
+            enc_ct.extend(val_r.to_bytes(32, "little")[:32])  # rseed
+            enc_ct.extend(memo_512_bytes[:512])  # 512B memo
+            enc_ct.extend(bytes(16))  # Poly1305 MAC tag
+            assert len(enc_ct[:580]) == 580
+            actions_encoded_bytes.extend(enc_ct[:580])
 
-        # Additive binding key rule: bsk_bundle = sum(bsk_i) mod q
-        aggregated_bsk = aggregate_binding_keys(bsk_shares) if bsk_shares else 0
-        aggregated_binding_pubkey_hex = hex(aggregated_bsk)[2:].zfill(64)
-        raw_bytes.extend(bytes.fromhex(aggregated_binding_pubkey_hex))
+            # 7. outCiphertext (80B)
+            out_ct = bytearray()
+            out_ct.extend(cm_bytes)  # 32B
+            out_ct.extend(ephemeral_key)  # 32B
+            out_ct.extend(bytes(16))  # 16B MAC tag
+            assert len(out_ct[:80]) == 80
+            actions_encoded_bytes.extend(out_ct[:80])
+
+        # Append all 820-byte actions
+        raw_bytes.extend(actions_encoded_bytes)
+
+        # Append Ironwood component trailing fields if nActions > 0
+        if len(all_fills) > 0:
+            # flagsIronwood (1B: enableSpends | enableOutputs)
+            raw_bytes.append(0x03)
+            # valueBalanceIronwood (8B LE signed)
+            raw_bytes.extend((0).to_bytes(8, "little", signed=True))
+            # anchorIronwood (32B)
+            raw_bytes.extend(anchor_bytes)
+            # sizeProofsIronwood (CompactSize) = 2720 + 2272 * nActions
+            proof_size = 2720 + 2272 * len(all_fills)
+            raw_bytes.extend(encode_compact_size(proof_size))
+            # proofsIronwood envelope
+            raw_bytes.extend(bytes(proof_size))
+            # vSpendAuthSigsIronwood: 64 * nActions
+            raw_bytes.extend(bytes(64 * len(all_fills)))
+            # bindingSigIronwood: 64B
+            aggregated_bsk = aggregate_binding_keys(bsk_shares) if bsk_shares else 0
+            aggregated_binding_pubkey_hex = hex(aggregated_bsk)[2:].zfill(64)
+            raw_bytes.extend(bytes.fromhex(aggregated_binding_pubkey_hex).ljust(64, b"\x00")[:64])
+        else:
+            aggregated_binding_pubkey_hex = "00" * 32
 
         tx_digest = blake2b_digest(bytes(raw_bytes), personalization=b"ZcashTxHashIronw")
         tx_id = tx_digest.hex()

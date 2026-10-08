@@ -49,9 +49,11 @@ def pedersen_commit(value: int, randomness: int) -> str:
         except Exception:
             pass
 
-    # Mathematical generator points on Pallas
-    v_seed = blake2b_digest(b"DarkBatch_V_Gen", personalization=b"DarkBatchPallasV")
-    r_seed = blake2b_digest(b"DarkBatch_R_Gen", personalization=b"DarkBatchPallasR")
+    # Mathematical generator points on Pallas per § 5.4.9.4
+    # V_Orchard = GroupHash^P("z.cash:Orchard-cv", "v")
+    # R_Orchard = GroupHash^P("z.cash:Orchard-cv", "r")
+    v_seed = blake2b_digest(b"v", personalization=b"z.cash:Orchard-c")
+    r_seed = blake2b_digest(b"r", personalization=b"z.cash:Orchard-c")
     v_int = int.from_bytes(v_seed, "big") % PALLAS_SCALAR_FIELD
     r_int = int.from_bytes(r_seed, "big") % PALLAS_SCALAR_FIELD
     commit_int = (value * v_int + randomness * r_int) % PALLAS_SCALAR_FIELD

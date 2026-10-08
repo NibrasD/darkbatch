@@ -133,7 +133,7 @@ def test_zip228_action_groups_and_v6_bundle():
     bundle = builder.build_bundle(result, intents_map, wallets_ivk_map=ivk_map)
 
     assert bundle.tx_version == 6
-    assert bundle.version_group_id == 0x26a7270a
+    assert bundle.version_group_id == 0xD884B698  # Mandatory ZIP 229 consensus ID
     assert bundle.consensus_branch_id == 0x2f8b66c3
     assert len(bundle.action_groups) == 2
 
@@ -154,3 +154,36 @@ def test_zip228_action_groups_and_v6_bundle():
     decrypted_json = json.loads(decrypt_512_memo(bob_memo_bytes, bob_shared_key).decode("utf-8"))
     assert decrypted_json["protocol"] == "DarkBatch-ZIP228"
     assert decrypted_json["filled_zec"] == 5.0
+
+def test_testnet_settlement_adapter_broadcast():
+    """
+    Verifies that the Testnet Settlement Adapter verifies consensus,
+    submits to the simulated testnet node, and returns a verified testnet txid receipt.
+    """
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+    from darkbatch.node.simulator import ZcashNodeSimulator
+
+    alice = ShieldedWallet("alice_testnet")
+    bob = ShieldedWallet("bob_testnet")
+
+    buyer = create_intent(OrderDirection.BUY_ZEC, 4.0, 45.0, bob.unified_address)
+    seller = create_intent(OrderDirection.SELL_ZEC, 4.0, 40.0, alice.unified_address)
+    intents_map = {buyer.intent_id: buyer, seller.intent_id: seller}
+    ivk_map = {bob.unified_address: bob.ivk, alice.unified_address: alice.ivk}
+
+    solver = BatchAuctionSolver()
+    result = solver.solve(epoch_id=202, intents=[buyer, seller])
+
+    builder = SettlementBundleBuilder()
+    bundle = builder.build_bundle(result, intents_map, wallets_ivk_map=ivk_map)
+
+    node = ZcashNodeSimulator()
+    adapter = TestnetSettlementAdapter(node_simulator=node)
+
+    receipt = adapter.broadcast(bundle)
+    assert receipt["status"] == "MINED_ON_TESTNET"
+    assert receipt["network"] == "Zcash Testnet (NU6.3 Ironwood Protocol)"
+    assert receipt["version_group_id"] == "0xd884b698"
+    assert receipt["confirmations"] == 1
+    assert "explorer_url" in receipt
+    assert receipt["txid"] == bundle.tx_id

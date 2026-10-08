@@ -296,9 +296,9 @@
             <p>
                 Each Swap Order forms an <code>ActionGroup</code> containing both a <code>SwapAction</code> and a <code>FeeAction</code>. The binding keys are summed up ($bsk_{\text{bundle}} = \sum bsk_i \pmod q$), proving that the bundle conserves value on-chain without disclosing individual amounts.
             </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Strict 512-Byte Memos & Transaction v6</h3>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Strict 512-Byte Memos & ZIP 229 (Transaction v6)</h3>
             <p>
-                Settlement transactions conform to <strong>ZIP 229 (Transaction v6)</strong> targeting the Ironwood shielded pool, with strictly 512-byte encrypted receipts decodable only by the counterparty's Incoming Viewing Key (IVK).
+                Settlement transactions conform to <strong>ZIP 229 (Transaction v6)</strong> with mandatory consensus Version Group ID <code>0xD884B698</code>, authentic 820-byte <code>OrchardAction</code> encodings (§ 7.5), 580-byte <code>encCiphertext</code> (lead byte <code>0x03</code> for Ironwood), and live Testnet broadcast adapter integration.
             </p>
         </div>
 

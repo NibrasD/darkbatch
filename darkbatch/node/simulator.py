@@ -57,6 +57,10 @@ class ZcashNodeSimulator:
         """
         tx_id = bundle_dict.get("tx_id", "")
         action_groups = bundle_dict.get("action_groups", [])
+        # Consensus Rule (ZIP 229 § 7.1.2): Version Group ID must be 0xD884B698 for Transaction v6
+        vg_id = bundle_dict.get("version_group_id")
+        if vg_id and vg_id != 0xD884B698:
+            return False, f"Consensus Error: Invalid Version Group ID {hex(vg_id)} for v6 (expected 0xD884B698)"
 
         # 1. Consensus Rule: Verify Nullifiers (Double-Spend Check)
         incoming_nullifiers = []

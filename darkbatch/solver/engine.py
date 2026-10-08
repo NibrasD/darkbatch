@@ -70,6 +70,7 @@ class AutonomousSolverDaemon:
         bundle_dict = {
             "tx_id": bundle.tx_id,
             "version": bundle.tx_version,
+            "version_group_id": bundle.version_group_id,
             "epoch_id": bundle.epoch_id,
             "clearing_price_usd": bundle.clearing_price_usd,
             "total_volume_zec": bundle.total_volume_zec,
