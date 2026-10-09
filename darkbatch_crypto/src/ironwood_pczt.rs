@@ -21,6 +21,7 @@ use pczt::{
         creator::Creator,
         io_finalizer::IoFinalizer,
         prover::Prover,
+        redactor::Redactor,
         signer::Signer,
         tx_extractor::TransactionExtractor,
         updater::Updater,
@@ -415,6 +416,79 @@ pub fn inspect_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value,
         "sighash_hex": hex::encode(signer.shielded_sighash()),
         "actions": actions,
         "note": "Inspect all outputs and fees before signing; the displayed sighash commits to transaction effects, not to anchors or witnesses."
+    }))
+}
+
+/// Creates the version of a PCZT that one input owner should receive and sign.
+/// Other owners' note-opening data, FVKs, witnesses, and randomizers are redacted.
+/// Output effects remain visible for participant review; the signer must still review
+/// the full output manifest and the unchanged transaction sighash.
+pub fn prepare_ironwood_pczt_for_signer_json(input_json: &str) -> Result<serde_json::Value, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        pczt_hex: String,
+        signer_nullifier_hex: String,
+    }
+    let request: Request = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid signer-preparation request JSON: {e}"))?;
+    let target_nullifier = parse_hex::<32>(&request.signer_nullifier_hex, "signer_nullifier_hex")?;
+    let pczt = decode_pczt(&request.pczt_hex)?;
+    let before_signer = Signer::new(pczt.clone())
+        .map_err(|e| format!("PCZT cannot produce a canonical signing digest: {e:?}"))?;
+    let expected_sighash = before_signer.shielded_sighash();
+    let actions = pczt.ironwood().actions();
+    let matches: Vec<usize> = actions.iter().enumerate()
+        .filter(|(_, action)| action.spend().nullifier() == &target_nullifier)
+        .map(|(index, _)| index)
+        .collect();
+    if matches.len() != 1 {
+        return Err("Signer nullifier must identify exactly one action in this PCZT.".to_owned());
+    }
+    let own_index = matches[0];
+    if actions[own_index].spend().verify_nullifier(None).is_err() {
+        return Err("The selected input lacks the note data required for owner verification.".to_owned());
+    }
+    let action_count = actions.len();
+
+    let redacted = Redactor::new(pczt)
+        .redact_ironwood_with(|mut bundle| {
+            for index in 0..action_count {
+                if index == own_index {
+                    continue;
+                }
+                bundle.redact_action(index, |mut action| {
+                    action.clear_spend_recipient();
+                    action.clear_spend_value();
+                    action.clear_spend_rho();
+                    action.clear_spend_rseed();
+                    action.clear_spend_fvk();
+                    action.clear_spend_witness();
+                    action.clear_spend_alpha();
+                    action.clear_spend_zip32_derivation();
+                    action.clear_spend_dummy_sk();
+                    action.clear_spend_proprietary();
+                    action.clear_rcv();
+                });
+            }
+        })
+        .finish();
+
+    let after_signer = Signer::new(redacted.clone())
+        .map_err(|e| format!("Redacted PCZT cannot produce a canonical signing digest: {e:?}"))?;
+    if after_signer.shielded_sighash() != expected_sighash {
+        return Err("Signer redaction changed the transaction effects or signing digest; refusing to export.".to_owned());
+    }
+    let encoded = encode_pczt(redacted)?;
+    Ok(serde_json::json!({
+        "status": "PCZT_REDACTED_FOR_PARTICIPANT",
+        "network": "testnet",
+        "signer_nullifier_hex": hex::encode(target_nullifier),
+        "action_index": own_index,
+        "sighash_hex": hex::encode(expected_sighash),
+        "pczt_hex": encoded,
+        "broadcast": false,
+        "privacy_note": "Other input-note opening fields were redacted. Output effects remain visible and must be reviewed. The PCZT creator/prover still sees input data supplied during construction."
     }))
 }
 
