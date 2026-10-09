@@ -205,7 +205,7 @@ def test_nu6_3_consensus_and_crypto_integrity():
     }
     ok, err = node.submit_settlement_bundle(invalid_bundle)
     assert ok is False
-    assert "0x37A5165B" in err
+    assert "invalid Ironwood branch ID" in err
 
     # 3. The unverified custom DiversifyHash path must fail closed, not return
     # correctly sized but non-protocol ciphertext.
