@@ -207,22 +207,20 @@ def test_nu6_3_consensus_and_crypto_integrity():
     assert ok is False
     assert "0x37A5165B" in err
 
-    # 3. Check expected ciphertext lengths from the Rust primitive; not a consensus test.
-    enc_ct, out_ct, epk = encrypt_orchard_note(
-        lead_byte=0x03,
-        diversifier=bytes(11),
-        value_zat=500_000_000,
-        rseed=bytes(32),
-        memo_512=bytes(512),
-        pk_d=bytes(32),
-        ovk=bytes(32),
-        cv=bytes(32),
-        cmx=bytes(32)
-    )
-    assert len(enc_ct) == 580
-    assert len(out_ct) == 80
-    assert len(epk) == 32
-    assert enc_ct != bytes(580)
+    # 3. The unverified custom DiversifyHash path must fail closed, not return
+    # correctly sized but non-protocol ciphertext.
+    with pytest.raises(RuntimeError, match="not been verified"):
+        encrypt_orchard_note(
+            lead_byte=0x03,
+            diversifier=bytes(11),
+            value_zat=500_000_000,
+            rseed=bytes(32),
+            memo_512=bytes(512),
+            pk_d=bytes(32),
+            ovk=bytes(32),
+            cv=bytes(32),
+            cmx=bytes(32)
+        )
 
     # 4. Check signature byte lengths only; no bundle-level authorization is proved here.
     sighash = blake2b_digest(b"canonical_sighash_data", personalization=b"ZcashTxHashIronw")
