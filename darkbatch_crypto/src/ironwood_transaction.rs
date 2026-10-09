@@ -56,6 +56,32 @@ pub struct BuiltIronwoodTransaction {
     pub version_group_id: u32,
 }
 
+/// Validate transaction-target and required-input invariants before invoking the
+/// expensive proving pipeline. Ironwood remains the pool after NU7; the consensus
+/// branch is selected from target height, not inferred from the pool name.
+fn validate_ironwood_request(
+    branch_id: BranchId,
+    spend_count: usize,
+    output_count: usize,
+) -> Result<(), String> {
+    if branch_id != BranchId::Nu6_3 && branch_id != BranchId::Nu7 {
+        return Err(format!(
+            "Refusing Ironwood transaction: unsupported target branch {:?}.",
+            branch_id
+        ));
+    }
+    if spend_count == 0 {
+        return Err(
+            "An Ironwood settlement must include wallet-authorized input notes; output-only synthetic bundles are forbidden."
+                .to_owned(),
+        );
+    }
+    if output_count == 0 {
+        return Err("An Ironwood transaction requires at least one output.".to_owned());
+    }
+    Ok(())
+}
+
 /// Build and prove a real NU6.3 / Ironwood transaction.
 ///
 /// The caller must supply notes and witnesses obtained from a real wallet/node,
@@ -87,23 +113,10 @@ where
     FR::Error: core::fmt::Display,
 {
     let branch_id = BranchId::for_height(&params, target_height);
-    if branch_id != BranchId::Nu6_3 && branch_id != BranchId::Nu7 {
-        return Err(format!(
-            "Refusing Ironwood transaction: target height {} resolves to unsupported v6 branch {:?}.",
-            u32::from(target_height),
-            branch_id
-        ));
-    }
+    validate_ironwood_request(branch_id, spends.len(), outputs.len()).map_err(|e| {
+        format!("Target height {}: {e}", u32::from(target_height))
+    })?;
     let expected_branch_id: u32 = branch_id.into();
-    if spends.is_empty() {
-        return Err(
-            "An Ironwood settlement must include wallet-authorized input notes; output-only synthetic bundles are forbidden."
-                .to_owned(),
-        );
-    }
-    if outputs.is_empty() {
-        return Err("An Ironwood transaction requires at least one output.".to_owned());
-    }
 
     let build_config = BuildConfig::Standard {
         sapling_anchor: None,
@@ -191,11 +204,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ironwood_builder_rejects_missing_real_spend_inputs() {
-        // This is a target-boundary test: it intentionally does not pretend to
-        // manufacture a funded transaction from order intents or output notes.
+    fn ironwood_request_validation_supports_nu6_3_and_nu7_but_requires_real_spends() {
         assert_eq!(u32::from(BranchId::Nu6_3), 0x37A5_165B_u32);
         assert_eq!(u32::from(BranchId::Nu7), 0x7719_0AD9_u32);
-        assert_eq!(0xD884_B698_u32, 0xD884_B698);
+
+        assert!(validate_ironwood_request(BranchId::Nu6_3, 1, 1).is_ok());
+        assert!(validate_ironwood_request(BranchId::Nu7, 1, 1).is_ok());
+        assert!(validate_ironwood_request(BranchId::Nu6_2, 1, 1).is_err());
+        assert!(validate_ironwood_request(BranchId::Nu6_3, 0, 1).is_err());
+        assert!(validate_ironwood_request(BranchId::Nu7, 1, 0).is_err());
     }
 }
