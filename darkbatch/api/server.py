@@ -175,7 +175,7 @@ async def submit_intent(req: IntentSubmitRequest):
     epoch_id = get_active_epoch_id()
     save_intent(intent, epoch_id)
 
-    # ZERO-LEAK BROADCAST: broadcast ONLY the sealed commitment hash!
+    # Broadcast only the commitment in the public feed; intent terms are still stored by this server.
     await manager.broadcast({
         "type": "NEW_SEALED_INTENT",
         "intent_id": intent.intent_id,
@@ -195,8 +195,8 @@ async def submit_intent(req: IntentSubmitRequest):
 @app.get("/api/v1/epoch/current")
 def get_current_epoch():
     """
-    CONFIDENTIAL MEMPOOL: Returns ONLY sealed order commitments.
-    Prices, amounts, directions, and user addresses are strictly shielded!
+    Returns only commitments and metadata in this response.
+    This does not hide order terms from the server, which stores the submitted intent.
     """
     elapsed = time.time() - epoch_start_time
     remaining = max(0.0, EPOCH_DURATION_SECONDS - elapsed)
@@ -219,7 +219,7 @@ def get_current_epoch():
         "seconds_remaining": round(remaining, 1),
         "sealed_orders_count": len(sealed_orders),
         "sealed_orders": sealed_orders,
-        "confidentiality_guarantee": "ZERO_LEAK_MEV_IMMUNE"
+        "confidentiality_scope": "Plaintext order terms are omitted from this response but remain visible to the server; this is not zero-knowledge privacy."
     }
 
 @app.post("/api/v1/epoch/clear")
