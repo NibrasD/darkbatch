@@ -166,3 +166,44 @@ def test_wallet_scan_refuses_a_checkpoint_that_is_not_canonical(tmp_path, monkey
             rpc=rpc,
             binary_path="not-used-by-monkeypatch",
         )
+
+
+
+def test_transaction_status_uses_live_rpc_confirmation_count(monkeypatch):
+    txid = "ab" * 32
+
+    class FakeRpc:
+        def call(self, method, params):
+            assert method == "getrawtransaction"
+            assert params == [txid, True]
+            return {
+                "txid": txid,
+                "confirmations": 2,
+                "blockhash": "cd" * 32,
+                "blocktime": 123,
+                "height": 4_134_012,
+            }
+
+    result = wallet_sync.get_testnet_transaction_status(txid, rpc=FakeRpc())
+    assert result["status"] == "MINED_CONFIRMED"
+    assert result["confirmed"] is True
+    assert result["confirmations"] == 2
+    assert result["source"] == "live-zebra-rpc"
+
+
+def test_transaction_status_does_not_infer_confirmation_from_zero_confirmations():
+    txid = "ef" * 32
+
+    class FakeRpc:
+        def call(self, method, params):
+            return {"txid": txid, "confirmations": 0}
+
+    result = wallet_sync.get_testnet_transaction_status(txid, rpc=FakeRpc())
+    assert result["status"] == "BROADCAST_PENDING"
+    assert result["confirmed"] is False
+    assert result["confirmations"] == 0
+
+
+def test_transaction_status_rejects_malformed_txid():
+    with pytest.raises(RuntimeError, match="64 hexadecimal"):
+        wallet_sync.get_testnet_transaction_status("not-a-txid", rpc=object())
