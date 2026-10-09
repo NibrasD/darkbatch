@@ -50,8 +50,26 @@ def pedersen_commit(value: int, randomness: int) -> str:
     """
     binary = _require_rust_engine("Pedersen value commitment")
     r_hex = (randomness % PALLAS_SCALAR_FIELD).to_bytes(32, "little").hex()
-    res = subprocess.check_output([binary, "commit", str(value), r_hex], text=True)
-    data = json.loads(res.strip())
+    request = json.dumps({"value_zat": int(value), "randomness_hex": r_hex}, separators=(",", ":"))
+    try:
+        result = subprocess.run(
+            [binary, "commit-stdin"],
+            input=request,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Rust Pedersen commitment engine failed to run: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Rust engine rejected the commitment request.")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Rust engine returned malformed commitment JSON.") from exc
     commitment = data.get("commitment_point")
     if not isinstance(commitment, str) or len(commitment) != 64:
         raise RuntimeError("Rust engine returned an invalid Pedersen commitment.")
