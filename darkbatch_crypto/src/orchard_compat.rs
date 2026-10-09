@@ -526,8 +526,7 @@ mod tests {
     fn test_redpallas_key_randomization_is_mathematically_valid() {
         let mut rng = rand::rng();
         let ask = SigningKey::<SpendAuth>::new(&mut rng);
-        let mut field_rng = rand_08::thread_rng();
-        let alpha = Scalar::random(&mut field_rng);
+        let alpha = Scalar::random(&mut rng);
         let (rsk, rk) = derive_randomized_spend_auth(&ask, &alpha);
 
         let sighash = b"Zcash NU6.3 Ironwood canonical SIGHASH digest";
@@ -540,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_legacy_note_cipher_roundtrip_is_not_consensus_validation() {
-        let mut rng = rand_08::thread_rng();
+        let mut rng = rand::rng();
         let esk = Scalar::random(&mut rng);
         let ivk = Scalar::random(&mut rng);
         let diversifier = [0x77u8; 11];
