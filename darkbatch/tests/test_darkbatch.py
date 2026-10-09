@@ -115,86 +115,52 @@ def test_mev_resistance_and_order_invariance():
     assert res1.total_cleared_zec == res2.total_cleared_zec
     assert res1.total_cleared_usd == res2.total_cleared_usd
 
-def test_zip228_action_groups_and_v6_bundle():
-    """
-    Tests building authentic ZIP 228 Action Groups containing [SwapAction, FeeAction]
-    and Transaction v6 binary serialization.
-    """
+def test_bundle_builder_fails_closed_without_wallet_authorized_ironwood_inputs():
+    """An off-chain intent is not a spend authorization or a consensus transaction."""
     alice = ShieldedWallet("alice")
     bob = ShieldedWallet("bob")
-
     buyer = create_intent(OrderDirection.BUY_ZEC, 5.0, 44.0, bob.unified_address)
     seller = create_intent(OrderDirection.SELL_ZEC, 5.0, 41.0, alice.unified_address)
     intents_map = {buyer.intent_id: buyer, seller.intent_id: seller}
-    ivk_map = {bob.unified_address: bob.ivk, alice.unified_address: alice.ivk}
-
-    solver = BatchAuctionSolver()
-    result = solver.solve(epoch_id=101, intents=[buyer, seller])
-
-    builder = SettlementBundleBuilder()
-    bundle = builder.build_bundle(result, intents_map, wallets_ivk_map=ivk_map)
+    result = BatchAuctionSolver().solve(epoch_id=101, intents=[buyer, seller])
+    bundle = SettlementBundleBuilder().build_bundle(
+        result, intents_map, wallets_ivk_map={bob.unified_address: bob.ivk, alice.unified_address: alice.ivk}
+    )
 
     assert bundle.tx_version == 6
-    assert bundle.version_group_id == 0xD884B698  # Mandatory ZIP 229 consensus ID
-    assert bundle.consensus_branch_id == 0x37A5165B  # Mandatory ZIP 258 consensus branch ID for NU6.3
-    assert len(bundle.action_groups) == 2
+    assert bundle.version_group_id == 0xD884B698
+    assert bundle.consensus_branch_id == 0x37A5165B
+    assert bundle.consensus_ready is False
+    assert bundle.construction_mode == "LOCAL_SIMULATION_ONLY"
+    assert bundle.tx_id is None
+    assert bundle.raw_tx_hex == ""
+    assert bundle.raw_tx_bytes_len == 0
+    assert bundle.simulation_id.startswith("sim_")
+    assert bundle.action_groups == []
+    assert bundle.validation_blockers
 
-    # Verify each Action Group contains BOTH a Swap Action and a Fee Action per ZIP 228!
-    for ag in bundle.action_groups:
-        assert ag.swap_action.action_type == "SWAP"
-        assert ag.fee_action.action_type == "FEE"
-        assert len(bytes.fromhex(ag.swap_action.enc_ciphertext_hex)) == 580
-        assert len(bytes.fromhex(ag.swap_action.out_ciphertext_hex)) == 80
-        assert len(bytes.fromhex(ag.swap_action.epk_hex)) == 32
-        assert len(bytes.fromhex(ag.swap_action.rk_hex)) == 32
-
-    # Verify binary serialization
-    assert len(bundle.raw_tx_hex) > 0
-    assert bundle.raw_tx_bytes_len > 1000
-
-    # Verify Bob can decrypt his confidential memo using his IVK per § 5.4.3.4
-    bob_action = bundle.action_groups[0].swap_action
-    bob_enc_bytes = bytes.fromhex(bob_action.enc_ciphertext_hex)
-    bob_epk_bytes = bytes.fromhex(bob_action.epk_hex)
-    dec_val, bob_memo_bytes = decrypt_orchard_note(bob_enc_bytes, bob.ivk, bob_epk_bytes)
-    decrypted_json = json.loads(bob_memo_bytes.rstrip(b"\x00").decode("utf-8"))
-    assert decrypted_json["protocol"] == "DarkBatch-ZIP228"
-    assert decrypted_json["filled_zec"] == 5.0
-
-def test_testnet_settlement_adapter_broadcast():
-    """
-    Verifies that the Testnet Settlement Adapter verifies consensus,
-    submits to the simulated testnet node, and returns a verified testnet txid receipt.
-    """
+def test_testnet_adapter_rejects_simulation_without_broadcast():
+    """A simulation must not be accepted by a fake local consensus path or live RPC."""
     from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
     from darkbatch.node.simulator import ZcashNodeSimulator
 
-    alice = ShieldedWallet("alice_testnet")
-    bob = ShieldedWallet("bob_testnet")
-
-    buyer = create_intent(OrderDirection.BUY_ZEC, 4.0, 45.0, bob.unified_address)
-    seller = create_intent(OrderDirection.SELL_ZEC, 4.0, 40.0, alice.unified_address)
-    intents_map = {buyer.intent_id: buyer, seller.intent_id: seller}
-    ivk_map = {bob.unified_address: bob.ivk, alice.unified_address: alice.ivk}
-
-    solver = BatchAuctionSolver()
-    result = solver.solve(epoch_id=202, intents=[buyer, seller])
-
-    builder = SettlementBundleBuilder()
-    bundle = builder.build_bundle(result, intents_map, wallets_ivk_map=ivk_map)
-
+    buyer = create_intent(OrderDirection.BUY_ZEC, 4.0, 45.0, SAMPLE_SHIELDED_ADDR_2)
+    seller = create_intent(OrderDirection.SELL_ZEC, 4.0, 40.0, SAMPLE_SHIELDED_ADDR_1)
+    result = BatchAuctionSolver().solve(epoch_id=202, intents=[buyer, seller])
+    bundle = SettlementBundleBuilder().build_bundle(
+        result, {buyer.intent_id: buyer, seller.intent_id: seller}
+    )
     node = ZcashNodeSimulator()
+    initial_height = node.height
     adapter = TestnetSettlementAdapter(node_simulator=node)
 
     receipt = adapter.broadcast(bundle)
-    assert receipt["status"] == "LOCAL_FBA_SIMULATED_CONSENSUS"
-    assert receipt["network"] == "DarkBatch Local FBA Solver & Settlement Simulator (ZIP 228 / ZIP 229)"
-    assert receipt["version_group_id"] == "0xd884b698"
-    assert receipt["consensus_branch_id"] == "0x37a5165b"
-    assert receipt["block_height"] >= 4134010
-    assert receipt["confirmations"] == 1
-    assert receipt["txid"] == bundle.tx_id
-    assert receipt["live_node"] is False
+    assert receipt["status"] == "REJECTED_NOT_CONSENSUS_READY"
+    assert receipt["broadcast"] is False
+    assert receipt["confirmed"] is False
+    assert receipt["tx_id"] is None
+    assert node.height == initial_height
+    assert len(node.blocks) == 1
 
 def test_nu6_3_consensus_and_crypto_integrity():
     """
