@@ -295,44 +295,38 @@ def get_node_blocks():
 def decrypt_memo_endpoint(req: dict):
     alias = req.get("alias")
     memo_hex = req.get("memo_hex", "").strip()
-    epk_hex = req.get("epk_hex", "").strip()
     wallet = get_wallet(alias)
     if not wallet:
-        raise HTTPException(status_code=404, detail="Wallet not found")
+        raise HTTPException(status_code=404, detail="Demo wallet not found")
 
     try:
-        from darkbatch.core.crypto import decrypt_orchard_note, decrypt_512_memo, derive_shared_key
         memo_bytes = bytes.fromhex(memo_hex)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="memo_hex must be valid hexadecimal")
 
-        # 1. Ironwood decryption is disabled until official encryption vectors are implemented.
-        if len(memo_bytes) == 580:
-            epk_bytes = bytes.fromhex(epk_hex) if epk_hex else None
-            if not epk_bytes:
-                for b in NODE.blocks:
-                    for t in b.transactions:
-                        for ag in t.get("action_groups", []):
-                            for act in ag.get("actions", []):
-                                if act.get("memo_hex") == memo_hex and "epk" in act:
-                                    epk_bytes = bytes.fromhex(act["epk"])
-                                    break
-            if not epk_bytes:
-                epk_bytes = bytes(32)
+    if len(memo_bytes) == 580:
+        raise HTTPException(
+            status_code=501,
+            detail="Real Ironwood note decryption is not implemented in this demo wallet; no protocol decryption was attempted."
+        )
+    if len(memo_bytes) != 512:
+        raise HTTPException(
+            status_code=400,
+            detail="The local demo receipt format accepts exactly 512 bytes; it is not an Ironwood ciphertext."
+        )
 
-            val, memo_512 = decrypt_orchard_note(memo_bytes, wallet.ivk, epk_bytes)
-            memo_text = memo_512.rstrip(b"\x00").decode("utf-8")
-            return {
-                "status": "SUCCESS",
-                "decryption_method": "Zcash Protocol § 5.4.3.4 (Incoming Viewing Key)",
-                "value_zat": val,
-                "receipt": json.loads(memo_text)
-            }
+    try:
+        from darkbatch.core.crypto import decrypt_512_memo, derive_shared_key
+        plaintext = decrypt_512_memo(memo_bytes, derive_shared_key(wallet.ivk))
+        return {
+            "status": "SUCCESS",
+            "mode": "LOCAL_DEMO_ONLY",
+            "note": "This is a local demo envelope, not a Zcash Ironwood note.",
+            "receipt": json.loads(plaintext.decode("utf-8"))
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Local demo receipt decryption failed: {str(exc)}")
 
-        # 2. Legacy / 512-byte raw memo fallback
-        shared_key = derive_shared_key(wallet.ivk)
-        plaintext = decrypt_512_memo(memo_bytes, shared_key)
-        return {"status": "SUCCESS", "receipt": json.loads(plaintext.decode("utf-8"))}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Decryption failed: {str(e)}")
 
 @app.post("/api/v1/demo/seed")
 async def seed_demo():
@@ -370,39 +364,44 @@ async def seed_demo():
 @app.get("/api/v1/settlement/testnet-status")
 def get_testnet_status():
     live_rpc = TESTNET_ADAPTER.is_live_rpc_available()
-    return {
-        "status": "ONLINE",
-        "network": "Zcash Testnet (NU6.3 Ironwood)",
-        "protocol_version": "ZIP-229 Transaction v6 (0xD884B698)",
-        "consensus_branch_id": "0x37A5165B",
-        "validator_implementation": "Zebra Full Validator (ZIP 258 NU6.3)",
+    result = {
+        "status": "LIVE_TESTNET_RPC_AVAILABLE" if live_rpc else "LOCAL_SIMULATION_ONLY",
+        "network": "Zcash Testnet (Ironwood target)" if live_rpc else "Not connected to a live Zcash testnet node",
+        "protocol_version": "ZIP-229 Transaction v6 (Ironwood component)",
+        "consensus_branch_id": "selected from target height by the official builder",
+        "validator_implementation": "Remote node (identity/version must be verified separately)" if live_rpc else "None; local simulator is not a consensus validator",
         "testnet_activation_height": 4134000,
         "live_rpc_connected": live_rpc,
-        "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else "Local Zebra Consensus Node Engine",
-        "current_anchor": NODE.current_anchor(),
-        "block_height": NODE.height,
-        "total_testnet_settlements": len(TESTNET_ADAPTER.broadcast_history)
+        "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else None,
+        "settlement_builder_ready": False,
+        "simulated_anchor": NODE.current_anchor(),
+        "simulated_height": NODE.height,
+        "live_testnet_settlement_records": len(TESTNET_ADAPTER.broadcast_history),
     }
+    if live_rpc:
+        try:
+            info = TESTNET_ADAPTER.get_testnet_info()
+            result["live_node_height"] = info.get("blocks")
+            result["live_chain"] = info.get("chain")
+        except Exception as exc:
+            result["live_rpc_connected"] = False
+            result["status"] = "LOCAL_SIMULATION_ONLY"
+            result["network"] = "Live RPC did not pass Testnet checks"
+            result["validator_implementation"] = "Unverified"
+            result["rpc_error"] = str(exc)
+    return result
+
 
 @app.get("/api/v1/settlement/tx/{txid}")
 def get_testnet_tx(txid: str):
     tx = TESTNET_ADAPTER.get_transaction(txid)
     if not tx:
-        # Search node blocks for this tx_id
-        for b in NODE.blocks:
-            for t in b.transactions:
-                if t.get("tx_id") == txid:
-                    return {
-                        "txid": txid,
-                        "status": "VERIFIED_LOCAL_CONSENSUS",
-                        "network": "Local Zebra NU6.3 Consensus Engine",
-                        "block_height": b.height,
-                        "block_hash": b.hash,
-                        "confirmations": NODE.height - b.height + 1,
-                        "anchor_root": b.anchor_root,
-                    }
-        raise HTTPException(status_code=404, detail="Transaction not found on testnet")
+        raise HTTPException(
+            status_code=404,
+            detail="No live-node broadcast record exists for this transaction ID. Local simulation IDs are not txids."
+        )
     return tx
+
 
 @app.get("/", response_class=HTMLResponse)
 def serve_dashboard():
