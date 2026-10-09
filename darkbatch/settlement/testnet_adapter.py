@@ -58,9 +58,26 @@ class TestnetSettlementAdapter:
 
     def broadcast(self, bundle: SettlementBundle) -> Dict[str, Any]:
         """
-        Broadcasts a ZIP 229 settlement transaction to Zcash Testnet.
-        Tries live RPC first; if unavailable, uses the consensus-verified node simulator.
+        Broadcast only a fully built, independently validated Ironwood transaction.
+        Simulations and incomplete bundles are rejected; they never fall back to a
+        synthetic local "mined" block.
         """
+        raw_tx_hex = (bundle.raw_tx_hex or "").strip()
+        if (
+            not getattr(bundle, "consensus_ready", False)
+            or not raw_tx_hex
+            or not bundle.tx_id
+        ):
+            return {
+                "status": "REJECTED_NOT_CONSENSUS_READY",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "simulation_id": getattr(bundle, "simulation_id", None),
+                "reason": "Only a complete official Ironwood transaction with verified proof, "
+                          "spend authorization, binding signature, and matching serialization "
+                          "may be broadcast. This bundle is simulation-only.",
+            }
         # Convert bundle dataclass to dictionary representation
         bundle_dict = {
             "tx_id": bundle.tx_id,
