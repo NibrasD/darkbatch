@@ -194,7 +194,6 @@ async def submit_intent(req: IntentSubmitRequest):
         "intent_id": intent.intent_id,
         "epoch": epoch_id,
         "commitment": intent.value_commitment,
-        "bsk_share_hex": hex(intent.bsk_share)[:18] + "...",
         "expiry_height": intent.expiry_height
     }
 
