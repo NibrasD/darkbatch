@@ -165,6 +165,61 @@ def _load_state(path: str | Path) -> dict[str, Any]:
     return state
 
 
+def derive_testnet_ironwood_address(
+    spending_key_hex: str,
+    *,
+    address_index: int = 0,
+    binary_path: str | None = None,
+) -> dict[str, Any]:
+    """
+    Derive a canonical Testnet Unified Address locally from a raw 32-byte
+    Orchard-protocol SpendingKey. This is not a BIP39 phrase or ZIP32 account seed.
+    """
+    key = spending_key_hex.strip()
+    _validate_hex(key, "spending_key_hex")
+    if len(key) != 64:
+        raise RuntimeError("This initial address tool requires a raw 32-byte Orchard-protocol SpendingKey.")
+    if address_index < 0:
+        raise RuntimeError("address_index cannot be negative.")
+    binary = binary_path or _default_binary_path()
+    if not os.path.isfile(binary):
+        raise RuntimeError(
+            f"DarkBatch Rust engine not found at {binary}; build darkbatch_crypto before address derivation."
+        )
+    payload = json.dumps({
+        "network": "testnet",
+        "spending_key_hex": key,
+        "address_index": int(address_index),
+    }, separators=(",", ":"))
+    try:
+        completed = subprocess.run(
+            [binary, "derive-ironwood-address-stdin"],
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Local Ironwood address derivation failed: {exc}") from exc
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "Rust address derivation failed.")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Rust address derivation returned malformed JSON.") from exc
+    if result.get("status") != "DERIVED_TESTNET_ADDRESS" or result.get("network") != "testnet":
+        raise RuntimeError("Rust address tool returned an unexpected result.")
+    _validate_hex(result.get("raw_ironwood_receiver_hex", ""), "raw_ironwood_receiver_hex")
+    if len(result["raw_ironwood_receiver_hex"]) != 86:
+        raise RuntimeError("Rust address tool returned an invalid 43-byte receiver.")
+    if not isinstance(result.get("unified_address"), str) or not result["unified_address"]:
+        raise RuntimeError("Rust address tool returned no Unified Address.")
+    return result
+
+
 def _derive_tree_root(tree_state_hex: str, binary_path: str | None = None) -> str:
     """Derive the root through the same official Merkle implementation as the scanner."""
     binary = binary_path or _default_binary_path()
@@ -504,6 +559,9 @@ def _cli() -> int:
     parser = argparse.ArgumentParser(description="Local Zebra Testnet Ironwood wallet sync/build tools.")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    address = sub.add_parser("address", help="Derive a standard Testnet Unified Address from a raw Orchard-protocol spending key.")
+    address.add_argument("--index", type=int, default=0)
+
     init = sub.add_parser("init", help="Checkpoint the Ironwood tree at a canonical Testnet height.")
     init.add_argument("--state", required=True)
     init.add_argument("--height", type=int, default=None)
@@ -527,6 +585,18 @@ def _cli() -> int:
 
     args = parser.parse_args()
     try:
+        if args.command == "address":
+            key = getpass.getpass("Raw 32-byte Orchard-protocol SpendingKey hex (hidden; never saved): ").strip()
+            result = derive_testnet_ironwood_address(key, address_index=args.index)
+            print(json.dumps({
+                "status": result["status"],
+                "network": result["network"],
+                "address_index": result["address_index"],
+                "unified_address": result["unified_address"],
+                "raw_ironwood_receiver_hex": result["raw_ironwood_receiver_hex"],
+                "note": result["note"],
+            }, indent=2))
+            return 0
         if args.command == "init":
             state = initialize_wallet_scan(args.state, start_height=args.height, overwrite=args.overwrite)
             print(json.dumps({"status": "INITIALIZED", "height": state["height"], "block_hash": state["block_hash"], "state_path": str(Path(args.state).expanduser().resolve())}, indent=2))
