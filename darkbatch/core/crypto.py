@@ -144,7 +144,7 @@ def derive_pk_d(ivk: bytes, diversifier: bytes = bytes(11)) -> bytes:
     Derives authentic diversified transmission key pk_d = [ivk] DiversifyHash(d)
     per Zcash Protocol Specification § 5.4.1.6 and § 5.4.3.4.
     """
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -154,8 +154,8 @@ def derive_pk_d(ivk: bytes, diversifier: bytes = bytes(11)) -> bytes:
             ], text=True)
             data = json.loads(res.strip())
             return bytes.fromhex(data["pk_d_hex"])
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
     return blake2b_digest(ivk + diversifier, personalization=b"ReceiverPkDDeriv")
 
 def encrypt_orchard_note(
@@ -175,7 +175,7 @@ def encrypt_orchard_note(
     Returns (encCiphertext [580B], outCiphertext [80B], epk [32B]).
     """
     memo_clean = memo_512.decode("utf-8", errors="ignore").replace("\x00", "")
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -196,8 +196,8 @@ def encrypt_orchard_note(
             assert len(out_ct) == 80
             assert len(epk) == 32
             return enc_ct, out_ct, epk
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     # Mathematical Zcash Protocol fallback
     esk = generate_scalar().to_bytes(32, "little")
@@ -229,7 +229,7 @@ def decrypt_orchard_note(enc_ciphertext: bytes, ivk: bytes, epk: bytes) -> Tuple
     Decrypts authentic Orchard Note Plaintext using incoming viewing key (ivk)
     per Zcash Protocol Specification § 5.4.3.4.
     """
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -241,8 +241,8 @@ def decrypt_orchard_note(enc_ciphertext: bytes, ivk: bytes, epk: bytes) -> Tuple
             data = json.loads(res.strip())
             if data.get("status") == "SUCCESS":
                 return data["value_zat"], bytes.fromhex(data["memo_hex"])
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     shared_secret = blake2b_digest(ivk + epk, personalization=b"OrchardDHSecret_")
     k_enc = derive_shared_key(shared_secret, epk)
@@ -272,7 +272,7 @@ def sign_redpallas_bundle(sighash_bytes: bytes, bsk_int: int, n_actions: int) ->
     sighash_hex = sighash_bytes.hex()
     bsk_hex = (bsk_int % PALLAS_SCALAR_FIELD).to_bytes(32, "little").hex()
 
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output(
                 [RUST_BIN_PATH, "sign-bundle", sighash_hex, bsk_hex, str(n_actions)],
@@ -288,8 +288,8 @@ def sign_redpallas_bundle(sighash_bytes: bytes, bsk_int: int, n_actions: int) ->
             assert all(len(r) == 32 for r in rk_list)
             assert len(binding_sig) == 64
             return spend_sigs, rk_list, binding_sig
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     # Deterministic cryptographic Schnorr signature fallback on Pallas scalar field
     spend_sigs = []
@@ -311,7 +311,7 @@ def generate_spend_auth_keys(n_actions: int) -> list[Tuple[bytes, bytes]]:
     Generates n authentic RedPallas randomized spend-auth keypairs: (rsk, rk).
     rsk = ask.randomize(alpha), rk = VerificationKey::from(rsk).
     """
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output(
                 [RUST_BIN_PATH, "generate-spend-keys", str(n_actions)],
@@ -324,8 +324,8 @@ def generate_spend_auth_keys(n_actions: int) -> list[Tuple[bytes, bytes]]:
             ]
             if len(keys) == n_actions:
                 return keys
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     # Deterministic cryptographic fallback
     keys = []
@@ -349,7 +349,7 @@ def sign_redpallas_bundle_with_keys(
     bsk_hex = (bsk_int % PALLAS_SCALAR_FIELD).to_bytes(32, "little").hex()
     rsks_csv = ",".join(k.hex() for k in rsk_list)
 
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output(
                 [RUST_BIN_PATH, "sign-bundle-with-keys", sighash_hex, bsk_hex, rsks_csv],
@@ -360,8 +360,8 @@ def sign_redpallas_bundle_with_keys(
             rk_list = [bytes.fromhex(r) for r in data["rk_list"]]
             binding_sig = bytes.fromhex(data["binding_sig"])
             return spend_sigs, rk_list, binding_sig
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     return sign_redpallas_bundle(sighash_bytes, bsk_int, len(rsk_list))
 
@@ -390,7 +390,7 @@ def compute_zip244_v6_txid(
     6. Root Digest: BLAKE2b-256("ZcashTxHash_" || consensus_branch_id, header || transparent || sapling || orchard || ironwood)
     """
     actions_csv = ",".join(a.hex() for a in actions_820_list)
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -400,8 +400,8 @@ def compute_zip244_v6_txid(
             ], text=True)
             data = json.loads(res.strip())
             return data["txid_hex"]
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     header_data = (
         header.to_bytes(4, "little") +
@@ -490,7 +490,7 @@ def derive_orchard_keys_and_address(seed: bytes, diversifier: bytes = bytes(11))
     Derives authentic Orchard / Ironwood keys and address via official rust engine.
     Returns dict with sk_hex, fvk_hex, ivk_hex, ovk_hex, raw_address_hex (43B), pk_d_hex.
     """
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -499,8 +499,8 @@ def derive_orchard_keys_and_address(seed: bytes, diversifier: bytes = bytes(11))
                 diversifier[:11].ljust(11, b"\x00").hex()
             ], text=True)
             return json.loads(res.strip())
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     # Mathematical fallback
     sk_hex = seed[:32].ljust(32, b"\x00").hex()
@@ -527,7 +527,7 @@ def derive_orchard_note_commitments(
     """
     Derives authentic Sinsemilla note commitment (cmx) and Orchard PRF nullifier via rust engine.
     """
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -540,8 +540,8 @@ def derive_orchard_note_commitments(
             ], text=True)
             data = json.loads(res.strip())
             return bytes.fromhex(data["cmx_hex"]), bytes.fromhex(data["nullifier_hex"])
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     cmx = blake2b_digest(raw_addr + str(value_zat).encode() + rseed, personalization=b"IronwoodSinsemil")
     nf = blake2b_digest(fvk + rho + cmx, personalization=b"IronwoodNullifer")
@@ -558,7 +558,7 @@ def generate_ironwood_proof(
     Generates and verifies an authentic Halo 2 proof for an Ironwood bundle via official orchard crate.
     Returns (proof_bytes, anchor_used, actions_count).
     """
-    if os.path.exists(RUST_BIN_PATH):
+    if _require_rust_engine("Zcash protocol cryptography"):
         try:
             res = subprocess.check_output([
                 RUST_BIN_PATH,
@@ -572,8 +572,9 @@ def generate_ironwood_proof(
             data = json.loads(res.strip())
             if data.get("status") == "PROVEN_AND_VERIFIED":
                 return bytes.fromhex(data["proof_hex"]), bytes.fromhex(data["anchor_hex"]), data["actions_count"]
-        except Exception:
-            pass
+            raise RuntimeError(f"Official Ironwood proof generation failed: {data.get('error', data.get('status', 'unknown error'))}")
+        except Exception as exc:
+            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
     # High-fidelity fallback representation
     proof_size = 2720 + 2272 * 2
