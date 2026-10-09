@@ -134,20 +134,7 @@ def derive_pk_d(ivk: bytes, diversifier: bytes = bytes(11)) -> bytes:
     Derives authentic diversified transmission key pk_d = [ivk] DiversifyHash(d)
     per Zcash Protocol Specification § 5.4.1.6 and § 5.4.3.4.
     """
-    if _require_rust_engine("Zcash protocol cryptography"):
-        try:
-            res = subprocess.check_output([
-                RUST_BIN_PATH,
-                "derive-pk-d",
-                ivk.hex(),
-                diversifier.hex()
-            ], text=True)
-            data = json.loads(res.strip())
-            return bytes.fromhex(data["pk_d_hex"])
-        except Exception as exc:
-            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-    return blake2b_digest(ivk + diversifier, personalization=b"ReceiverPkDDeriv")
-
+    raise RuntimeError("Ironwood diversified-key derivation is disabled: the current Rust helper uses a custom DiversifyHash implementation and is not consensus-safe.")
 def encrypt_orchard_note(
     lead_byte: int = 0x03,
     diversifier: bytes = bytes(11),
@@ -164,63 +151,13 @@ def encrypt_orchard_note(
     Encrypts an authentic Zcash Orchard Note per Zcash Protocol Specification § 5.4.3.4 & § 5.4.3.5.
     Returns (encCiphertext [580B], outCiphertext [80B], epk [32B]).
     """
-    memo_clean = memo_512.decode("utf-8", errors="ignore").replace("\x00", "")
-    if _require_rust_engine("Zcash protocol cryptography"):
-        try:
-            res = subprocess.check_output([
-                RUST_BIN_PATH,
-                "encrypt-orchard-note",
-                diversifier[:11].ljust(11, b"\x00").hex(),
-                pk_d[:32].ljust(32, b"\x00").hex(),
-                str(value_zat),
-                memo_clean if memo_clean else "DarkBatch",
-                ovk[:32].ljust(32, b"\x00").hex(),
-                cv[:32].ljust(32, b"\x00").hex(),
-                cmx[:32].ljust(32, b"\x00").hex(),
-            ], text=True)
-            data = json.loads(res.strip())
-            enc_ct = bytes.fromhex(data["enc_ciphertext_hex"])
-            out_ct = bytes.fromhex(data["out_ciphertext_hex"])
-            epk = bytes.fromhex(data["epk_hex"])
-            assert len(enc_ct) == 580
-            assert len(out_ct) == 80
-            assert len(epk) == 32
-            return enc_ct, out_ct, epk
-        except Exception as exc:
-            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
+    raise RuntimeError("Ironwood note encryption is disabled: the current Rust helper has not been verified against the official Ironwood encryption test vectors.")
 def decrypt_orchard_note(enc_ciphertext: bytes, ivk: bytes, epk: bytes) -> Tuple[int, bytes]:
     """
     Decrypts authentic Orchard Note Plaintext using incoming viewing key (ivk)
     per Zcash Protocol Specification § 5.4.3.4.
     """
-    if _require_rust_engine("Zcash protocol cryptography"):
-        try:
-            res = subprocess.check_output([
-                RUST_BIN_PATH,
-                "decrypt-orchard-note",
-                enc_ciphertext.hex(),
-                ivk.hex(),
-                epk.hex()
-            ], text=True)
-            data = json.loads(res.strip())
-            if data.get("status") == "SUCCESS":
-                return data["value_zat"], bytes.fromhex(data["memo_hex"])
-        except Exception as exc:
-            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
-    shared_secret = blake2b_digest(ivk + epk, personalization=b"OrchardDHSecret_")
-    k_enc = derive_shared_key(shared_secret, epk)
-    chacha = ChaCha20Poly1305(k_enc)
-    pt = chacha.decrypt(bytes(12), enc_ciphertext, None)
-    val = int.from_bytes(pt[12:20], "little")
-    memo = pt[52:564]
-    return val, memo
-
-# Standard aliases
-encrypt_memo = encrypt_512_memo
-decrypt_memo = decrypt_512_memo
-
+    raise RuntimeError("Ironwood note decryption is disabled until the matching official encryption implementation and test vectors are available.")
 def generate_keypair() -> Tuple[Any, Any]:
     """Generates an Ed25519 authorization keypair."""
     from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -328,20 +265,7 @@ def compute_zip244_v6_txid(
        * NOTE: anchorIronwood is strictly OMITTED from txid_digest per ZIP 229!
     6. Root Digest: BLAKE2b-256("ZcashTxHash_" || consensus_branch_id, header || transparent || sapling || orchard || ironwood)
     """
-    actions_csv = ",".join(a.hex() for a in actions_820_list)
-    if _require_rust_engine("Zcash protocol cryptography"):
-        try:
-            res = subprocess.check_output([
-                RUST_BIN_PATH,
-                "compute-txid",
-                str(expiry_height),
-                actions_csv
-            ], text=True)
-            data = json.loads(res.strip())
-            return data["txid_hex"]
-        except Exception as exc:
-            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
+    raise RuntimeError("Transaction v6 txid calculation is disabled until it matches authoritative ZIP-229/ZIP-244 vectors; a deterministic digest is not sufficient.")
 def compute_v6_sighash(
     header: int,
     version_group_id: int,
@@ -421,21 +345,4 @@ def generate_ironwood_proof(
     Generates and verifies an authentic Halo 2 proof for an Ironwood bundle via official orchard crate.
     Returns (proof_bytes, anchor_used, actions_count).
     """
-    if _require_rust_engine("Zcash protocol cryptography"):
-        try:
-            res = subprocess.check_output([
-                RUST_BIN_PATH,
-                "generate-ironwood-proof",
-                raw_addr[:43].ljust(43, b"\x00").hex(),
-                str(value_zat),
-                memo_512[:512].ljust(512, b"\x00").hex(),
-                anchor[:32].ljust(32, b"\x00").hex(),
-                sighash[:32].ljust(32, b"\x00").hex()
-            ], text=True)
-            data = json.loads(res.strip())
-            if data.get("status") == "PROVEN_AND_VERIFIED":
-                return bytes.fromhex(data["proof_hex"]), bytes.fromhex(data["anchor_hex"]), data["actions_count"]
-            raise RuntimeError(f"Official Ironwood proof generation failed: {data.get('error', data.get('status', 'unknown error'))}")
-        except Exception as exc:
-            raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
+    raise RuntimeError("Standalone output-only proofs do not authorize DarkBatch settlement actions; this helper is disabled for transaction settlement.")
