@@ -12,7 +12,7 @@ import hashlib
 import os
 import secrets
 from typing import Dict, Any, Tuple
-from darkbatch.core.crypto import blake2b_digest, encrypt_memo, decrypt_memo
+from darkbatch.core.crypto import blake2b_digest, encrypt_512_memo, decrypt_512_memo
 
 class ShieldedWallet:
     """
@@ -63,10 +63,11 @@ class ShieldedWallet:
 
     def decrypt_incoming_memo(self, encrypted_memo: bytes) -> str:
         """
-        Decrypts an encrypted memo using this wallet's Incoming Viewing Key (ivk).
+        Decrypts a local-demo 512-byte receipt encrypted directly with the demo IVK bytes.
+        This is not Zcash Ironwood note decryption or an actual viewing-key derivation.
         """
         try:
-            return decrypt_memo(encrypted_memo, self.ivk).decode("utf-8")
+            return decrypt_512_memo(encrypted_memo, self.ivk).decode("utf-8")
         except Exception as e:
             raise ValueError(f"Decryption failed: {e}")
 
