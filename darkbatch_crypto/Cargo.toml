@@ -16,13 +16,10 @@ serde_json = "1.0"
 reddsa = "0.6"
 chacha20poly1305 = "0.10"
 rand_core = "0.10"
-orchard = "0.15.5"
+orchard = "0.16.0"
 
 # Authoritative Zcash v6 / Ironwood transaction builder; do not hand-serialize consensus transactions.
-zcash_primitives = "0.30.1"
-zcash_protocol = "0.10.6"
-sapling = { package = "sapling-crypto", version = "0.7.0" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "9181ef851c7fa4100c28a7df6bcf1a5ff4c81dbd" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "9181ef851c7fa4100c28a7df6bcf1a5ff4c81dbd" }
+sapling = { package = "sapling-crypto", version = "0.9.0" }
 
-# zcash_primitives 0.30.x APIs use rand_core 0.6; do not mix with the existing 0.10 API.
-rand_core_06 = { package = "rand_core", version = "0.6" }
-rand_08 = { package = "rand", version = "0.8" }
