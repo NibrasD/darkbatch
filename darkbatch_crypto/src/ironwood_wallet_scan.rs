@@ -9,7 +9,7 @@ use orchard::{
     keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey},
     note::{ExtractedNoteCommitment, Note, NoteVersion, Rho, RandomSeed},
     note_encryption::IronwoodDomain,
-    tree::{Anchor, MerkleHashOrchard, MerklePath},
+    tree::{MerkleHashOrchard, MerklePath},
     value::NoteValue,
     Address,
 };
@@ -28,7 +28,7 @@ use zcash_primitives::{
     transaction::Transaction,
 };
 use zcash_protocol::{
-    consensus::{BlockHeight, Network},
+    consensus::Network,
     value::Zatoshis,
 };
 
@@ -216,7 +216,7 @@ pub fn scan_ironwood_block_json(input_json: &str) -> Result<IronwoodScanResult, 
                         .ok_or_else(|| "Could not construct a witness for the new Ironwood note.".to_owned())?;
                     let note_id = format!("{}:{}:{}", claimed_height, txid, action_index);
                     let raw_address = recipient.to_raw_address_bytes();
-                    let value_zat = u64::from_le_bytes(note.value().to_bytes());
+                    let value_zat = note.value().inner();
                     let nullifier_hex = hex::encode(note.nullifier(&fvk).to_bytes());
 
                     tracked_notes.push(IronwoodTrackedNote {
