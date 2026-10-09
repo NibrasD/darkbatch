@@ -222,6 +222,9 @@ pub fn create_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value, 
         let note_address = orchard::Address::from_raw_address_bytes(&raw_address)
             .into_option()
             .ok_or_else(|| format!("{label}: invalid note receiver."))?;
+        if fvk.scope_for_address(&note_address).is_none() {
+            return Err(format!("{label}: supplied FullViewingKey does not control this note receiver."));
+        }
         let rho_bytes = parse_hex::<32>(&spend.rho_hex, &format!("{label}.rho_hex"))?;
         let rho = Rho::from_bytes(&rho_bytes)
             .into_option()
@@ -497,6 +500,14 @@ pub fn finalize_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value
         }
     }
     let actions = pczt.ironwood().actions();
+    let actual_real_nullifiers: std::collections::BTreeSet<[u8; 32]> = actions
+        .iter()
+        .filter(|action| action.spend().value().as_ref().is_some_and(|value| *value > 0))
+        .map(|action| *action.spend().nullifier())
+        .collect();
+    if actual_real_nullifiers != required {
+        return Err("Required input manifest does not exactly match the real spend actions in the PCZT.".to_owned());
+    }
     let mut witness_indices = std::collections::BTreeSet::new();
     let mut witnesses = Vec::with_capacity(request.witnesses.len());
 
