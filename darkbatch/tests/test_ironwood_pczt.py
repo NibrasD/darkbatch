@@ -18,6 +18,29 @@ def test_private_artifacts_are_created_exclusively_and_not_overwritten(tmp_path)
         assert target.stat().st_mode & 0o777 == 0o600
 
 
+
+def test_prepare_signer_creates_redacted_local_copy(tmp_path, monkeypatch):
+    source = tmp_path / "base.json"
+    source.write_text(json.dumps({"pczt_hex": "aabb"}), encoding="utf-8")
+    target = tmp_path / "signer-view.json"
+    monkeypatch.setattr(ironwood_pczt, "_run_rust", lambda command, request, timeout_seconds=1800: {
+        "status": "PCZT_REDACTED_FOR_PARTICIPANT",
+        "signer_nullifier_hex": request["signer_nullifier_hex"],
+        "action_index": 1,
+        "sighash_hex": "56" * 32,
+        "pczt_hex": "ccdd",
+        "broadcast": False,
+        "privacy_note": "other input-note opening fields are redacted",
+    })
+    assert ironwood_pczt.command_prepare_signer(Namespace(
+        pczt=str(source), nullifier="34" * 32, out=str(target),
+    )) == 0
+    result = json.loads(target.read_text(encoding="utf-8"))
+    assert result["status"] == "PCZT_REDACTED_FOR_PARTICIPANT"
+    assert result["pczt_hex"] == "ccdd"
+    assert json.loads(source.read_text(encoding="utf-8"))["pczt_hex"] == "aabb"
+
+
 def test_sign_command_keeps_spending_key_out_of_cli_args_and_stdout(tmp_path, monkeypatch, capsys):
     source = tmp_path / "unsigned.json"
     source.write_text(json.dumps({"pczt_hex": "aabb"}), encoding="utf-8")
