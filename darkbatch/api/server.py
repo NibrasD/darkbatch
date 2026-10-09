@@ -137,12 +137,13 @@ def get_health():
     pending = get_pending_intents()
     return {
         "status": "ONLINE",
-        "network": "Zcash Ironwood (NU6.3)",
+        "network": "Ironwood local simulation only (NU6.3 target)",
         "protocol_version": "ZIP-228 / ZIP-229 v6",
         "current_epoch": epoch_id,
         "seconds_until_clear": round(remaining, 1),
         "sealed_intent_count": len(pending),
-        "total_blocks_mined": len(NODE.blocks),
+        "local_simulated_block_count": len(NODE.blocks),
+        "consensus_ready": False,
         "ironwood_anchor": NODE.current_anchor()
     }
 
@@ -240,8 +241,9 @@ async def clear_current_epoch():
     })
 
     return {
-        "status": "CLEARED",
+        "status": res.get("status", "SIMULATED_ONLY"),
         "cleared_epoch": epoch_id,
+        "consensus_ready": False,
         "result": res
     }
 
