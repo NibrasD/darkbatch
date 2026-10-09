@@ -192,6 +192,116 @@ class TestnetSettlementAdapter:
         self.broadcast_history[txid] = record
         return record
 
+    def broadcast_raw_transaction(self, raw_tx_hex: str, expected_txid: str) -> Dict[str, Any]:
+        """
+        Broadcast a transaction built by the trusted local wallet process.
+
+        Private keys, notes, and Merkle witnesses never cross the coordinator API.
+        This method checks encoding and target-network preconditions, then lets Zebra
+        perform authoritative proof/signature/anchor/balance validation.
+        """
+        raw_hex = (raw_tx_hex or "").strip()
+        txid_expected = (expected_txid or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", txid_expected):
+            return {
+                "status": "REJECTED_INVALID_EXPECTED_TXID",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+            }
+        if not raw_hex or len(raw_hex) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", raw_hex):
+            return {
+                "status": "REJECTED_INVALID_RAW_TX",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": "Raw transaction must be non-empty even-length hexadecimal.",
+            }
+        raw = bytes.fromhex(raw_hex)
+        if len(raw) < 12:
+            return {
+                "status": "REJECTED_INVALID_RAW_TX",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": "Raw transaction is too short to contain a v6 header.",
+            }
+        header = int.from_bytes(raw[0:4], "little")
+        version_group_id = int.from_bytes(raw[4:8], "little")
+        branch_id = int.from_bytes(raw[8:12], "little")
+        if header != 0x80000006 or version_group_id != 0xD884B698:
+            return {
+                "status": "REJECTED_INVALID_RAW_TX",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": "Transaction must use v6 header and official v6 version-group ID.",
+            }
+        if branch_id not in {0x37A5165B, 0x77190AD9}:
+            return {
+                "status": "REJECTED_INVALID_RAW_TX",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": "Raw transaction has an unsupported Ironwood consensus branch ID.",
+            }
+
+        try:
+            info = self.get_testnet_info()
+        except Exception as exc:
+            return {
+                "status": "TESTNET_RPC_UNAVAILABLE",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": str(exc),
+            }
+
+        try:
+            response = self._rpc("sendrawtransaction", [raw_hex], timeout=10.0)
+            txid = response.get("result")
+            if not isinstance(txid, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", txid):
+                raise RuntimeError("Zebra returned no valid transaction ID.")
+        except Exception as exc:
+            logger.warning("Zebra rejected/failed to accept raw Ironwood transaction: %s", exc)
+            return {
+                "status": "REJECTED_BY_TESTNET_NODE",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "expected_tx_id": txid_expected,
+                "confirmations": 0,
+                "reason": str(exc),
+            }
+
+        txid = txid.lower()
+        matches = txid == txid_expected
+        record = {
+            "txid": txid,
+            "expected_txid": txid_expected,
+            "txid_matches": matches,
+            "status": "BROADCAST_PENDING" if matches else "BROADCAST_TXID_MISMATCH",
+            "network": "Zcash Testnet (Ironwood / v6)",
+            "node_height_at_broadcast": info.get("blocks"),
+            "version_group_id": "0xd884b698",
+            "consensus_branch_id": f"0x{branch_id:08x}",
+            "raw_tx_len": len(raw),
+            "confirmations": 0,
+            "confirmed": False,
+            "broadcast": True,
+            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{txid}",
+            "live_node": True,
+            "note": "Zebra accepted the broadcast request; no mined confirmation has been checked.",
+        }
+        self.broadcast_history[txid] = record
+        return record
+
     def get_transaction(self, txid: str) -> Optional[Dict[str, Any]]:
         """Returns this process's broadcast receipt, not a guarantee of on-chain confirmation."""
         return self.broadcast_history.get(txid)
