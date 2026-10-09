@@ -44,6 +44,7 @@ fn print_usage() {
     println!("Safe commands (secret material is read from stdin):");
     println!("  commit-stdin");
     println!("  derive-ironwood-address-stdin");
+    println!("  export-ironwood-fvk-stdin");
     println!("  ironwood-tree-root-stdin");
     println!("  scan-ironwood-block-stdin");
     println!("  build-ironwood-transaction-stdin");
@@ -61,6 +62,9 @@ fn main() {
         "commit-stdin" => run_commit_stdin(),
         "derive-ironwood-address-stdin" => read_stdin_json_string()
             .and_then(|input| darkbatch_crypto::derive_ironwood_address_json(&input))
+            .map(|value| println!("{}", value)),
+        "export-ironwood-fvk-stdin" => read_stdin_json_string()
+            .and_then(|input| darkbatch_crypto::export_ironwood_fvk_json(&input))
             .map(|value| println!("{}", value)),
         "ironwood-tree-root-stdin" => read_stdin_json_string()
             .and_then(|input| darkbatch_crypto::ironwood_tree_root_json(&input))
