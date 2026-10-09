@@ -13,7 +13,8 @@ use orchard::{
     tree::{Anchor, MerklePath},
     Address, Note,
 };
-use rand_core_06::{CryptoRng, RngCore};
+use rand::Rng;
+use rand_core::CryptoRng;
 use sapling::prover::{OutputProver, SpendProver};
 use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder, BuildResult, BundlePadding},
@@ -109,7 +110,7 @@ where
     SP: SpendProver,
     OP: OutputProver,
     FR: FeeRule,
-    R: RngCore + CryptoRng,
+    R: Rng + CryptoRng,
     FR::Error: core::fmt::Display,
 {
     let branch_id = BranchId::for_height(&params, target_height);
