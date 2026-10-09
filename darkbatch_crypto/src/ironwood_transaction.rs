@@ -16,7 +16,8 @@ use orchard::{
 use rand_core::{CryptoRng, RngCore};
 use sapling::prover::{OutputProver, SpendProver};
 use zcash_primitives::transaction::{
-    builder::{BuildConfig, Builder, BuildResult, BundlePadding, FeeRule},
+    builder::{BuildConfig, Builder, BuildResult, BundlePadding},
+    fees::FeeRule,
 };
 use zcash_protocol::{
     consensus::{BlockHeight, BranchId, Parameters},
