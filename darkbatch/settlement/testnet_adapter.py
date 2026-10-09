@@ -125,8 +125,11 @@ class TestnetSettlementAdapter:
 
     def broadcast(self, bundle: SettlementBundle) -> Dict[str, Any]:
         """
-        Submit only a consensus-ready Transaction v6 to a real NU6.3 Testnet node.
-        No synthetic mining, no local consensus claims, and no fake confirmations.
+        Broadcast only a complete consensus-ready transaction object.
+
+        All raw bytes flow through broadcast_raw_transaction(), which asks the
+        official Rust/Zcash decoder to compute the txid from those exact bytes
+        before contacting the live node. There is no simulator fallback.
         """
         reason = self._validate_candidate(bundle)
         if reason:
@@ -139,59 +142,7 @@ class TestnetSettlementAdapter:
                 "confirmations": 0,
                 "reason": reason,
             }
-
-        try:
-            info = self.get_testnet_info()
-        except Exception as exc:
-            return {
-                "status": "TESTNET_RPC_UNAVAILABLE",
-                "broadcast": False,
-                "confirmed": False,
-                "tx_id": None,
-                "confirmations": 0,
-                "reason": str(exc),
-            }
-
-        raw_tx_hex = bundle.raw_tx_hex.strip()
-        try:
-            response = self._rpc("sendrawtransaction", [raw_tx_hex], timeout=10.0)
-            txid = response.get("result")
-            if not isinstance(txid, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", txid):
-                raise RuntimeError("Zebra returned no valid transaction ID.")
-        except Exception as exc:
-            logger.warning("Zebra rejected/failed to accept Ironwood transaction: %s", exc)
-            return {
-                "status": "REJECTED_BY_TESTNET_NODE",
-                "broadcast": False,
-                "confirmed": False,
-                "tx_id": None,
-                "expected_tx_id": bundle.tx_id,
-                "confirmations": 0,
-                "reason": str(exc),
-            }
-
-        txid = txid.lower()
-        expected_txid = bundle.tx_id.lower()
-        txid_matches = txid == expected_txid
-        record = {
-            "txid": txid,
-            "expected_txid": expected_txid,
-            "txid_matches": txid_matches,
-            "status": "BROADCAST_PENDING" if txid_matches else "BROADCAST_TXID_MISMATCH",
-            "network": "Zcash Testnet (Ironwood / NU6.3)",
-            "node_height_at_broadcast": info.get("blocks"),
-            "version_group_id": "0xd884b698",
-            "consensus_branch_id": "0x37a5165b",
-            "raw_tx_len": bundle.raw_tx_bytes_len,
-            "confirmations": 0,
-            "confirmed": False,
-            "broadcast": True,
-            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{txid}",
-            "live_node": True,
-            "note": "Accepted for broadcast; mined confirmation has not been checked.",
-        }
-        self.broadcast_history[txid] = record
-        return record
+        return self.broadcast_raw_transaction(bundle.raw_tx_hex, bundle.tx_id)
 
     def broadcast_raw_transaction(self, raw_tx_hex: str, expected_txid: str) -> Dict[str, Any]:
         """
