@@ -226,7 +226,7 @@ def test_raw_broadcast_rejects_invalid_hex_without_rpc():
     assert receipt["confirmations"] == 0
 
 
-def test_raw_broadcast_requires_real_testnet_rpc_after_header_checks():
+def test_raw_broadcast_rejects_truncated_transaction_even_with_valid_header():
     adapter = TestnetSettlementAdapter(rpc_url="")
     raw = (
         (0x80000006).to_bytes(4, "little")
@@ -237,10 +237,36 @@ def test_raw_broadcast_requires_real_testnet_rpc_after_header_checks():
         raw_tx_hex=raw.hex(),
         expected_txid="11" * 32,
     )
-    assert receipt["status"] == "TESTNET_RPC_UNAVAILABLE"
+    assert receipt["status"] == "REJECTED_INVALID_RAW_TX"
     assert receipt["broadcast"] is False
     assert receipt["confirmed"] is False
     assert receipt["confirmations"] == 0
+
+
+def test_expected_txid_mismatch_is_rejected_before_any_rpc_call(monkeypatch):
+    from darkbatch.settlement import testnet_adapter as adapter_module
+
+    adapter = TestnetSettlementAdapter(rpc_url="http://not-called.invalid")
+    raw = (
+        (0x80000006).to_bytes(4, "little")
+        + (0xD884B698).to_bytes(4, "little")
+        + (0x37A5165B).to_bytes(4, "little")
+    )
+    monkeypatch.setattr(adapter_module, "inspect_raw_ironwood_transaction", lambda raw_tx_hex: {
+        "status": "PARSED_V6_TRANSACTION",
+        "network": "testnet",
+        "txid": "aa" * 32,
+        "raw_tx_bytes_len": len(raw),
+        "header": "0x80000006",
+        "version_group_id": "0xd884b698",
+        "consensus_branch_id": "0x37a5165b",
+    })
+    monkeypatch.setattr(adapter, "_rpc", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("RPC must not be called")))
+
+    receipt = adapter.broadcast_raw_transaction(raw.hex(), "bb" * 32)
+    assert receipt["status"] == "REJECTED_TXID_MISMATCH"
+    assert receipt["broadcast"] is False
+    assert receipt["confirmed"] is False
 
 
 def test_confirmation_state_changes_only_after_node_reports_confirmations():
