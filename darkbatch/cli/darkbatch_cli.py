@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-DarkBatch Persistent CLI Tool
-Integrated with SQLite storage, zero-leak sealed mempool, and viewing key memo decrypter.
+CLI for the local FBA simulation prototype. It does not operate a real Ironwood wallet or consensus node.
 """
 
 import argparse
@@ -17,8 +16,10 @@ from darkbatch.core.repo import (
     save_intent,
     get_pending_intents,
     mark_intents_settled,
+    mark_intents_simulated,
     get_active_epoch_id,
     record_epoch_clear,
+    record_epoch_simulation,
     update_wallet_balance
 )
 from darkbatch.core.wallet import ShieldedWallet
@@ -59,7 +60,7 @@ def main():
     p_memo.add_argument("--hex", type=str, required=True, help="512-byte encrypted memo hex string")
 
     # Node
-    p_node = subparsers.add_parser("node", help="Inspect Zcash Ironwood node state")
+    p_node = subparsers.add_parser("node", help="Inspect local simulation state (not a Zcash node)")
     p_node.add_argument("action", choices=["info"])
 
     args = parser.parse_args()
@@ -133,6 +134,7 @@ def main():
             res = SOLVER.run_epoch_settlement(epoch_id, pending, wallets_ivk_map=all_wallets)
             
             if res.get("status") == "SETTLED_AND_MINED":
+                # Retained only for a future real-node path; current solver cannot return this state.
                 record_epoch_clear(
                     epoch_id=epoch_id,
                     clearing_price_usd=res["clearing_price_usd"],
@@ -142,8 +144,17 @@ def main():
                     block_hash=res["block_hash"]
                 )
                 mark_intents_settled([i.intent_id for i in pending])
-            
-            print("\n=== BATCH CLEARING & TRANSACTION V6 SETTLEMENT ===")
+            elif res.get("status") == "SIMULATED_ONLY":
+                record_epoch_simulation(
+                    epoch_id=epoch_id,
+                    clearing_price_usd=res["clearing_price_usd"],
+                    total_cleared_zec=res["cleared_zec"],
+                    total_cleared_usd=res["cleared_usd"],
+                    simulation_id=res["simulation_id"],
+                )
+                mark_intents_simulated([i.intent_id for i in pending])
+
+            print("\\n=== FBA MATCH RESULT (SIMULATION ONLY) ===")
             print(json.dumps(res, indent=2))
 
     elif args.command == "memo":
