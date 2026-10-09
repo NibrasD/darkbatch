@@ -186,6 +186,32 @@ def command_sign(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def command_combine(args: argparse.Namespace) -> int:
+    pczt_hexes = [_pczt_hex_from_file(path) for path in args.pczts]
+    required_nullifiers = [item.strip().lower() for item in args.nullifiers.split(",") if item.strip()]
+    if not required_nullifiers:
+        raise RuntimeError("--nullifiers must list every real input nullifier, comma-separated.")
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in required_nullifiers):
+        raise RuntimeError("Every --nullifiers entry must be a 32-byte hex nullifier.")
+    result = _run_rust("combine-ironwood-pczts-stdin", {
+        "pczt_hexes": pczt_hexes,
+        "required_nullifiers_hex": required_nullifiers,
+    })
+    if result.get("status") != "PCZT_COMBINED_AND_READY_FOR_FINALIZATION" or result.get("broadcast") is not False:
+        raise RuntimeError("Official Combiner returned an unexpected status.")
+    _write_private_json(args.out, result)
+    print(json.dumps({
+        "status": result["status"],
+        "input_count": result.get("input_count"),
+        "participant_pczt_count": result.get("participant_pczt_count"),
+        "sighash_hex": result.get("sighash_hex"),
+        "pczt_file": str(Path(args.out).resolve()),
+        "broadcast": False,
+    }, indent=2))
+    return 0
+
+
 def command_finalize(args: argparse.Namespace) -> int:
     request = _read_json(args.request)
     result = _run_rust("finalize-ironwood-pczt-stdin", request, timeout_seconds=args.timeout)
@@ -243,6 +269,12 @@ def _cli(argv: list[str] | None = None) -> int:
     sign.add_argument("--sighash", required=True, help="Must match the sighash that the participant reviewed.")
     sign.add_argument("--out", required=True, help="New signed PCZT output path.")
     sign.set_defaults(func=command_sign)
+
+    combine = sub.add_parser("combine", help="Merge participant signatures using the official PCZT Combiner.")
+    combine.add_argument("--pczts", nargs="+", required=True, help="All signed PCZT files, each derived from the same unsigned PCZT.")
+    combine.add_argument("--nullifiers", required=True, help="Comma-separated list of all real input nullifiers.")
+    combine.add_argument("--out", required=True, help="New combined PCZT file.")
+    combine.set_defaults(func=command_combine)
 
     finalize = sub.add_parser("finalize", help="Attach live witnesses, prove and extract the same PCZT.")
     finalize.add_argument("--request", required=True, help="Local JSON including signed PCZT, anchor, and all witnesses.")
