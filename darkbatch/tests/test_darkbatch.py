@@ -80,6 +80,44 @@ def test_fba_marginal_rationing():
     assert marginal_fill.filled_zat == 500_000_000
 
 
+def test_fba_never_fills_more_than_the_matched_volume():
+    """Excess supply is rationed by price priority even when asks are below P*."""
+    buyer = create_intent(OrderDirection.BUY_ZEC, 5.0, 45.0, SAMPLE_ADDRESS_1)
+    cheap_seller = create_intent(OrderDirection.SELL_ZEC, 100.0, 40.0, SAMPLE_ADDRESS_2)
+    next_seller = create_intent(OrderDirection.SELL_ZEC, 10.0, 41.0, SAMPLE_ADDRESS_3)
+
+    result = BatchAuctionSolver().solve(3, [buyer, cheap_seller, next_seller])
+
+    matched_zat = int(result.total_cleared_zec * 100_000_000)
+    assert matched_zat == 500_000_000
+    assert sum(fill.filled_zat for fill in result.buy_fills) == matched_zat
+    assert sum(fill.filled_zat for fill in result.sell_fills) == matched_zat
+    assert [(fill.intent_id, fill.filled_zat) for fill in result.sell_fills] == [
+        (cheap_seller.intent_id, matched_zat)
+    ]
+    assert next_seller.intent_id in result.unfilled_intents
+
+
+def test_fba_marginal_pro_rata_uses_exact_zatoshis_and_is_order_independent():
+    # Three equal one-zatoshi bids compete for two zatoshis of supply.
+    buyers = [
+        create_intent(OrderDirection.BUY_ZEC, 0.00000001, 42.50, f"buyer-{i}")
+        for i in range(3)
+    ]
+    seller = create_intent(OrderDirection.SELL_ZEC, 0.00000002, 42.50, "seller")
+    solver = BatchAuctionSolver()
+
+    first = solver.solve(4, buyers + [seller])
+    second = solver.solve(4, list(reversed(buyers)) + [seller])
+    first_allocations = {fill.intent_id: fill.filled_zat for fill in first.buy_fills}
+    second_allocations = {fill.intent_id: fill.filled_zat for fill in second.buy_fills}
+
+    assert first_allocations == second_allocations
+    assert sum(first_allocations.values()) == 2
+    assert sum(fill.filled_zat for fill in first.sell_fills) == 2
+    assert sorted(first_allocations.values()) == [1, 1]
+
+
 def test_settlement_builder_returns_simulation_not_transaction():
     alice = ShieldedWallet("alice")
     bob = ShieldedWallet("bob")
