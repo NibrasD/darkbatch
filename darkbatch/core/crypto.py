@@ -65,11 +65,10 @@ def aggregate_binding_keys(bsk_shares: list[int]) -> int:
     return sum(bsk_shares) % PALLAS_SCALAR_FIELD
 
 # ==============================================================================
-# ==============================================================================
-# STRICT 512-BYTE ENCRYPTED MEMO & NOTE ENCRYPTION (ZCASH CONFORMANT)
-# Uses authentic RFC 8439 ChaCha20Poly1305 AEAD
-# Standalone memo: 12B Nonce + 484B Payload + 16B Poly1305 Tag = 512 Bytes exactly
-# Orchard/Ironwood note: 564B Plaintext (lead 0x03) + 16B Poly1305 Tag = 580 Bytes
+# LOCAL DEMO RECEIPT ENVELOPE ONLY
+# This 512-byte AES/ChaCha-style envelope is not an Ironwood note ciphertext or
+# the 512-byte memo carried inside an Ironwood NotePlaintext.
+# Ironwood note encryption is intentionally disabled until official vectors pass.
 # ==============================================================================
 
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
