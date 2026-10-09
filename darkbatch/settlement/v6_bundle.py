@@ -123,137 +123,21 @@ class SettlementBundleBuilder:
         intents_map: Dict[str, SwapOrderIntent],
         wallets_ivk_map: Optional[Dict[str, bytes]] = None
     ) -> SettlementBundle:
-        action_groups: List[SwapActionGroupDescription] = []
-        bsk_shares: List[int] = []
+        """
+        Produce a deterministic *simulation record*, never a raw Ironwood transaction.
+
+        An order intent and a recipient viewing key do not provide spend authority,
+        spendable notes, or note-tree witnesses. The official Ironwood builder must
+        receive real authorized spends and outputs and serialize the exact bundle it
+        proved. Until that integration exists, this method fails closed at the
+        consensus boundary instead of emitting fabricated proofs/signatures/txids.
+        """
         all_fills = clear_result.buy_fills + clear_result.sell_fills
-        total_matcher_fee = 0
-        total_miner_fee = 0
-
-        # This component intentionally builds only simulation metadata.
-        # It MUST NOT serialize or expose a hand-built byte string as a Zcash tx.
-        bundle_expiry_height = max([i.expiry_height for i in intents_map.values()] + [4134200])
-
-        # Pre-derive authentic RedPallas randomized spend-authorization keys for each action
-        spend_keys = generate_spend_auth_keys(len(all_fills))
-        rsk_list = [k[0] for k in spend_keys]
-        rk_list = [k[1] for k in spend_keys]
-
-        for idx, fill in enumerate(all_fills):
-            intent = intents_map.get(fill.intent_id)
-            if not intent:
-                continue
-
-            bsk_shares.append(intent.bsk_share)
-
-            # 1. Authentic Value Commitment (Pedersen commitment on Pallas curve)
-            val_r = generate_scalar()
-            cv_net_hex = pedersen_commit(fill.filled_zat, val_r)
-            cv_fee_hex = pedersen_commit(100_000, generate_scalar())
-
-            # 2. Authentic Trader Address and Key Derivation
-            if wallets_ivk_map and fill.shielded_address in wallets_ivk_map:
-                receiver_ivk = wallets_ivk_map[fill.shielded_address]
-                pk_d = derive_pk_d(receiver_ivk, diversifier=bytes(11))
-                ovk = blake2b_digest(receiver_ivk + b"ovk", personalization=b"ReceiverOvkDeriv")
-                fvk_bytes = receiver_ivk.ljust(96, b"\x00")[:96]
-                raw_addr = bytes(11) + pk_d
-            else:
-                trader_seed = blake2b_digest(fill.shielded_address.encode(), personalization=b"DarkBatchTrader\x00")
-                key_info = derive_orchard_keys_and_address(trader_seed)
-                raw_addr = bytes.fromhex(key_info["raw_address_hex"])
-                pk_d = bytes.fromhex(key_info["pk_d_hex"])
-                fvk_bytes = bytes.fromhex(key_info["fvk_hex"])
-                ovk = bytes.fromhex(key_info["ovk_hex"])
-                receiver_ivk = bytes.fromhex(key_info["ivk_hex"])
-
-            rseed = (val_r % (2**256 - 1)).to_bytes(32, "little")
-            rho = blake2b_digest(f"rho:{intent.intent_id}".encode(), personalization=b"DarkBatchRhoSeed")
-
-            # 3. Authentic Sinsemilla Note Commitment (cmx) & Orchard PRF Nullifier Derivation
-            cm_bytes, nullifier_bytes = derive_orchard_note_commitments(
-                raw_addr=raw_addr,
-                value_zat=fill.filled_zat,
-                rseed=rseed,
-                rho=rho,
-                fvk=fvk_bytes
-            )
-
-            # 4. Authentic 512-Byte Raw Memo Plaintext (ZIP 212 / ZIP 302)
-            memo_dict = {
-                "protocol": "DarkBatch-ZIP228",
-                "epoch": clear_result.epoch_id,
-                "direction": fill.direction.value,
-                "p_star": clear_result.clearing_price_usd,
-                "filled_zec": fill.filled_zat / 100_000_000.0,
-                "filled_usd": round(fill.quote_filled_usd, 2),
-                "marginal": fill.is_marginal,
-                "ts": int(time.time()),
-                "status": "CONFIDENTIAL_SETTLED"
-            }
-            memo_512_bytes = json.dumps(memo_dict).encode("utf-8").ljust(512, b"\x00")[:512]
-            assert len(memo_512_bytes) == 512
-
-            # 5. Authentic Zcash Orchard Note Encryption (§ 5.4.3.4 & § 5.4.3.5)
-            # Produces 580B encCiphertext, 80B outCiphertext, and 32B ephemeral key
-            enc_ct, out_ct, epk_bytes = encrypt_orchard_note(
-                lead_byte=0x03,
-                diversifier=raw_addr[:11],
-                value_zat=fill.filled_zat,
-                rseed=rseed,
-                memo_512=memo_512_bytes,
-                ovk=ovk,
-                cv=bytes.fromhex(cv_net_hex),
-                cmx=cm_bytes,
-                pk_d=pk_d
-            )
-            assert len(enc_ct) == 580
-            assert len(out_ct) == 80
-            assert len(epk_bytes) == 32
-
-            # 6. Construct ZIP 228 Swap Action
-            action_rk = rk_list[idx]
-            swap_action = SwapActionDescription(
-                action_type="SWAP",
-                cv_net_hex=cv_net_hex,
-                nullifier_hex=nullifier_bytes.hex(),
-                rk_hex=action_rk.hex(),
-                cm_star_hex=cm_bytes.hex(),
-                epk_hex=epk_bytes.hex(),
-                enc_ciphertext_hex=enc_ct.hex(),
-                out_ciphertext_hex=out_ct.hex(),
-                encrypted_memo_hex=enc_ct.hex()
-            )
-
-            # 7. Construct ZIP 228 Fee Action (Matcher Fee + Miner Fee)
-            matcher_fee_zat = int(round(fill.filled_zat * (clear_result.solver_fee_zec / max(1e-6, clear_result.total_cleared_zec))))
-            miner_fee_zat = 10_000  # 0.0001 ZEC standard miner fee
-            total_matcher_fee += matcher_fee_zat
-            total_miner_fee += miner_fee_zat
-
-            fee_action = FeeActionDescription(
-                action_type="FEE",
-                cv_fee_hex=cv_fee_hex,
-                matcher_fee_zat=matcher_fee_zat,
-                miner_fee_zat=miner_fee_zat
-            )
-
-            net_bal = fill.filled_zat if fill.direction == OrderDirection.SELL_ZEC else -fill.filled_zat
-
-            ag = SwapActionGroupDescription(
-                group_id=f"ag-{intent.intent_id[:8]}",
-                intent_id=intent.intent_id,
-                direction=fill.direction.value,
-                anchor_hex=self.ironwood_anchor,
-                swap_action=swap_action,
-                fee_action=fee_action,
-                expiry_height=intent.expiry_height,
-                bsk_share_hex=hex(intent.bsk_share),
-                net_value_balance_zat=net_bal
-            )
-            action_groups.append(ag)
-
-        # This is an off-chain FBA simulation, not a ZIP-229 transaction.
-        # Do not manufacture fake proof bytes, signatures, or an on-chain txid here.
+        total_matcher_fee = sum(
+            int(round(fill.filled_zat * self._fee_fraction(clear_result)))
+            for fill in all_fills
+        )
+        total_miner_fee = 10_000 * len(all_fills)
         transcript = {
             "epoch_id": clear_result.epoch_id,
             "clearing_price_usd": clear_result.clearing_price_usd,
@@ -273,7 +157,6 @@ class SettlementBundleBuilder:
             json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode(),
             personalization=b"DarkBatchSimID"
         ).hex()
-
         return SettlementBundle(
             tx_id=None,
             simulation_id=simulation_id,
@@ -283,7 +166,7 @@ class SettlementBundleBuilder:
             epoch_id=clear_result.epoch_id,
             clearing_price_usd=clear_result.clearing_price_usd,
             total_volume_zec=clear_result.total_cleared_zec,
-            action_groups=action_groups,
+            action_groups=[],
             aggregated_binding_pubkey_hex="",
             raw_tx_hex="",
             raw_tx_bytes_len=0,
@@ -293,3 +176,9 @@ class SettlementBundleBuilder:
             consensus_ready=False,
             construction_mode="LOCAL_SIMULATION_ONLY",
         )
+
+    @staticmethod
+    def _fee_fraction(clear_result: BatchClearResult) -> float:
+        if clear_result.total_cleared_zec <= 0:
+            return 0.0
+        return clear_result.solver_fee_zec / clear_result.total_cleared_zec
