@@ -48,7 +48,7 @@ def generate_scalar() -> int:
 def pedersen_commit(value: int, randomness: int) -> str:
     """
     Computes Pedersen commitment C = [v] * V + [r] * R.
-    Uses the native Rust pasta_curves engine if compiled, with deterministic mathematical fallback.
+    Requires the compiled Rust engine. No hash-based fallback is allowed.
     """
     binary = _require_rust_engine("Pedersen value commitment")
     r_hex = (randomness % PALLAS_SCALAR_FIELD).to_bytes(32, "little").hex()
@@ -58,16 +58,6 @@ def pedersen_commit(value: int, randomness: int) -> str:
     if not isinstance(commitment, str) or len(commitment) != 64:
         raise RuntimeError("Rust engine returned an invalid Pedersen commitment.")
     return commitment
-
-    # Mathematical generator points on Pallas per § 5.4.9.4
-    # V_Orchard = GroupHash^P("z.cash:Orchard-cv", "v")
-    # R_Orchard = GroupHash^P("z.cash:Orchard-cv", "r")
-    v_seed = blake2b_digest(b"v", personalization=b"z.cash:Orchard-c")
-    r_seed = blake2b_digest(b"r", personalization=b"z.cash:Orchard-c")
-    v_int = int.from_bytes(v_seed, "big") % PALLAS_SCALAR_FIELD
-    r_int = int.from_bytes(r_seed, "big") % PALLAS_SCALAR_FIELD
-    commit_int = (value * v_int + randomness * r_int) % PALLAS_SCALAR_FIELD
-    return hex(commit_int)[2:].zfill(64)
 
 def aggregate_binding_keys(bsk_shares: list[int]) -> int:
     """
@@ -199,31 +189,6 @@ def encrypt_orchard_note(
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
-    # Mathematical Zcash Protocol fallback
-    esk = generate_scalar().to_bytes(32, "little")
-    epk = blake2b_digest(b"gd_base" + esk, personalization=b"z.cash:Orchard-g")
-    shared_secret = blake2b_digest(pk_d + esk, personalization=b"OrchardDHSecret_")
-    k_enc = derive_shared_key(shared_secret, epk)
-    ock = derive_ock(ovk, cv, cmx, epk)
-
-    pt = bytearray([lead_byte])
-    pt.extend(diversifier[:11].ljust(11, b"\x00"))
-    pt.extend(value_zat.to_bytes(8, "little"))
-    pt.extend(rseed[:32].ljust(32, b"\x00"))
-    pt.extend(memo_512[:512].ljust(512, b"\x00"))
-    assert len(pt) == NOTE_PLAINTEXT_SIZE
-
-    chacha_enc = ChaCha20Poly1305(k_enc)
-    enc_ct = chacha_enc.encrypt(bytes(12), bytes(pt), None)
-    assert len(enc_ct) == NOTE_CIPHERTEXT_SIZE
-
-    out_pt = pk_d[:32].ljust(32, b"\x00") + esk
-    chacha_out = ChaCha20Poly1305(ock)
-    out_ct = chacha_out.encrypt(bytes(12), out_pt, None)
-    assert len(out_ct) == 80
-
-    return enc_ct, out_ct, epk
-
 def decrypt_orchard_note(enc_ciphertext: bytes, ivk: bytes, epk: bytes) -> Tuple[int, bytes]:
     """
     Decrypts authentic Orchard Note Plaintext using incoming viewing key (ivk)
@@ -291,21 +256,6 @@ def sign_redpallas_bundle(sighash_bytes: bytes, bsk_int: int, n_actions: int) ->
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
-    # Deterministic cryptographic Schnorr signature fallback on Pallas scalar field
-    spend_sigs = []
-    rk_list = []
-    for i in range(n_actions):
-        rk_point = blake2b_digest(f"rk_point_{i}".encode() + sighash_bytes, personalization=b"RedPallasRkDeriv")
-        r_seed = blake2b_digest(sighash_bytes + f"spend_{i}".encode(), personalization=b"RedPallasSpend\x00")
-        s_seed = blake2b_digest(r_seed + sighash_bytes, personalization=b"RedPallasSigS\x00")
-        spend_sigs.append(r_seed + s_seed)
-        rk_list.append(rk_point)
-
-    r_bind = blake2b_digest(sighash_bytes + bsk_hex.encode(), personalization=b"RedPallasBind\x00")
-    s_bind = blake2b_digest(r_bind + sighash_bytes, personalization=b"RedPallasSigS\x00")
-    binding_sig = r_bind + s_bind
-    return spend_sigs, rk_list, binding_sig
-
 def generate_spend_auth_keys(n_actions: int) -> list[Tuple[bytes, bytes]]:
     """
     Generates n authentic RedPallas randomized spend-auth keypairs: (rsk, rk).
@@ -326,15 +276,6 @@ def generate_spend_auth_keys(n_actions: int) -> list[Tuple[bytes, bytes]]:
                 return keys
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
-    # Deterministic cryptographic fallback
-    keys = []
-    for i in range(n_actions):
-        seed = blake2b_digest(f"spend_seed_{i}".encode(), personalization=b"RedPallasSeed\x00")
-        rsk = seed
-        rk = blake2b_digest(seed, personalization=b"RedPallasRkDeriv")
-        keys.append((rsk, rk))
-    return keys
 
 def sign_redpallas_bundle_with_keys(
     sighash_bytes: bytes,
@@ -502,21 +443,6 @@ def derive_orchard_keys_and_address(seed: bytes, diversifier: bytes = bytes(11))
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
-    # Mathematical fallback
-    sk_hex = seed[:32].ljust(32, b"\x00").hex()
-    fvk = blake2b_digest(seed, personalization=b"OrchardFVKDeriv\x00")
-    ivk = blake2b_digest(fvk, personalization=b"ReceiverIVKDeriv")
-    pk_d = blake2b_digest(ivk + diversifier, personalization=b"ReceiverPkDDeriv")
-    raw_addr = diversifier[:11] + pk_d
-    return {
-        "sk_hex": sk_hex,
-        "fvk_hex": fvk.hex() * 3,
-        "ivk_hex": ivk.hex(),
-        "ovk_hex": blake2b_digest(fvk, personalization=b"ReceiverOvkDeriv").hex(),
-        "raw_address_hex": raw_addr.hex(),
-        "pk_d_hex": pk_d.hex()
-    }
-
 def derive_orchard_note_commitments(
     raw_addr: bytes,
     value_zat: int,
@@ -575,11 +501,4 @@ def generate_ironwood_proof(
             raise RuntimeError(f"Official Ironwood proof generation failed: {data.get('error', data.get('status', 'unknown error'))}")
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
-    # High-fidelity fallback representation
-    proof_size = 2720 + 2272 * 2
-    proof_bytes = blake2b_digest(anchor + sighash, personalization=b"Halo2ProofPallas")
-    proof_padded = (proof_bytes * (proof_size // 32 + 1))[:proof_size]
-    return proof_padded, anchor, 2
-
 
