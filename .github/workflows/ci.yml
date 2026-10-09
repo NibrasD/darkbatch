@@ -1,0 +1,38 @@
+name: DarkBatch safety and build checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, "fix/**"]
+
+jobs:
+  rust-crypto:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: darkbatch_crypto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: darkbatch_crypto
+      - name: Compile official crypto engine
+        run: cargo build --release
+      - name: Run Rust tests
+        run: cargo test --all-targets
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build required native crypto engine
+        working-directory: darkbatch_crypto
+        run: cargo build --release
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest cryptography fastapi pydantic uvicorn
+      - name: Run Python tests
+        run: python -m pytest -q
