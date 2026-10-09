@@ -1,6 +1,6 @@
 """
 Comprehensive Test Suite for DarkBatch
-Tests cryptographic primitives, strict 512-byte memos, FBA marginal rationing, and ZIP 228 v6 settlement.
+Tests FBA matching, basic utility primitives, and fail-closed behavior for incomplete Ironwood settlement.
 """
 
 import json
