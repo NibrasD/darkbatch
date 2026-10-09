@@ -509,6 +509,7 @@ def build_transaction_from_notes(
             "spending_key_hex": key,
             "note_address_raw_hex": note["raw_address_hex"],
             "value_zat": int(note["value_zat"]),
+            "nullifier_hex": note["nullifier_hex"],
             "rho_hex": note["rho_hex"],
             "rseed_hex": note["rseed_hex"],
             "witness_position": int(note["witness_position"]),
