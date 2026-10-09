@@ -46,81 +46,8 @@ fn main() {
             println!("Decrypted: {}", String::from_utf8_lossy(&decrypted));
         }
         "build-demo-v6" => {
-            let r = random_scalar();
-            let memo = [0u8; MEMO_SIZE];
-
-            let order1 = SwapOrder {
-                order_id: [1u8; 32],
-                proposed_input: ProposedInput {
-                    asset_id: [0u8; 32],
-                    value_zat: 100_000_000,
-                    nullifier: [10u8; 32],
-                    note_commitment: [11u8; 32],
-                },
-                desired_output: DesiredOutput {
-                    asset_id: [1u8; 32],
-                    min_value_zat: 4_250_000_000,
-                    recipient_address: "u1ironwood_buyer_alice".into(),
-                },
-                action_group: SwapActionGroup {
-                    anchor: [99u8; 32],
-                    swap_action: SwapAction {
-                        cv_net: [20u8; 32],
-                        nullifier: [10u8; 32],
-                        rk: [21u8; 32],
-                        cm_star: [22u8; 32],
-                        encrypted_memo_hex: hex::encode(memo),
-                    },
-                    fee_action: FeeAction {
-                        cv_fee: [30u8; 32],
-                        matcher_fee_zat: 100_000,
-                        miner_fee_zat: 10_000,
-                    },
-                    expiry_height: 4134100,
-                    bsk_share_hex: hex::encode(r.to_repr()),
-                },
-            };
-
-            let order2 = SwapOrder {
-                order_id: [2u8; 32],
-                proposed_input: ProposedInput {
-                    asset_id: [1u8; 32],
-                    value_zat: 4_250_000_000,
-                    nullifier: [12u8; 32],
-                    note_commitment: [13u8; 32],
-                },
-                desired_output: DesiredOutput {
-                    asset_id: [0u8; 32],
-                    min_value_zat: 100_000_000,
-                    recipient_address: "u1ironwood_seller_bob".into(),
-                },
-                action_group: SwapActionGroup {
-                    anchor: [99u8; 32],
-                    swap_action: SwapAction {
-                        cv_net: [25u8; 32],
-                        nullifier: [12u8; 32],
-                        rk: [26u8; 32],
-                        cm_star: [27u8; 32],
-                        encrypted_memo_hex: hex::encode(memo),
-                    },
-                    fee_action: FeeAction {
-                        cv_fee: [31u8; 32],
-                        matcher_fee_zat: 100_000,
-                        miner_fee_zat: 10_000,
-                    },
-                    expiry_height: 4134100,
-                    bsk_share_hex: hex::encode(r.to_repr()),
-                },
-            };
-
-            let bundle = SwapBundle::new(vec![order1, order2], 42.50, 100_000_000).expect("Bundle failed");
-            let tx = TransactionV6::from_swap_bundle(bundle, 4134100, [99u8; 32]);
-            println!("{}", serde_json::json!({
-                "tx_id": hex::encode(tx.tx_id()),
-                "header_version": format!("0x{:08x}", tx.header),
-                "raw_bytes_len": tx.raw_tx_bytes.len(),
-                "raw_tx_hex": tx.to_hex()
-            }));
+            eprintln!("build-demo-v6 is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
+            std::process::exit(2);
         }
         "sign-bundle" => {
             let sighash_hex = args.get(2).cloned().unwrap_or_default();
@@ -252,155 +179,20 @@ fn main() {
             }));
         }
         "encrypt-orchard-note" => {
-            let diversifier_hex = args.get(2).cloned().unwrap_or_default();
-            let pk_d_hex = args.get(3).cloned().unwrap_or_default();
-            let val_zat: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);
-            let memo_text = args.get(5).cloned().unwrap_or_default();
-            let ovk_hex = args.get(6).cloned().unwrap_or_default();
-            let cv_hex = args.get(7).cloned().unwrap_or_default();
-            let cmx_hex = args.get(8).cloned().unwrap_or_default();
-
-            let mut d = [0u8; 11];
-            let d_bytes = hex::decode(&diversifier_hex).unwrap_or_default();
-            if d_bytes.len() >= 11 { d.copy_from_slice(&d_bytes[..11]); }
-
-            let mut pk_d = [0u8; 32];
-            let pk_d_bytes = hex::decode(&pk_d_hex).unwrap_or_default();
-            if pk_d_bytes.len() >= 32 { pk_d.copy_from_slice(&pk_d_bytes[..32]); }
-
-            let mut memo = [0u8; 512];
-            let memo_bytes = memo_text.as_bytes();
-            let copy_len = memo_bytes.len().min(512);
-            memo[..copy_len].copy_from_slice(&memo_bytes[..copy_len]);
-
-            let mut ovk = [0u8; 32];
-            let ovk_bytes = hex::decode(&ovk_hex).unwrap_or_default();
-            if ovk_bytes.len() >= 32 { ovk.copy_from_slice(&ovk_bytes[..32]); }
-
-            let mut cv = [0u8; 32];
-            let cv_bytes = hex::decode(&cv_hex).unwrap_or_default();
-            if cv_bytes.len() >= 32 { cv.copy_from_slice(&cv_bytes[..32]); }
-
-            let mut cmx = [0u8; 32];
-            let cmx_bytes = hex::decode(&cmx_hex).unwrap_or_default();
-            if cmx_bytes.len() >= 32 { cmx.copy_from_slice(&cmx_bytes[..32]); }
-
-            let rseed = [0x42u8; 32];
-            let esk = darkbatch_crypto::random_scalar();
-
-            let (enc_ct, out_ct, epk) = darkbatch_crypto::orchard_encrypt_note(
-                &d,
-                &pk_d,
-                val_zat,
-                &rseed,
-                &memo,
-                &ovk,
-                &cv,
-                &cmx,
-                &esk,
-            );
-
-            println!("{}", serde_json::json!({
-                "enc_ciphertext_hex": hex::encode(&enc_ct),
-                "out_ciphertext_hex": hex::encode(&out_ct),
-                "epk_hex": hex::encode(&epk),
-                "enc_len": enc_ct.len(),
-                "out_len": out_ct.len()
-            }));
+            eprintln!("encrypt-orchard-note is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
+            std::process::exit(2);
         }
         "decrypt-orchard-note" => {
-            let enc_hex = args.get(2).cloned().unwrap_or_default();
-            let ivk_hex = args.get(3).cloned().unwrap_or_default();
-            let epk_hex = args.get(4).cloned().unwrap_or_default();
-
-            let enc_bytes = hex::decode(&enc_hex).unwrap_or_default();
-            let ivk_bytes = hex::decode(&ivk_hex).unwrap_or_default();
-            let mut ivk_arr = [0u8; 32];
-            if ivk_bytes.len() >= 32 { ivk_arr.copy_from_slice(&ivk_bytes[..32]); }
-            let ivk = darkbatch_crypto::scalar_from_bytes(&ivk_arr);
-
-            let epk_bytes = hex::decode(&epk_hex).unwrap_or_default();
-            let mut epk_arr = [0u8; 32];
-            if epk_bytes.len() >= 32 { epk_arr.copy_from_slice(&epk_bytes[..32]); }
-
-            match darkbatch_crypto::orchard_decrypt_note(&enc_bytes, &ivk, &epk_arr) {
-                Ok((val, memo)) => {
-                    let text = String::from_utf8_lossy(&memo).trim_end_matches('\0').to_string();
-                    println!("{}", serde_json::json!({
-                        "status": "SUCCESS",
-                        "value_zat": val,
-                        "memo_hex": hex::encode(&memo),
-                        "memo_text": text
-                    }));
-                }
-                Err(e) => {
-                    println!("{}", serde_json::json!({
-                        "status": "ERROR",
-                        "error": e
-                    }));
-                }
-            }
+            eprintln!("decrypt-orchard-note is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
+            std::process::exit(2);
         }
         "compute-txid" => {
-            let header: u32 = 0x80000006;
-            let version_group_id: u32 = 0xD884B698;
-            let consensus_branch_id: u32 = 0x37A5165B;
-            let expiry_height: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4134100);
-            let actions_hex_str = args.get(3).cloned().unwrap_or_default();
-
-            let mut actions = Vec::new();
-            if !actions_hex_str.is_empty() {
-                for act_hex in actions_hex_str.split(',') {
-                    if let Ok(b) = hex::decode(act_hex) {
-                        actions.push(b);
-                    }
-                }
-            }
-
-            let txid = darkbatch_crypto::compute_zip244_v6_txid(
-                header,
-                version_group_id,
-                consensus_branch_id,
-                0,
-                expiry_height,
-                &actions,
-                0x03,
-                0,
-            );
-
-            let sighash = darkbatch_crypto::compute_v6_sighash(
-                header,
-                version_group_id,
-                consensus_branch_id,
-                0,
-                expiry_height,
-                &actions,
-                0x03,
-                0,
-            );
-
-            println!("{}", serde_json::json!({
-                "txid_hex": hex::encode(txid),
-                "sighash_hex": hex::encode(sighash)
-            }));
+            eprintln!("compute-txid is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
+            std::process::exit(2);
         }
         "derive-pk-d" => {
-            let ivk_hex = args.get(2).cloned().unwrap_or_default();
-            let div_hex = args.get(3).cloned().unwrap_or_default();
-
-            let ivk_bytes = hex::decode(&ivk_hex).unwrap_or_default();
-            let mut ivk_arr = [0u8; 32];
-            if ivk_bytes.len() >= 32 { ivk_arr.copy_from_slice(&ivk_bytes[..32]); }
-            let ivk = darkbatch_crypto::scalar_from_bytes(&ivk_arr);
-
-            let mut d = [0u8; 11];
-            let d_bytes = hex::decode(&div_hex).unwrap_or_default();
-            if d_bytes.len() >= 11 { d.copy_from_slice(&d_bytes[..11]); }
-
-            let pk_d = darkbatch_crypto::derive_pk_d(&ivk, &d);
-            println!("{}", serde_json::json!({
-                "pk_d_hex": hex::encode(pk_d)
-            }));
+            eprintln!("derive-pk-d is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
+            std::process::exit(2);
         }
         "derive-orchard-keys" => {
             let seed_hex = args.get(2).cloned().unwrap_or_default();
