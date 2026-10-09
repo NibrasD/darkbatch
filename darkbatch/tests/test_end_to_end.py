@@ -1,8 +1,6 @@
 """
-Full End-to-End System Test for DarkBatch
-Tests the complete multi-tier flow:
-Wallets -> Pedersen Intent Commitments -> FBA Solver -> v6 Transaction Bundle ->
-Zcash Node Mining & Double-Spend Rejection -> Viewing Key Memo Decryption.
+DarkBatch FBA matching safety test.
+Confirms the local demo can match intents without fabricating a consensus transaction.
 """
 
 import json
