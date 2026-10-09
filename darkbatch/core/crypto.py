@@ -20,9 +20,19 @@ PALLAS_BASE_FIELD = 0x40000000000000000000000000000000224698fc094cf91b992d30ed00
 PALLAS_SCALAR_FIELD = 0x40000000000000000000000000000000224698fc0994a8dd8c46eb2100000001
 CURVE_ORDER = PALLAS_SCALAR_FIELD
 
-_RELEASE_BIN = os.path.join(os.path.dirname(__file__), "..", "..", "darkbatch_crypto", "target", "release", "darkbatch_crypto.exe")
-_DEBUG_BIN = os.path.join(os.path.dirname(__file__), "..", "..", "darkbatch_crypto", "target", "debug", "darkbatch_crypto.exe")
+_BIN_NAME = "darkbatch_crypto.exe" if os.name == "nt" else "darkbatch_crypto"
+_RELEASE_BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darkbatch_crypto", "target", "release", _BIN_NAME))
+_DEBUG_BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darkbatch_crypto", "target", "debug", _BIN_NAME))
 RUST_BIN_PATH = _RELEASE_BIN if os.path.exists(_RELEASE_BIN) else _DEBUG_BIN
+
+def _require_rust_engine(operation: str) -> str:
+    """Fail closed for protocol cryptography; never replace consensus bytes with hash-shaped placeholders."""
+    if not os.path.isfile(RUST_BIN_PATH) or not os.access(RUST_BIN_PATH, os.X_OK):
+        raise RuntimeError(
+            f"Official DarkBatch Rust crypto engine is required for {operation}, but was not found "
+            f"at {RUST_BIN_PATH}. Build darkbatch_crypto before running this operation."
+        )
+    return RUST_BIN_PATH
 
 def blake2b_digest(data: bytes, personalization: bytes = b"DarkBatchZEC_v1") -> bytes:
     """Computes Blake2b-256 digest with strictly 16-byte Zcash personalization."""
@@ -40,14 +50,14 @@ def pedersen_commit(value: int, randomness: int) -> str:
     Computes Pedersen commitment C = [v] * V + [r] * R.
     Uses the native Rust pasta_curves engine if compiled, with deterministic mathematical fallback.
     """
-    if os.path.exists(RUST_BIN_PATH):
-        try:
-            r_hex = (randomness % PALLAS_SCALAR_FIELD).to_bytes(32, "little").hex()
-            res = subprocess.check_output([RUST_BIN_PATH, "commit", str(value), r_hex], text=True)
-            data = json.loads(res.strip())
-            return data["commitment_point"]
-        except Exception:
-            pass
+    binary = _require_rust_engine("Pedersen value commitment")
+    r_hex = (randomness % PALLAS_SCALAR_FIELD).to_bytes(32, "little").hex()
+    res = subprocess.check_output([binary, "commit", str(value), r_hex], text=True)
+    data = json.loads(res.strip())
+    commitment = data.get("commitment_point")
+    if not isinstance(commitment, str) or len(commitment) != 64:
+        raise RuntimeError("Rust engine returned an invalid Pedersen commitment.")
+    return commitment
 
     # Mathematical generator points on Pallas per § 5.4.9.4
     # V_Orchard = GroupHash^P("z.cash:Orchard-cv", "v")
