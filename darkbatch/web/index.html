@@ -203,8 +203,8 @@
                             <h3 class="text-sm font-bold text-white">Latest FBA Match (simulation only)</h3>
                             <p class="text-xs text-slate-400">No raw transaction, block, or on-chain settlement is produced</p>
                         </div>
-                        <span id="settlement-status" class="px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            Ready
+                        <span id="settlement-status" class="px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                            SIMULATION ONLY
                         </span>
                     </div>
 
@@ -284,23 +284,18 @@
 
         <!-- TAB 4: WHITEPAPER & SPECIFICATIONS -->
         <div id="view-spec" class="hidden bg-slate-900/70 border border-slate-800 rounded-2xl p-6 text-sm text-slate-300 space-y-4 leading-relaxed">
-            <h2 class="text-lg font-bold text-white">DarkBatch: Technical Whitepaper & Architectural Summary</h2>
-            <p>
-                DarkBatch brings the venture-backed market structure innovation of <strong>Archer Exchange</strong> (4th Place DeFi in Colosseum Cypherpunk) directly to <strong>Zcash NU6.3 (Ironwood Era)</strong>.
-            </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Off-chain Order Submission</h3>
-            <p>
-                The public feed omits order terms, but the coordinator receives and stores plaintext intents. The current prototype does not implement zero-knowledge privacy or cryptographic hiding of the full order flow.
-            </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">2. Planned Ironwood Settlement (not yet integrated)</h3>
-            <p>
-                The current coordinator only matches intents and emits a simulation record. The official Rust Ironwood builder requires real spendable notes, matching Merkle witnesses, authorization keys, a proving implementation, and a fee rule; it is not yet connected to the coordinator.
-            </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Strict 512-Byte Memos & ZIP 229 (Transaction v6)</h3>
-            <p>
-                The intended settlement target is ZIP 229 Transaction v6 with the Ironwood pool. The current Python coordinator does not construct an authorized transaction, prove it, or submit it to Zebra. Its local state and synthetic hashes are for UI demonstrations only. (lead byte <code>0x03</code> for Ironwood), real RedPallas signatures on Pallas curve, and live Testnet broadcast adapter integration.
-            </p>
+            <h2 class="text-lg font-bold text-white">DarkBatch: Current Architecture & Status</h2>
+            <p>DarkBatch is an off-chain Frequent Batch Auction matching prototype targeting the Zcash Ironwood shielded pool. The current web app uses local demo wallets and does not make real Zcash transfers.</p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Off-chain order matching</h3>
+            <p>Users sign order intents and the solver computes a uniform clearing price and marginal allocations. The server receives and stores plaintext order terms. Omitting those terms from the public API response is not zero-knowledge privacy, and MEV resistance has not been proven for the complete system.</p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">2. Ironwood transaction construction</h3>
+            <p>The Rust layer now exposes an integration point using the official Zcash v6 transaction builder. It requires genuine Ironwood V3 spendable notes, current note-tree Merkle witnesses, authorization keys, proving implementations, and a fee rule. Those inputs are not supplied by the demo wallet and the builder is not yet connected to the Python coordinator.</p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Current settlement behavior</h3>
+            <p>The current coordinator returns a deterministic <code>SIMULATED_ONLY</code> result with a simulation ID. It does not create a raw transaction, txid, confirmed block, or real wallet balance transfer. The local state feed is synthetic demo data, not Zebra or Zcash consensus validation.</p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">4. Roadmap to real settlement</h3>
+            <p>Connect a real Ironwood wallet and a compatible node to supply spend notes and Merkle witnesses, route the matching outputs through the official builder, serialize and identify the exact authorized transaction, then verify it using authoritative test vectors and live-node acceptance. Until then, the broadcast adapter rejects simulation records.</p>
         </div>
+
 
     </main>
 
