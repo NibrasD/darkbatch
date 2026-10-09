@@ -94,7 +94,7 @@ class SettlementBundle:
     validation_blockers: List[str] = field(default_factory=lambda: [
         "Trade intents do not contain wallet-authorized Ironwood spend notes.",
         "No live Ironwood note-tree Merkle witnesses are supplied.",
-        "The official Ironwood bundle/proof/signature output is not the serialized action set.",
+        "The official Zcash v6 builder interface is not yet wired into this coordinator; no authorized bundle or raw transaction is produced.",
         "The current app wallet and settlement node are simulations, not a Zebra wallet/node.",
     ])
 
