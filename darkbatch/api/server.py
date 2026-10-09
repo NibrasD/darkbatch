@@ -150,7 +150,7 @@ def get_health():
     pending = get_pending_intents()
     return {
         "status": "ONLINE",
-        "network": "Ironwood local simulation only (NU6.3 target)",
+        "network": "Ironwood local simulation only (NU6.3+ target)",
         "protocol_version": "ZIP-228 / ZIP-229 v6",
         "current_epoch": epoch_id,
         "seconds_until_clear": round(remaining, 1),
