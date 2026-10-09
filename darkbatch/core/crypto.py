@@ -1,6 +1,6 @@
 """
 DarkBatch Core Cryptography Module
-Implements real Zcash Ironwood (NU6.3) and ZIP 228 cryptographic primitives:
+Contains selected cryptographic primitives used by the Ironwood-targeted prototype; not a complete Ironwood consensus implementation:
 - Pallas curve point representation & Pedersen commitments (C = v * V + r * R)
 - Blake2b-256 personalization (Zcash standard)
 - Strict 512-byte encrypted memo field (12B nonce + 484B payload + 16B tag = 512B)
