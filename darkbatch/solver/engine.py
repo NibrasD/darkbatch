@@ -66,45 +66,32 @@ class AutonomousSolverDaemon:
         intents_map = {i.intent_id: i for i in intents}
         bundle = self.bundle_builder.build_bundle(clear_result, intents_map, wallets_ivk_map=wallets_ivk_map)
 
-        # 3. Format bundle for Node consensus verification
-        bundle_dict = {
-            "tx_id": bundle.tx_id,
-            "version": bundle.tx_version,
-            "version_group_id": bundle.version_group_id,
-            "epoch_id": bundle.epoch_id,
-            "clearing_price_usd": bundle.clearing_price_usd,
-            "total_volume_zec": bundle.total_volume_zec,
-            "aggregated_binding_pubkey": bundle.aggregated_binding_pubkey_hex,
-            "raw_tx_hex": bundle.raw_tx_hex,
-            "action_groups": [
-                {
-                    "group_id": ag.group_id,
-                    "intent_id": ag.intent_id,
-                    "direction": ag.direction,
-                    "anchor": ag.anchor_hex,
-                    "actions": [
-                        {
-                            "type": "SWAP",
-                            "cv_net": ag.swap_action.cv_net_hex,
-                            "nullifier": ag.swap_action.nullifier_hex,
-                            "rk": ag.swap_action.rk_hex,
-                            "cm_point": ag.swap_action.cm_star_hex,
-                            "encrypted_memo": ag.swap_action.encrypted_memo_hex
-                        },
-                        {
-                            "type": "FEE",
-                            "cv_fee": ag.fee_action.cv_fee_hex,
-                            "matcher_fee_zat": ag.fee_action.matcher_fee_zat,
-                            "miner_fee_zat": ag.fee_action.miner_fee_zat
-                        }
-                    ]
-                } for ag in bundle.action_groups
-            ]
+        # Consensus safety boundary: this application currently has only simulated
+        # wallets/intents and no authorized Ironwood spends or Merkle witnesses.
+        # Never submit this record to the local block simulator and never claim mined.
+        self.stats.avg_latency_ms = (self.stats.avg_latency_ms + elapsed_ms) / 2.0
+        summary = {
+            "epoch_id": epoch_id,
+            "status": "SIMULATED_ONLY",
+            "settlement_mode": "LOCAL_FBA_SIMULATION",
+            "consensus_ready": False,
+            "simulation_id": bundle.simulation_id,
+            "tx_id": None,
+            "block_hash": None,
+            "block_height": None,
+            "clearing_price_usd": clear_result.clearing_price_usd,
+            "cleared_zec": clear_result.total_cleared_zec,
+            "cleared_usd": clear_result.total_cleared_usd,
+            "buy_fills_count": len(clear_result.buy_fills),
+            "sell_fills_count": len(clear_result.sell_fills),
+            "solver_fee_zec": clear_result.solver_fee_zec,
+            "execution_latency_ms": round(elapsed_ms, 2),
+            "raw_tx_hex": "",
+            "raw_tx_bytes_len": 0,
+            "validation_blockers": bundle.validation_blockers,
         }
-        
-        success, block_hash = self.node.submit_settlement_bundle(bundle_dict)
-        if not success:
-            raise RuntimeError(f"Node rejected settlement bundle: {block_hash}")
+        self.solved_history.append(summary)
+        return summary
 
         # 4. Update Wallets & Balances
         if wallets_map:
