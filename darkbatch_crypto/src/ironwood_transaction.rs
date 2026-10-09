@@ -356,16 +356,21 @@ pub fn build_ironwood_transaction_from_json(
         if spend_request.witness_auth_path_hex.len() != 32 {
             return Err(format!("{label}.witness_auth_path_hex must contain exactly 32 Merkle nodes."));
         }
-        let mut auth_path = [MerkleHashOrchard::empty_leaf(); 32];
+        let mut auth_nodes = Vec::with_capacity(32);
         for (level, encoded_node) in spend_request.witness_auth_path_hex.iter().enumerate() {
             let node_bytes = parse_fixed_hex::<32>(
                 encoded_node,
                 &format!("{label}.witness_auth_path_hex[{level}]"),
             )?;
-            auth_path[level] = MerkleHashOrchard::from_bytes(&node_bytes)
-                .into_option()
-                .ok_or_else(|| format!("{label}: Merkle path node {level} is not canonical."))?;
+            auth_nodes.push(
+                MerkleHashOrchard::from_bytes(&node_bytes)
+                    .into_option()
+                    .ok_or_else(|| format!("{label}: Merkle path node {level} is not canonical."))?,
+            );
         }
+        let auth_path: [MerkleHashOrchard; 32] = auth_nodes
+            .try_into()
+            .map_err(|_| format!("{label}: Merkle path must have exactly 32 nodes."))?;
         let witness = MerklePath::from_parts(spend_request.witness_position, auth_path);
 
         // Check note membership locally before asking the prover to do expensive work.
