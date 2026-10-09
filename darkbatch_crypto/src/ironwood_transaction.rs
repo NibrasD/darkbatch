@@ -251,7 +251,12 @@ struct IronwoodSpendRequest {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IronwoodOutputRequest {
-    recipient_address_raw_hex: String,
+    /// Standard Testnet Unified Address. Must contain an Orchard-protocol receiver.
+    #[serde(default)]
+    recipient_address: Option<String>,
+    /// Optional raw 43-byte receiver encoding for trusted wallet integrations.
+    #[serde(default)]
+    recipient_address_raw_hex: Option<String>,
     value_zat: u64,
     #[serde(default)]
     memo_hex: String,
@@ -426,8 +431,30 @@ pub fn build_ironwood_transaction_from_json(
     let mut requested_output_value_zat: u64 = 0;
     for (index, output_request) in request.outputs.into_iter().enumerate() {
         let label = format!("outputs[{index}]");
-        let raw_recipient =
-            parse_fixed_hex::<43>(&output_request.recipient_address_raw_hex, &format!("{label}.recipient_address_raw_hex"))?;
+        let has_unified = output_request.recipient_address.as_deref().is_some_and(|s| !s.trim().is_empty());
+        let has_raw = output_request.recipient_address_raw_hex.as_deref().is_some_and(|s| !s.trim().is_empty());
+        if has_unified == has_raw {
+            return Err(format!("{label}: provide exactly one of recipient_address (Testnet Unified Address) or recipient_address_raw_hex."));
+        }
+        let raw_recipient = if has_unified {
+            let encoded = output_request.recipient_address.as_deref().unwrap().trim();
+            let decoded = zcash_keys::address::Address::decode(&Network::TestNetwork, encoded)
+                .ok_or_else(|| format!("{label}: recipient_address is invalid or belongs to another network."))?;
+            let orchard_receiver = decoded
+                .as_understood_unified_receivers()
+                .into_iter()
+                .find_map(|receiver| match receiver {
+                    zcash_keys::address::Receiver::Orchard(address) => Some(address),
+                    _ => None,
+                })
+                .ok_or_else(|| format!("{label}: Testnet Unified Address has no valid Orchard-protocol receiver for Ironwood."))?;
+            orchard_receiver.to_raw_address_bytes()
+        } else {
+            parse_fixed_hex::<43>(
+                output_request.recipient_address_raw_hex.as_deref().unwrap(),
+                &format!("{label}.recipient_address_raw_hex"),
+            )?
+        };
         let recipient = Address::from_raw_address_bytes(&raw_recipient)
             .into_option()
             .ok_or_else(|| format!("{label}: invalid raw Ironwood recipient address."))?;
