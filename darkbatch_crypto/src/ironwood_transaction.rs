@@ -31,6 +31,7 @@ use zcash_protocol::{
 /// `note` must be the original Ironwood V3 note reconstructed from the note
 /// plaintext and its original rho. `witness` must be a note-tree witness for
 /// the same current Ironwood anchor passed to `build_ironwood_transaction`.
+#[derive(Clone)]
 pub struct IronwoodSpendInput {
     pub full_viewing_key: FullViewingKey,
     pub note: Note,
@@ -38,6 +39,7 @@ pub struct IronwoodSpendInput {
 }
 
 /// An Ironwood recipient output. Use `MemoBytes` to enforce canonical memo size.
+#[derive(Clone)]
 pub struct IronwoodOutput {
     pub ovk: Option<OutgoingViewingKey>,
     pub recipient: Address,
@@ -312,8 +314,24 @@ pub fn build_ironwood_transaction_from_json(
         .into_option()
         .ok_or_else(|| "Ironwood anchor is not a canonical field encoding.".to_owned())?;
 
+    // This local wallet builder is a single-wallet operation. Cooperative FBA
+    // settlement must use PCZT and per-party signatures; it must not collect multiple
+    // traders' spending keys in the coordinator.
+    let first_key = parse_fixed_hex::<32>(
+        &request.spends[0].spending_key_hex,
+        "spends[0].spending_key_hex",
+    )?;
+    if request.spends.iter().enumerate().any(|(index, spend)| {
+        parse_fixed_hex::<32>(&spend.spending_key_hex, &format!("spends[{index}].spending_key_hex"))
+            .map(|key| key != first_key)
+            .unwrap_or(true)
+    }) {
+        return Err("This local wallet CLI accepts notes from one wallet only. Multi-party DarkBatch settlement must use the PCZT collaborative-signing path; never collect traders' keys in the coordinator.".into());
+    }
+
     let mut spends = Vec::with_capacity(request.spends.len());
     let mut spend_authorizing_keys = Vec::with_capacity(request.spends.len());
+    let mut total_input_value_zat: u64 = 0;
 
     for (index, spend_request) in request.spends.into_iter().enumerate() {
         let label = format!("spends[{index}]");
@@ -338,12 +356,15 @@ pub fn build_ironwood_transaction_from_json(
             .into_option()
             .ok_or_else(|| format!("{label}: rseed does not correspond to the supplied rho."))?;
 
-        // Reject out-of-range values before passing them to protocol constructors.
         let note_value = Zatoshis::from_u64(spend_request.value_zat)
             .map_err(|e| format!("{label}: note value is outside MAX_MONEY: {e}"))?;
         if note_value.is_zero() {
             return Err(format!("{label}: zero-value notes are not spendable inputs."));
         }
+        total_input_value_zat = total_input_value_zat
+            .checked_add(note_value.into_u64())
+            .ok_or_else(|| "Input value sum overflow.".to_owned())?;
+
         let note = Note::from_parts(
             note_address,
             NoteValue::from_raw(note_value.into_u64()),
@@ -374,7 +395,6 @@ pub fn build_ironwood_transaction_from_json(
             .map_err(|_| format!("{label}: Merkle path must have exactly 32 nodes."))?;
         let witness = MerklePath::from_parts(spend_request.witness_position, auth_path);
 
-        // Check note membership locally before asking the prover to do expensive work.
         let cmx = ExtractedNoteCommitment::from(note.commitment());
         if witness.root(cmx) != anchor {
             return Err(format!(
@@ -391,7 +411,7 @@ pub fn build_ironwood_transaction_from_json(
         let expected_nullifier = hex::encode(note.nullifier(&fvk).to_bytes());
         if expected_nullifier != spend_request.nullifier_hex.to_lowercase() {
             return Err(format!(
-                "{label}: the note's derived nullifier does not match the synchronized wallet record."
+                "{label}: the derived nullifier does not match the synchronized wallet record."
             ));
         }
         spend_authorizing_keys.push(SpendAuthorizingKey::from(&spending_key));
@@ -403,6 +423,7 @@ pub fn build_ironwood_transaction_from_json(
     }
 
     let mut outputs = Vec::with_capacity(request.outputs.len());
+    let mut requested_output_value_zat: u64 = 0;
     for (index, output_request) in request.outputs.into_iter().enumerate() {
         let label = format!("outputs[{index}]");
         let raw_recipient =
@@ -415,6 +436,9 @@ pub fn build_ironwood_transaction_from_json(
         if value.is_zero() {
             return Err(format!("{label}: output value must be greater than zero."));
         }
+        requested_output_value_zat = requested_output_value_zat
+            .checked_add(value.into_u64())
+            .ok_or_else(|| "Requested output value sum overflow.".to_owned())?;
 
         let memo_bytes = if output_request.memo_hex.is_empty() {
             Vec::new()
@@ -441,19 +465,135 @@ pub fn build_ironwood_transaction_from_json(
             memo,
         });
     }
+    if total_input_value_zat <= requested_output_value_zat {
+        return Err(format!(
+            "Inputs total {} zatoshis must exceed requested outputs total {} zatoshis so the network fee can be paid.",
+            total_input_value_zat, requested_output_value_zat
+        ));
+    }
+
+    // All inputs belong to the same wallet (enforced above), so remaining value is
+    // returned to its internal Ironwood address. Iterate to a stable change amount
+    // because adding a change output can change ZIP-317 action count and fee.
+    let spending_key = SpendingKey::from_bytes(first_key)
+        .into_option()
+        .ok_or_else(|| "Invalid wallet spending key.".to_owned())?;
+    let fvk = FullViewingKey::from(&spending_key);
+    let change_recipient = fvk.address_at(0u32, Scope::Internal);
+    let change_ovk = fvk.to_ovk(Scope::Internal);
+    let mut change_zat = total_input_value_zat - requested_output_value_zat;
+
+    let fee_rule = zcash_primitives::transaction::fees::zip317::FeeRule::standard();
+    let mut stable_builder = None;
+    for _ in 0..8 {
+        let mut builder = Builder::new(
+            Network::TestNetwork,
+            BlockHeight::from_u32(request.target_height),
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: None,
+                ironwood_anchor: Some(anchor),
+                orchard_padding: BundlePadding::DEFAULT,
+                ironwood_padding: BundlePadding::DEFAULT,
+            },
+        );
+        for input in spends.iter().cloned() {
+            builder
+                .add_ironwood_spend::<std::convert::Infallible>(
+                    input.full_viewing_key,
+                    input.note,
+                    input.witness,
+                )
+                .map_err(|e| format!("Official Ironwood spend validation failed: {e}"))?;
+        }
+        for output in outputs.iter().cloned() {
+            builder
+                .add_ironwood_output::<std::convert::Infallible>(
+                    output.ovk,
+                    output.recipient,
+                    output.value,
+                    output.memo,
+                )
+                .map_err(|e| format!("Official Ironwood output construction failed: {e}"))?;
+        }
+        if change_zat > 0 {
+            let change = Zatoshis::from_u64(change_zat)
+                .map_err(|e| format!("Calculated change is outside MAX_MONEY: {e}"))?;
+            builder
+                .add_ironwood_output::<std::convert::Infallible>(
+                    Some(change_ovk.clone()),
+                    change_recipient,
+                    change,
+                    MemoBytes::empty(),
+                )
+                .map_err(|e| format!("Could not add wallet change output: {e}"))?;
+        }
+
+        let fee = builder
+            .get_fee(&fee_rule)
+            .map_err(|e| format!("Could not calculate ZIP-317 fee: {e}"))?
+            .into_u64();
+        let required = requested_output_value_zat
+            .checked_add(fee)
+            .ok_or_else(|| "Output plus fee value overflow.".to_owned())?;
+        if total_input_value_zat < required {
+            return Err(format!(
+                "Insufficient funds: inputs={} zat, requested outputs={} zat, ZIP-317 fee={} zat.",
+                total_input_value_zat, requested_output_value_zat, fee
+            ));
+        }
+        let new_change = total_input_value_zat - required;
+        if new_change == change_zat {
+            stable_builder = Some(builder);
+            break;
+        }
+        change_zat = new_change;
+    }
+    let builder = stable_builder.ok_or_else(|| {
+        "Could not converge on a stable ZIP-317 change amount; refusing to build.".to_owned()
+    })?;
 
     let prover = zcash_proofs::prover::LocalTxProver::bundled();
-    let fee_rule = zcash_primitives::transaction::fees::zip317::FeeRule::standard();
-    build_ironwood_transaction(
-        Network::TestNetwork,
-        BlockHeight::from_u32(request.target_height),
-        anchor,
-        spends,
-        outputs,
-        &spend_authorizing_keys,
-        rand::rng(),
-        &prover,
-        &prover,
-        &fee_rule,
-    )
+    let built = builder
+        .build(
+            &Default::default(),
+            &[],
+            &spend_authorizing_keys,
+            rand::rng(),
+            &prover,
+            &prover,
+            &fee_rule,
+        )
+        .map_err(|e| format!("Official Zcash v6 transaction builder failed: {e}"))?;
+    let transaction = built.transaction();
+    let mut raw_tx = Vec::new();
+    transaction
+        .write(&mut raw_tx)
+        .map_err(|e| format!("Canonical transaction serialization failed: {e}"))?;
+    if raw_tx.len() < 12 {
+        return Err("Official transaction builder returned a truncated v6 transaction.".to_owned());
+    }
+    let header = u32::from_le_bytes(raw_tx[0..4].try_into().unwrap());
+    let version_group_id = u32::from_le_bytes(raw_tx[4..8].try_into().unwrap());
+    let serialized_branch_id = u32::from_le_bytes(raw_tx[8..12].try_into().unwrap());
+    let expected_branch_id = BranchId::for_height(&Network::TestNetwork, BlockHeight::from_u32(request.target_height));
+    let expected_branch_id: u32 = expected_branch_id.into();
+    if header != 0x8000_0006
+        || version_group_id != 0xD884_B698
+        || serialized_branch_id != expected_branch_id
+    {
+        return Err(format!(
+            "Official builder output failed v6/Ironwood header assertions: header={header:#010x}, version_group_id={version_group_id:#010x}, expected_branch_id={expected_branch_id:#010x}, branch_id={serialized_branch_id:#010x}."
+        ));
+    }
+
+    Ok(BuiltIronwoodTransaction {
+        txid_hex: hex::encode(transaction.txid().as_ref()),
+        raw_tx_hex: hex::encode(&raw_tx),
+        raw_tx_bytes_len: raw_tx.len(),
+        target_height: u32::from(BlockHeight::from_u32(request.target_height)),
+        consensus_branch_id: serialized_branch_id,
+        transaction_version: 6,
+        version_group_id,
+    })
 }
