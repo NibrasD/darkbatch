@@ -510,7 +510,7 @@ pub fn combine_ironwood_pczts_json(input_json: &str) -> Result<serde_json::Value
     let actions = combined.ironwood().actions();
     let actual_real_nullifiers: std::collections::BTreeSet<[u8; 32]> = actions
         .iter()
-        .filter(|action| action.spend().recipient().is_some())
+        .filter(|action| action.spend().verify_nullifier(None).is_ok())
         .map(|action| *action.spend().nullifier())
         .collect();
     if actual_real_nullifiers != required {
@@ -518,7 +518,7 @@ pub fn combine_ironwood_pczts_json(input_json: &str) -> Result<serde_json::Value
     }
 
     let mut signed = std::collections::BTreeSet::new();
-    for action in actions.iter().filter(|action| action.spend().recipient().is_some()) {
+    for action in actions.iter().filter(|action| action.spend().verify_nullifier(None).is_ok()) {
         if action.spend().spend_auth_sig().is_some() {
             signed.insert(*action.spend().nullifier());
         }
@@ -572,7 +572,7 @@ pub fn finalize_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value
     let actions = pczt.ironwood().actions();
     let actual_real_nullifiers: std::collections::BTreeSet<[u8; 32]> = actions
         .iter()
-        .filter(|action| action.spend().recipient().is_some())
+        .filter(|action| action.spend().verify_nullifier(None).is_ok())
         .map(|action| *action.spend().nullifier())
         .collect();
     if actual_real_nullifiers != required {
