@@ -1,11 +1,9 @@
 """
-DarkBatch Core Cryptography Module
-Contains selected cryptographic primitives used by the Ironwood-targeted prototype; not a complete Ironwood consensus implementation:
-- Pallas curve point representation & Pedersen commitments (C = v * V + r * R)
-- Blake2b-256 personalization (Zcash standard)
-- Strict 512-byte encrypted memo field (12B nonce + 484B payload + 16B tag = 512B)
-- Viewing Key Diffie-Hellman key derivation (ivk * epk)
-- ZIP 228 Additive binding signing key rule (bsk_bundle = sum(bsk_i) mod q)
+DarkBatch demo utilities and selected cryptographic helpers.
+This module is NOT a complete Ironwood wallet or consensus implementation:
+- Pedersen commitments are delegated to the Rust engine.
+- The 512-byte receipt envelope below is a local demo format, not a Zcash memo field.
+- Ironwood note encryption/decryption and transaction-ID generation fail closed until official-vector verified.
 """
 
 import hashlib
@@ -85,11 +83,11 @@ NOTE_PLAINTEXT_SIZE = 564  # 1B lead + 11B diversifier + 8B value + 32B rseed + 
 NOTE_CIPHERTEXT_SIZE = 580  # 564 + 16
 
 def derive_shared_key(shared_secret: bytes, epk: bytes = b"") -> bytes:
-    """Derives symmetric encryption key using official Zcash Orchard KDF § 5.4.3.5."""
+    """Computes the Orchard KDF formula; the demo wallet does not provide a protocol shared secret."""
     return blake2b_digest(shared_secret + epk, personalization=b"Zcash_OrchardKDF")
 
 def derive_ock(ovk: bytes, cv: bytes, cmx: bytes, epk: bytes) -> bytes:
-    """Derives outgoing cipher key using official Zcash Orchard KDF § 5.4.3.5."""
+    """Computes the outgoing-cipher KDF formula; not used to construct a transaction here."""
     return blake2b_digest(ovk + cv + cmx + epk, personalization=b"Zcash_Orchardock")
 
 def encrypt_512_memo(payload_bytes: bytes, shared_key: bytes) -> bytes:
@@ -113,7 +111,7 @@ def encrypt_512_memo(payload_bytes: bytes, shared_key: bytes) -> bytes:
 
 def decrypt_512_memo(memo_bytes: bytes, shared_key: bytes) -> bytes:
     """
-    Decrypts a strictly 512-byte Zcash shielded memo using ChaCha20Poly1305 AEAD.
+    Decrypts the local demo 512-byte receipt envelope. This is not Zcash note decryption.
     """
     if len(memo_bytes) != MEMO_TOTAL_SIZE:
         raise ValueError(f"Invalid memo length: expected exactly {MEMO_TOTAL_SIZE} bytes, got {len(memo_bytes)}")
