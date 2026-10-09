@@ -87,13 +87,14 @@ where
     FR::Error: core::fmt::Display,
 {
     let branch_id = BranchId::for_height(&params, target_height);
-    if branch_id != BranchId::Nu6_3 {
+    if branch_id != BranchId::Nu6_3 && branch_id != BranchId::Nu7 {
         return Err(format!(
-            "Refusing Ironwood transaction: target height {} resolves to branch {:?}, not NU6.3.",
+            "Refusing Ironwood transaction: target height {} resolves to unsupported v6 branch {:?}.",
             u32::from(target_height),
             branch_id
         ));
     }
+    let expected_branch_id: u32 = branch_id.into();
     if spends.is_empty() {
         return Err(
             "An Ironwood settlement must include wallet-authorized input notes; output-only synthetic bundles are forbidden."
@@ -166,10 +167,10 @@ where
     let serialized_branch_id = u32::from_le_bytes(raw_tx[8..12].try_into().unwrap());
     if header != 0x8000_0006
         || version_group_id != 0xD884_B698
-        || serialized_branch_id != 0x37A5_165B
+        || serialized_branch_id != expected_branch_id
     {
         return Err(format!(
-            "Official builder output failed v6/Ironwood header assertions: header={header:#010x}, version_group_id={version_group_id:#010x}, branch_id={serialized_branch_id:#010x}."
+            "Official builder output failed v6/Ironwood header assertions: header={header:#010x}, version_group_id={version_group_id:#010x}, expected_branch_id={expected_branch_id:#010x}, branch_id={serialized_branch_id:#010x}."
         ));
     }
 
@@ -193,7 +194,8 @@ mod tests {
     fn ironwood_builder_rejects_missing_real_spend_inputs() {
         // This is a target-boundary test: it intentionally does not pretend to
         // manufacture a funded transaction from order intents or output notes.
-        assert_eq!(BranchId::Nu6_3.into(), 0x37A5_165B_u32);
+        assert_eq!(u32::from(BranchId::Nu6_3), 0x37A5_165B_u32);
+        assert_eq!(u32::from(BranchId::Nu7), 0x7719_0AD9_u32);
         assert_eq!(0xD884_B698_u32, 0xD884_B698);
     }
 }
