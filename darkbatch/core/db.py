@@ -66,6 +66,11 @@ def init_db():
     )
     """)
 
+    # Backwards-compatible schema migration for explicit simulation records.
+    epoch_columns = {row[1] for row in cur.execute("PRAGMA table_info(epochs)").fetchall()}
+    if "simulation_id" not in epoch_columns:
+        cur.execute("ALTER TABLE epochs ADD COLUMN simulation_id TEXT")
+
     # Blocks
     cur.execute("""
     CREATE TABLE IF NOT EXISTS blocks (
