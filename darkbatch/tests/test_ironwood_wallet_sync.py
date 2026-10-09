@@ -88,6 +88,65 @@ def test_wallet_scan_saves_canonical_progress_without_saving_spending_key(tmp_pa
     assert result["tracked_notes"][0]["witness_root_hex"] == result["tree_root_hex"]
 
 
+def test_build_accepts_standard_unified_address_and_forwards_it_to_official_builder(tmp_path, monkeypatch):
+    rpc = FakeZebra()
+    spending_key = "55" * 32
+    state_path = tmp_path / "wallet-state.json"
+    note = {
+        "note_id": "n1",
+        "status": "UNSPENT",
+        "value_zat": 50_000,
+        "raw_address_hex": "33" * 43,
+        "nullifier_hex": "44" * 32,
+        "rho_hex": "55" * 32,
+        "rseed_hex": "66" * 32,
+        "witness_state_hex": "ef",
+        "witness_position": 1,
+        "witness_auth_path_hex": ["00" * 32] * 32,
+        "witness_root_hex": "dd" * 32,
+    }
+    state_path.write_text(json.dumps({
+        "schema_version": wallet_sync.STATE_SCHEMA_VERSION,
+        "network": "testnet",
+        "pool": "ironwood",
+        "height": rpc.tip,
+        "block_hash": rpc.block_hash(rpc.tip),
+        "tree_state_hex": rpc.states[rpc.tip],
+        "tree_root_hex": "dd" * 32,
+        "tracked_notes": [note],
+    }), encoding="utf-8")
+    monkeypatch.setattr(wallet_sync, "_derive_tree_root", lambda tree_state_hex, binary_path=None: "dd" * 32)
+
+    captured = {}
+
+    def fake_builder(request, *, binary_path=None, timeout_seconds=1800):
+        captured["request"] = request
+        return wallet_sync.BuiltIronwoodTransaction(
+            txid="aa" * 32,
+            raw_tx_hex="0011",
+            raw_tx_bytes_len=2,
+            target_height=rpc.tip + 1,
+            consensus_branch_id=0x37A5165B,
+            version_group_id=0xD884B698,
+            transaction_version=6,
+        )
+
+    monkeypatch.setattr(wallet_sync, "build_ironwood_transaction", fake_builder)
+    result = wallet_sync.build_transaction_from_notes(
+        state_path,
+        spending_key,
+        ["n1"],
+        [{"recipient_address": "u1-example-unified-address", "value_zat": 10_000}],
+        rpc=rpc,
+        binary_path="not-used-by-fake-builder",
+    )
+
+    output = captured["request"]["outputs"][0]
+    assert output["recipient_address"] == "u1-example-unified-address"
+    assert "recipient_address_raw_hex" not in output
+    assert result.txid == "aa" * 32
+
+
 def test_wallet_scan_refuses_a_checkpoint_that_is_not_canonical(tmp_path, monkeypatch):
     rpc = FakeZebra()
     monkeypatch.setattr(wallet_sync, "_derive_tree_root", lambda tree_state_hex, binary_path=None: "cc" * 32)
