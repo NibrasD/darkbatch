@@ -9,7 +9,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | derive-orchard-keys | derive-note-commitments | generate-ironwood-proof (standalone proof only)]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | build-ironwood-transaction-stdin | derive-orchard-keys | derive-note-commitments | generate-ironwood-proof (standalone proof only)]");
         return;
     }
 
@@ -42,6 +42,38 @@ fn main() {
             println!("Memo Length: {} bytes (strictly 512 bytes)", memo.len());
             let decrypted = decrypt_512_memo(&memo, &key).expect("Decrypt failed");
             println!("Decrypted: {}", String::from_utf8_lossy(&decrypted));
+        }
+        "build-ironwood-transaction-stdin" => {
+            // Raw secret keys are read from stdin, not command-line arguments or logs.
+            // Input must contain real note data and witnesses from a wallet + live Zebra treestate.
+            use std::io::Read;
+            let mut input_json = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut input_json) {
+                eprintln!("Could not read build request from stdin: {e}");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::build_ironwood_transaction_from_json(&input_json) {
+                Ok(tx) => {
+                    println!("{}", serde_json::json!({
+                        "status": "BUILT_NOT_BROADCAST",
+                        "consensus_ready": true,
+                        "broadcast": false,
+                        "network": "testnet",
+                        "txid": tx.txid_hex,
+                        "raw_tx_hex": tx.raw_tx_hex,
+                        "raw_tx_bytes_len": tx.raw_tx_bytes_len,
+                        "target_height": tx.target_height,
+                        "consensus_branch_id": format!("0x{:08x}", tx.consensus_branch_id),
+                        "transaction_version": tx.transaction_version,
+                        "version_group_id": format!("0x{:08x}", tx.version_group_id),
+                        "note": "Built by the official zcash_primitives v6 builder from caller-supplied notes and Merkle witnesses. Not broadcast or confirmed."
+                    }));
+                }
+                Err(e) => {
+                    eprintln!("Ironwood transaction build refused: {e}");
+                    std::process::exit(2);
+                }
+            }
         }
         "build-demo-v6" => {
             eprintln!("build-demo-v6 is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
