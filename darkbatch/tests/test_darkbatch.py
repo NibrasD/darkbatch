@@ -166,6 +166,69 @@ def test_unverified_ironwood_crypto_helpers_fail_closed():
         )
 
 
+def test_raw_broadcast_rejects_invalid_hex_without_rpc():
+    adapter = TestnetSettlementAdapter(rpc_url="")
+    receipt = adapter.broadcast_raw_transaction(
+        raw_tx_hex="this-is-not-hex",
+        expected_txid="11" * 32,
+    )
+    assert receipt["status"] == "REJECTED_INVALID_RAW_TX"
+    assert receipt["broadcast"] is False
+    assert receipt["confirmed"] is False
+    assert receipt["confirmations"] == 0
+
+
+def test_raw_broadcast_requires_real_testnet_rpc_after_header_checks():
+    adapter = TestnetSettlementAdapter(rpc_url="")
+    raw = (
+        (0x80000006).to_bytes(4, "little")
+        + (0xD884B698).to_bytes(4, "little")
+        + (0x37A5165B).to_bytes(4, "little")
+    )
+    receipt = adapter.broadcast_raw_transaction(
+        raw_tx_hex=raw.hex(),
+        expected_txid="11" * 32,
+    )
+    assert receipt["status"] == "TESTNET_RPC_UNAVAILABLE"
+    assert receipt["broadcast"] is False
+    assert receipt["confirmed"] is False
+    assert receipt["confirmations"] == 0
+
+
+def test_official_builder_result_metadata_is_checked_before_use():
+    from darkbatch.settlement.ironwood_transaction_client import _validate_result
+
+    # Header-shape fixture only: this is intentionally NOT a valid transaction and
+    # must never be sent to an RPC. It exercises the local client response validator.
+    raw = (
+        (0x80000006).to_bytes(4, "little")
+        + (0xD884B698).to_bytes(4, "little")
+        + (0x37A5165B).to_bytes(4, "little")
+    )
+    result = {
+        "status": "BUILT_NOT_BROADCAST",
+        "broadcast": False,
+        "consensus_ready": True,
+        "network": "testnet",
+        "txid": "22" * 32,
+        "raw_tx_hex": raw.hex(),
+        "raw_tx_bytes_len": len(raw),
+        "target_height": 4_134_000,
+        "consensus_branch_id": "0x37a5165b",
+        "transaction_version": 6,
+        "version_group_id": "0xd884b698",
+    }
+    parsed = _validate_result(result)
+    assert parsed.broadcast is False
+    assert parsed.consensus_branch_id == 0x37A5165B
+    assert parsed.raw_tx_bytes_len == 12
+
+    bad = dict(result)
+    bad["version_group_id"] = "0x00000001"
+    with pytest.raises(RuntimeError, match="version-group ID"):
+        _validate_result(bad)
+
+
 def test_binding_share_aggregation_is_modular():
     from darkbatch.core.crypto import PALLAS_SCALAR_FIELD
     shares = [9, 13, PALLAS_SCALAR_FIELD - 4]
