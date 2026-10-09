@@ -490,7 +490,7 @@ pub fn build_and_prove_ironwood_bundle(
     builder.add_output(None, addr, NoteValue::from_raw(value_zat), *memo)
         .map_err(|e| format!("add_output failed: {:?}", e))?;
 
-    let mut rng = rand_08::thread_rng();
+    let mut rng = rand::rng();
     let unauthorized = builder.build::<i64>(&mut rng)
         .map_err(|e| format!("build failed: {:?}", e))?
         .ok_or_else(|| "Unauthorized bundle was None".to_string())?;
@@ -658,7 +658,7 @@ mod tests {
         let memo = [0u8; 512];
         builder.add_output(None, addr, NoteValue::from_raw(100_000_000), memo).unwrap();
 
-        let mut rng = rand_08::thread_rng();
+        let mut rng = rand::rng();
         let unauthorized = builder.build::<i64>(&mut rng).unwrap();
         assert!(unauthorized.is_some());
         let (bundle, _meta) = unauthorized.unwrap();
