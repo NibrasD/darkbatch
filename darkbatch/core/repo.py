@@ -129,6 +129,18 @@ def mark_intents_settled(intent_ids: List[str], status: str = "FILLED"):
     conn.commit()
     conn.close()
 
+def mark_intents_simulated(intent_ids: List[str]):
+    """Close this demo batch without representing its intents as on-chain settled."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for i_id in intent_ids:
+        cur.execute(
+            "UPDATE intents SET status = 'SIMULATED_ONLY' WHERE intent_id = ? AND status = 'PENDING'",
+            (i_id,)
+        )
+    conn.commit()
+    conn.close()
+
 def get_active_epoch_id() -> int:
     conn = get_connection()
     cur = conn.cursor()
@@ -160,7 +172,33 @@ def record_epoch_clear(
     ))
     # Open next epoch
     cur.execute("""
-    INSERT INTO epochs (epoch_id, status, created_at)
+    INSERT OR IGNORE INTO epochs (epoch_id, status, created_at)
+    VALUES (?, 'ACTIVE', ?)
+    """, (epoch_id + 1, time.time()))
+    conn.commit()
+    conn.close()
+
+def record_epoch_simulation(
+    epoch_id: int,
+    clearing_price_usd: float,
+    total_cleared_zec: float,
+    total_cleared_usd: float,
+    simulation_id: str
+):
+    """Persist an FBA simulation without assigning a txid/block or claiming settlement."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR REPLACE INTO epochs (
+        epoch_id, status, clearing_price_usd, total_cleared_zec,
+        total_cleared_usd, tx_id, block_hash, created_at, simulation_id
+    ) VALUES (?, 'SIMULATED', ?, ?, ?, NULL, NULL, ?, ?)
+    """, (
+        epoch_id, clearing_price_usd, total_cleared_zec,
+        total_cleared_usd, time.time(), simulation_id
+    ))
+    cur.execute("""
+    INSERT OR IGNORE INTO epochs (epoch_id, status, created_at)
     VALUES (?, 'ACTIVE', ?)
     """, (epoch_id + 1, time.time()))
     conn.commit()
@@ -169,7 +207,7 @@ def record_epoch_clear(
 def get_epoch_history() -> List[Dict[str, Any]]:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM epochs WHERE status = 'CLEARED' ORDER BY epoch_id DESC")
+    cur.execute("SELECT * FROM epochs WHERE status IN ('CLEARED', 'SIMULATED') ORDER BY epoch_id DESC")
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
