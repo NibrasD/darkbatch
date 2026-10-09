@@ -518,24 +518,40 @@ def build_transaction_from_notes(
 
     request_outputs = []
     for index, output in enumerate(outputs):
-        address_hex = str(output.get("recipient_address_raw_hex", ""))
-        _validate_hex(address_hex, f"outputs[{index}].recipient_address_raw_hex")
-        if len(address_hex) != 86:
-            raise RuntimeError(f"outputs[{index}] recipient must be a raw 43-byte Ironwood address.")
+        recipient_address = str(output.get("recipient_address", "")).strip()
+        address_hex = str(output.get("recipient_address_raw_hex", "")).strip()
+        has_unified = bool(recipient_address)
+        has_raw = bool(address_hex)
+        if has_unified == has_raw:
+            raise RuntimeError(
+                f"outputs[{index}] must provide exactly one of recipient_address "
+                "(standard Testnet Unified Address) or recipient_address_raw_hex."
+            )
+        normalized_output: dict[str, Any] = {}
+        if has_unified:
+            # The Rust/Zcash decoder validates the address encoding, network, and
+            # presence of an Orchard-compatible receiver before building the tx.
+            normalized_output["recipient_address"] = recipient_address
+        else:
+            _validate_hex(address_hex, f"outputs[{index}].recipient_address_raw_hex")
+            if len(address_hex) != 86:
+                raise RuntimeError(f"outputs[{index}] recipient must be a raw 43-byte Ironwood address.")
+            normalized_output["recipient_address_raw_hex"] = address_hex.lower()
+
         value = int(output.get("value_zat", 0))
         if value <= 0:
-            raise RuntimeError(f"outputs[{index}] value_zat must be positive.")
+            raise RuntimeError(f"outputs[{index}].value_zat must be positive.")
         memo_hex = str(output.get("memo_hex", ""))
         if memo_hex:
             _validate_hex(memo_hex, f"outputs[{index}].memo_hex")
             if len(memo_hex) > 1024:
                 raise RuntimeError(f"outputs[{index}].memo_hex exceeds 512 bytes.")
-        request_outputs.append({
-            "recipient_address_raw_hex": address_hex.lower(),
+        normalized_output.update({
             "value_zat": value,
             "memo_hex": memo_hex.lower(),
             "ovk_hex": output.get("ovk_hex"),
         })
+        request_outputs.append(normalized_output)
 
     return build_ironwood_transaction(
         {
