@@ -1,5 +1,5 @@
 # DarkBatch 🛡️⚖️
-### Confidential Intent-Based Frequent Batch Auction (FBA) & RFQ Protocol with ZIP-229 Settlement for Shielded Zcash (Ironwood Era)
+### Confidential Intent-Based Frequent Batch Auction (FBA) prototype targeting Zcash Ironwood
 
 [![Zcash Protocol](https://img.shields.io/badge/Zcash-NU6.3%20Ironwood-blue.svg)](https://z.cash)
 [![Specification](https://img.shields.io/badge/Spec-ZIP--229%20v6%20(0xD884B698)-amber.svg)](https://zips.z.cash/zip-0229)
