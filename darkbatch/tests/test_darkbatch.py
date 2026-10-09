@@ -118,6 +118,16 @@ def test_fba_marginal_pro_rata_uses_exact_zatoshis_and_is_order_independent():
     assert sorted(first_allocations.values()) == [1, 1]
 
 
+def test_fba_clearing_price_stays_on_cent_grid():
+    buyer = create_intent(OrderDirection.BUY_ZEC, 1.0, 42.51, SAMPLE_ADDRESS_1)
+    seller = create_intent(OrderDirection.SELL_ZEC, 1.0, 42.50, SAMPLE_ADDRESS_2)
+    result = BatchAuctionSolver().solve(9, [buyer, seller])
+
+    assert result.total_cleared_zec == 1.0
+    assert result.clearing_price_usd == 42.50
+    assert round(result.clearing_price_usd * 100) == result.clearing_price_usd * 100
+
+
 def test_settlement_builder_returns_simulation_not_transaction():
     alice = ShieldedWallet("alice")
     bob = ShieldedWallet("bob")
