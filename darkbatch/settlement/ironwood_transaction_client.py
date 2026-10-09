@@ -94,6 +94,65 @@ def _validate_result(data: Mapping[str, Any]) -> BuiltIronwoodTransaction:
     )
 
 
+
+def inspect_raw_ironwood_transaction(
+    raw_tx_hex: str,
+    *,
+    binary_path: str | None = None,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """
+    Ask the official Rust/Zcash decoder to parse raw bytes and calculate the txid
+    before broadcast. This protects the caller from a txid/raw-bytes mismatch.
+    """
+    raw_hex = (raw_tx_hex or "").strip()
+    if not raw_hex or len(raw_hex) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", raw_hex):
+        raise RuntimeError("Raw transaction must be non-empty even-length hexadecimal.")
+
+    binary = binary_path or _default_binary_path()
+    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+        raise RuntimeError(f"Official Rust transaction decoder not found or not executable: {binary}")
+
+    payload = json.dumps({
+        "network": "testnet",
+        "raw_tx_hex": raw_hex.lower(),
+    }, separators=(",", ":"), ensure_ascii=True)
+    try:
+        completed = subprocess.run(
+            [binary, "inspect-ironwood-transaction-stdin"],
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout_seconds,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Official transaction decoder could not complete: {exc}") from exc
+    if completed.returncode != 0:
+        reason = completed.stderr.strip() or f"Rust decoder exited with code {completed.returncode}."
+        raise RuntimeError(f"Official transaction decoder rejected the raw transaction: {reason}")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Official transaction decoder returned malformed JSON.") from exc
+
+    if not isinstance(result, dict) or result.get("status") != "PARSED_V6_TRANSACTION":
+        raise RuntimeError("Official transaction decoder returned an unexpected status.")
+    txid = str(result.get("txid", "")).lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", txid):
+        raise RuntimeError("Official transaction decoder returned an invalid transaction ID.")
+    raw = bytes.fromhex(raw_hex)
+    if result.get("network") != "testnet" or result.get("raw_tx_bytes_len") != len(raw):
+        raise RuntimeError("Official transaction decoder metadata does not match the supplied bytes.")
+    if result.get("header") != "0x80000006" or result.get("version_group_id") != "0xd884b698":
+        raise RuntimeError("Official transaction decoder did not confirm the expected v6 header.")
+    if result.get("consensus_branch_id") not in {"0x37a5165b", "0x77190ad9"}:
+        raise RuntimeError("Official transaction decoder returned an unsupported Ironwood branch.")
+    return result
+
+
 def build_ironwood_transaction(
     request: Mapping[str, Any],
     *,
