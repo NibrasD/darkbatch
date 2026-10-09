@@ -162,6 +162,24 @@ def test_testnet_adapter_rejects_simulation_without_broadcast():
     assert node.height == initial_height
     assert len(node.blocks) == 1
 
+def test_local_simulator_never_mines_or_claims_consensus():
+    from darkbatch.node.simulator import ZcashNodeSimulator
+
+    node = ZcashNodeSimulator()
+    initial_height = node.height
+    initial_anchor = node.current_anchor()
+    accepted, reason = node.submit_settlement_bundle({
+        "tx_id": "not-a-real-transaction",
+        "version_group_id": 0xD884B698,
+        "consensus_branch_id": 0x37A5165B,
+        "action_groups": [],
+    })
+    assert accepted is False
+    assert "not a consensus validator" in reason
+    assert node.height == initial_height
+    assert len(node.blocks) == 1
+    assert node.current_anchor() == initial_anchor
+
 def test_nu6_3_consensus_and_crypto_integrity():
     """
     Checks target constants and primitive output shapes only. This test does not
