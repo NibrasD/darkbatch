@@ -253,7 +253,10 @@ def get_history():
 
 @app.get("/api/v1/node/blocks")
 def get_node_blocks():
-    return {"blocks": [
+    return {
+        "source": "local-simulation",
+        "consensus_validated": False,
+        "blocks": [
         {
             "height": b.height,
             "hash": b.hash,
@@ -263,7 +266,8 @@ def get_node_blocks():
             "tx_count": b.tx_count,
             "transactions": b.transactions
         } for b in NODE.blocks
-    ]}
+        ]
+    }
 
 @app.post("/api/v1/wallet/decrypt-memo")
 def decrypt_memo_endpoint(req: dict):
