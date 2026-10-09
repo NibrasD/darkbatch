@@ -195,6 +195,36 @@ def test_raw_broadcast_requires_real_testnet_rpc_after_header_checks():
     assert receipt["confirmations"] == 0
 
 
+def test_confirmation_state_changes_only_after_node_reports_confirmations():
+    txid = "ab" * 32
+    adapter = TestnetSettlementAdapter(rpc_url="")
+    adapter.broadcast_history[txid] = {
+        "txid": txid,
+        "expected_txid": txid,
+        "txid_matches": True,
+        "status": "BROADCAST_PENDING",
+        "confirmations": 0,
+        "confirmed": False,
+        "broadcast": True,
+        "live_node": True,
+    }
+    adapter._rpc = lambda method, params=None, timeout=3.0: {
+        "result": {"txid": txid, "confirmations": 0}
+    }
+    pending = adapter.get_transaction(txid)
+    assert pending["status"] == "BROADCAST_PENDING"
+    assert pending["confirmations"] == 0
+    assert pending["confirmed"] is False
+
+    adapter._rpc = lambda method, params=None, timeout=3.0: {
+        "result": {"txid": txid, "confirmations": 2, "blockhash": "cd" * 32, "blocktime": 123}
+    }
+    confirmed = adapter.get_transaction(txid)
+    assert confirmed["status"] == "MINED_CONFIRMED"
+    assert confirmed["confirmations"] == 2
+    assert confirmed["confirmed"] is True
+
+
 def test_official_builder_result_metadata_is_checked_before_use():
     from darkbatch.settlement.ironwood_transaction_client import _validate_result
 
