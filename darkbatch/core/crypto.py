@@ -304,8 +304,6 @@ def sign_redpallas_bundle_with_keys(
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
 
-    return sign_redpallas_bundle(sighash_bytes, bsk_int, len(rsk_list))
-
 def compute_zip244_v6_txid(
     header: int,
     version_group_id: int,
@@ -343,63 +341,6 @@ def compute_zip244_v6_txid(
             return data["txid_hex"]
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
-    header_data = (
-        header.to_bytes(4, "little") +
-        version_group_id.to_bytes(4, "little") +
-        consensus_branch_id.to_bytes(4, "little") +
-        (0).to_bytes(4, "little") +
-        expiry_height.to_bytes(4, "little")
-    )
-    header_digest = blake2b_digest(header_data, personalization=b"ZTxIdHeadersHash")
-    transparent_digest = blake2b_digest(b"", personalization=b"ZTxIdTranspaHash")
-    sapling_digest = blake2b_digest(b"", personalization=b"ZTxIdSaplingHash")
-    orchard_digest = blake2b_digest(b"", personalization=b"ZTxIdOrchardH_v6")
-
-    if not actions_820_list:
-        ironwood_digest = blake2b_digest(b"", personalization=b"ZTxIdIronwd_H_v6")
-    else:
-        # Compact actions digest
-        compact_payload = bytearray()
-        for act in actions_820_list:
-            if len(act) >= 820:
-                compact_payload.extend(act[32:64])   # nullifier
-                compact_payload.extend(act[96:128])  # cmx
-                compact_payload.extend(act[128:160]) # ephemeral_key
-                compact_payload.extend(act[160:212]) # enc_ciphertext[..52]
-        compact_digest = blake2b_digest(bytes(compact_payload), personalization=b"ZTxIdIrnActCH_v6")
-
-        # Memos digest
-        memos_payload = bytearray()
-        for act in actions_820_list:
-            if len(act) >= 820:
-                memos_payload.extend(act[212:724])   # 512B memo
-        memos_digest = blake2b_digest(bytes(memos_payload), personalization=b"ZTxIdIrnActMH_v6")
-
-        # Noncompact digest
-        noncompact_payload = bytearray()
-        for act in actions_820_list:
-            if len(act) >= 820:
-                noncompact_payload.extend(act[0:32])    # cv
-                noncompact_payload.extend(act[64:96])   # rk
-                noncompact_payload.extend(act[724:740]) # MAC tag (16B)
-                noncompact_payload.extend(act[740:820]) # out_ciphertext (80B)
-        noncompact_digest = blake2b_digest(bytes(noncompact_payload), personalization=b"ZTxIdIrnActNH_v6")
-
-        ironwood_data = (
-            compact_digest +
-            memos_digest +
-            noncompact_digest +
-            bytes([flags_ironwood]) +
-            value_balance_ironwood.to_bytes(8, "little", signed=True)
-        )
-        ironwood_digest = blake2b_digest(ironwood_data, personalization=b"ZTxIdIronwd_H_v6")
-
-    branch_bytes = consensus_branch_id.to_bytes(4, "little")
-    root_personal = b"ZcashTxHash_" + branch_bytes
-    root_data = header_digest + transparent_digest + sapling_digest + orchard_digest + ironwood_digest
-    txid_digest = blake2b_digest(root_data, personalization=root_personal)
-    return txid_digest.hex()
 
 def compute_v6_sighash(
     header: int,
@@ -468,10 +409,6 @@ def derive_orchard_note_commitments(
             return bytes.fromhex(data["cmx_hex"]), bytes.fromhex(data["nullifier_hex"])
         except Exception as exc:
             raise RuntimeError("Rust cryptographic engine failed; refusing non-protocol fallback.") from exc
-
-    cmx = blake2b_digest(raw_addr + str(value_zat).encode() + rseed, personalization=b"IronwoodSinsemil")
-    nf = blake2b_digest(fvk + rho + cmx, personalization=b"IronwoodNullifer")
-    return cmx, nf
 
 def generate_ironwood_proof(
     raw_addr: bytes,
