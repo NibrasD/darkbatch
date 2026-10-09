@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from darkbatch.core.repo import (
     list_wallets,
@@ -41,6 +41,12 @@ class IntentSubmitRequest(BaseModel):
     zec_amount: float
     limit_price_usd: float
     shielded_address: str
+
+class RawIronwoodBroadcastRequest(BaseModel):
+    """Accepts a fully signed raw transaction only; never private keys or notes."""
+    model_config = {"extra": "forbid"}
+    raw_tx_hex: str = Field(min_length=24, max_length=2_000_000)
+    expected_txid: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 class ConnectionManager:
     def __init__(self):
@@ -346,6 +352,24 @@ async def seed_demo():
         "orders_added": len(orders),
         "total_zec_volume": sum(o[1] for o in orders)
     }
+
+@app.post("/api/v1/settlement/broadcast")
+def broadcast_signed_ironwood_transaction(req: RawIronwoodBroadcastRequest):
+    """
+    Broadcast a signed v6 transaction built in a trusted local wallet process.
+
+    This public endpoint never accepts private keys, spend notes, or witnesses.
+    It delegates final consensus validation to the configured live Testnet node and
+    reports pending status only; it does not claim confirmation.
+    """
+    result = TESTNET_ADAPTER.broadcast_raw_transaction(
+        raw_tx_hex=req.raw_tx_hex,
+        expected_txid=req.expected_txid,
+    )
+    if result.get("status") == "REJECTED_INVALID_RAW_TX":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
 
 @app.get("/api/v1/settlement/testnet-status")
 def get_testnet_status():
