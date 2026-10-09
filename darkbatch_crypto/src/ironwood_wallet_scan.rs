@@ -377,6 +377,48 @@ pub fn derive_ironwood_address_json(input_json: &str) -> Result<serde_json::Valu
     }))
 }
 
+
+/// Export the full viewing key for a trusted local collaborative-PCZT workflow.
+/// This is intentionally separate from address derivation because a full viewing key
+/// reveals wallet history and must not be sent to the public coordinator.
+pub fn export_ironwood_fvk_json(input_json: &str) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        network: String,
+        spending_key_hex: String,
+    }
+    let request: Request = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid local FVK export request JSON: {e}"))?;
+    if request.network != "testnet" {
+        return Err("Full-viewing-key export is restricted to Testnet in this tool.".into());
+    }
+    let key_bytes: [u8; 32] = parse_fixed_hex(&request.spending_key_hex, "spending_key_hex")?;
+    let spending_key = SpendingKey::from_bytes(key_bytes)
+        .into_option()
+        .ok_or_else(|| "Invalid raw Ironwood spending key.".to_owned())?;
+    let fvk = FullViewingKey::from(&spending_key);
+    let ivk = fvk.to_ivk(Scope::External);
+    let address = fvk.address_at(0u32, Scope::External);
+    let unified = zcash_keys::address::UnifiedAddress::from_receivers(
+        Some(address),
+        None,
+        None,
+        None,
+        None,
+    )
+    .ok_or_else(|| "Could not construct the wallet Unified Address.".to_owned())?;
+
+    Ok(serde_json::json!({
+        "status": "LOCAL_FVK_EXPORTED",
+        "network": "testnet",
+        "full_viewing_key_hex": hex::encode(fvk.to_bytes()),
+        "incoming_viewing_key_hex": hex::encode(ivk.to_bytes()),
+        "unified_address": unified.encode(&Network::TestNetwork),
+        "warning": "The full viewing key reveals wallet history. Keep this output local and do not send it to the public coordinator. The spending key is not returned."
+    }))
+}
+
 #[cfg(test)]
 mod address_tests {
     use super::derive_ironwood_address_json;
