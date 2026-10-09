@@ -737,4 +737,31 @@ pub fn inspect_ironwood_transaction_json(input_json: &str) -> Result<serde_json:
         "consensus_branch_id": format!("0x{branch_id:08x}"),
     }))
 }
+#[cfg(test)]
+mod raw_transaction_inspection_tests {
+    use super::inspect_ironwood_transaction_json;
+
+    #[test]
+    fn rejects_truncated_v6_transaction_with_valid_header() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&0x8000_0006u32.to_le_bytes());
+        raw.extend_from_slice(&0xD884_B698u32.to_le_bytes());
+        raw.extend_from_slice(&0x37A5_165Bu32.to_le_bytes());
+        let request = serde_json::json!({
+            "network": "testnet",
+            "raw_tx_hex": hex::encode(raw),
+        });
+        assert!(inspect_ironwood_transaction_json(&request.to_string()).is_err());
+    }
+
+    #[test]
+    fn rejects_non_testnet_raw_transaction_inspection() {
+        let request = serde_json::json!({
+            "network": "mainnet",
+            "raw_tx_hex": "00",
+        });
+        let error = inspect_ironwood_transaction_json(&request.to_string()).unwrap_err();
+        assert!(error.contains("restricted to Testnet"));
+    }
+}
 
