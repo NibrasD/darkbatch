@@ -207,6 +207,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn standard_testnet_unified_address_decodes_to_the_same_ironwood_receiver() {
+        use orchard::{keys::{FullViewingKey, Scope, SpendingKey}, Address};
+        use zcash_protocol::consensus::Network;
+
+        let spending_key = SpendingKey::from_bytes([0u8; 32])
+            .into_option()
+            .expect("fixture spending key is canonical");
+        let fvk = FullViewingKey::from(&spending_key);
+        let expected = fvk.address_at(0u32, Scope::External);
+        let unified = zcash_keys::address::UnifiedAddress::from_receivers(
+            Some(expected),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Orchard receiver makes a valid Unified Address");
+        let encoded = unified.encode(&Network::TestNetwork);
+
+        let decoded = decode_ironwood_recipient(Some(&encoded), None, "fixture")
+            .expect("valid Testnet Unified Address decodes");
+        assert_eq!(decoded.to_raw_address_bytes(), expected.to_raw_address_bytes());
+
+        let mainnet = unified.encode(&Network::MainNetwork);
+        assert!(decode_ironwood_recipient(Some(&mainnet), None, "fixture").is_err());
+        assert!(decode_ironwood_recipient(Some(&encoded), Some(&hex::encode([0u8; 43])), "fixture").is_err());
+    }
+
+    #[test]
     fn ironwood_request_validation_supports_nu6_3_and_nu7_but_requires_real_spends() {
         assert_eq!(u32::from(BranchId::Nu6_3), 0x37A5_165B_u32);
         assert_eq!(u32::from(BranchId::Nu7), 0x7719_0AD9_u32);
@@ -270,6 +299,50 @@ fn parse_fixed_hex<const N: usize>(hex_value: &str, field: &str) -> Result<[u8; 
     bytes.try_into().map_err(|bytes: Vec<u8>| {
         format!("{field} must be exactly {} bytes; got {}.", N, bytes.len())
     })
+}
+
+/// Decode a Testnet recipient as an Ironwood-capable Orchard-protocol receiver.
+fn decode_ironwood_recipient(
+    unified_address: Option<&str>,
+    raw_receiver_hex: Option<&str>,
+    label: &str,
+) -> Result<orchard::Address, String> {
+    use zcash_protocol::consensus::Network;
+
+    let has_unified = unified_address.is_some_and(|value| !value.trim().is_empty());
+    let has_raw = raw_receiver_hex.is_some_and(|value| !value.trim().is_empty());
+    if has_unified == has_raw {
+        return Err(format!(
+            "{label}: provide exactly one of recipient_address (Testnet Unified Address) or recipient_address_raw_hex."
+        ));
+    }
+
+    let raw_receiver = if has_unified {
+        let encoded = unified_address.unwrap().trim();
+        let decoded = zcash_keys::address::Address::decode(&Network::TestNetwork, encoded)
+            .ok_or_else(|| format!("{label}: address is invalid or belongs to another network."))?;
+        decoded
+            .as_understood_unified_receivers()
+            .into_iter()
+            .find_map(|receiver| match receiver {
+                zcash_keys::address::Receiver::Orchard(address) => {
+                    Some(address.to_raw_address_bytes())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                format!("{label}: Testnet Unified Address has no valid Orchard-protocol receiver for Ironwood.")
+            })?
+    } else {
+        parse_fixed_hex::<43>(
+            raw_receiver_hex.unwrap(),
+            &format!("{label}.recipient_address_raw_hex"),
+        )?
+    };
+
+    orchard::Address::from_raw_address_bytes(&raw_receiver)
+        .into_option()
+        .ok_or_else(|| format!("{label}: invalid raw Ironwood receiver encoding."))
 }
 
 /// Builds a fully-authorized v6 Ironwood transaction from real wallet inputs.
@@ -431,33 +504,11 @@ pub fn build_ironwood_transaction_from_json(
     let mut requested_output_value_zat: u64 = 0;
     for (index, output_request) in request.outputs.into_iter().enumerate() {
         let label = format!("outputs[{index}]");
-        let has_unified = output_request.recipient_address.as_deref().is_some_and(|s| !s.trim().is_empty());
-        let has_raw = output_request.recipient_address_raw_hex.as_deref().is_some_and(|s| !s.trim().is_empty());
-        if has_unified == has_raw {
-            return Err(format!("{label}: provide exactly one of recipient_address (Testnet Unified Address) or recipient_address_raw_hex."));
-        }
-        let raw_recipient = if has_unified {
-            let encoded = output_request.recipient_address.as_deref().unwrap().trim();
-            let decoded = zcash_keys::address::Address::decode(&Network::TestNetwork, encoded)
-                .ok_or_else(|| format!("{label}: recipient_address is invalid or belongs to another network."))?;
-            let orchard_receiver = decoded
-                .as_understood_unified_receivers()
-                .into_iter()
-                .find_map(|receiver| match receiver {
-                    zcash_keys::address::Receiver::Orchard(address) => Some(address),
-                    _ => None,
-                })
-                .ok_or_else(|| format!("{label}: Testnet Unified Address has no valid Orchard-protocol receiver for Ironwood."))?;
-            orchard_receiver.to_raw_address_bytes()
-        } else {
-            parse_fixed_hex::<43>(
-                output_request.recipient_address_raw_hex.as_deref().unwrap(),
-                &format!("{label}.recipient_address_raw_hex"),
-            )?
-        };
-        let recipient = Address::from_raw_address_bytes(&raw_recipient)
-            .into_option()
-            .ok_or_else(|| format!("{label}: invalid raw Ironwood recipient address."))?;
+        let recipient = decode_ironwood_recipient(
+            output_request.recipient_address.as_deref(),
+            output_request.recipient_address_raw_hex.as_deref(),
+            &label,
+        )?;
         let value = Zatoshis::from_u64(output_request.value_zat)
             .map_err(|e| format!("{label}: output value is outside MAX_MONEY: {e}"))?;
         if value.is_zero() {
