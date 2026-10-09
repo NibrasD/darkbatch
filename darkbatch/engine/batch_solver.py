@@ -201,13 +201,17 @@ class BatchAuctionSolver:
         # pairwise midpoint rounding (which is order-biased).
         low_cents = min(volume_maximizing_prices)
         high_cents = max(volume_maximizing_prices)
-        clearing_price_usd = ((low_cents + high_cents) / 2.0) / 100.0
+        # Price limits are integer cents, so keep P* on the same tick grid.
+        # Flooring an exact half-cent tie is deterministic and avoids creating
+        # a clearing price users could not have submitted.
+        clearing_price_cents = (low_cents + high_cents) // 2
+        clearing_price_usd = clearing_price_cents / 100.0
 
         eligible_buys = [
-            order for order in buys if order.limit_price_cents >= clearing_price_usd * 100.0
+            order for order in buys if order.limit_price_cents >= clearing_price_cents
         ]
         eligible_sells = [
-            order for order in sells if order.limit_price_cents <= clearing_price_usd * 100.0
+            order for order in sells if order.limit_price_cents <= clearing_price_cents
         ]
         buy_fills, unfilled_buys = self._allocate_side(
             eligible_buys, max_volume, OrderDirection.BUY_ZEC, clearing_price_usd
