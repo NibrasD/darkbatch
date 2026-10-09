@@ -9,15 +9,23 @@
 
 ---
 
-## 1. Executive Summary & Design Philosophy
+## 1. Current Status & Design Scope
 
-**DarkBatch** is an institutional-grade, MEV-free decentralized exchange primitive engineered for the **Zcash Ironwood shielded ecosystem**. Inspired by the venture success of **Archer Exchange** (4th Place DeFi, Colosseum Cypherpunk) and the mathematical foundations of **Frequent Batch Auctions (FBA)**, DarkBatch solves the single greatest barrier facing shielded ZEC adoption: **private, zero-slippage, front-running-immune liquidity**.
+**Important: the current repository is an FBA matching prototype with an Ironwood-targeted simulation path, not yet a consensus-ready Zcash transaction builder.** Do not use its simulated wallet balances, generated IDs, local block records, or intent commitments as proof of on-chain settlement.
 
-### Architectural Positioning & Scope
-To maintain complete cryptographic and protocol integrity:
-1. **The Off-Chain Matching Layer (FBA / RFQ):** Market participants commit off-chain sealed limit intents. In discrete epochs, an autonomous solver aggregates supply and demand curves to calculate a single **Uniform Clearing Price ($P^*$)**. All inframarginal orders are filled 100%, and pro-rata rationing is applied strictly to marginal orders at $P^*$.
-2. **The Settlement Layer (ZIP 229 / Ironwood Adapter):** Fills are compiled into **ZIP-229 Transaction v6** consensus payloads (`0xD884B698`), encoding authentic 820-byte `OrchardAction` descriptors (§ 7.5) with 580-byte encrypted note ciphertexts (`0x03` Ironwood format).
-3. **Execution Transparency:** Fully distinguishes between `BROADCAST_TESTNET_LIVE` (active Zebra JSON-RPC `sendrawtransaction`) and `VERIFIED_LOCAL_CONSENSUS` (local Zebra NU6.3 consensus validator engine).
+- **Ironwood is the new shielded pool introduced for NU6.3.** The Rust `orchard` crate is currently a code dependency exposing shared protocol primitives and an `ironwood_v3()` bundle version; using that crate does not by itself make a transaction an Ironwood consensus transaction.
+- **Available now:** off-chain signed intent submission, FBA matching, epoch coordination, and deterministic simulation records.
+- **Not yet implemented end-to-end:** spending real Ironwood notes, acquiring valid note-tree Merkle witnesses, building the exact set of actions in one official Ironwood bundle, generating the proof for that same bundle, deriving valid spend/binding authorization from the matching witnesses and value commitments, serializing the exact authorized transaction, and verifying it against a live NU6.3-capable Zebra node.
+- The settlement builder therefore returns `SIMULATED_ONLY`, `tx_id: null`, and no raw transaction. The broadcast adapter rejects incomplete bundles. This is intentional fail-closed behavior, not a live settlement failure.
+- The local node is a simulator, **not Zebra**. Simulated block heights, anchors, and duplicate-nullifier checks are not evidence of consensus acceptance.
+- Any claims elsewhere in older project notes about authentic transactions, mined testnet settlements, or full consensus validation should be considered unverified until backed by authoritative ZIP test vectors and successful live-node acceptance.
+
+### Architectural Roadmap
+
+1. **Off-chain matching:** sealed signed intents are matched in discrete epochs using a uniform clearing price and marginal pro-rata rationing.
+2. **Ironwood wallet integration:** obtain spendable Ironwood notes and valid witnesses from a real wallet/node; recipient viewing keys alone are not spend authority.
+3. **Authoritative settlement:** construct spends and outputs through the official Ironwood implementation, generate the proof and signatures for that exact bundle, serialize that same authorized bundle, verify ZIP vectors, and only then allow `sendrawtransaction`.
+4. **Explicit execution states:** `SIMULATED_ONLY` is never presented as mined, confirmed, or consensus-verified.
 
 ---
 
