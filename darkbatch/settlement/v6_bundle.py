@@ -111,7 +111,7 @@ def encode_compact_size(val: int) -> bytes:
 
 class SettlementBundleBuilder:
     """
-    Constructs genuine ZIP 228 Swap Bundles & ZIP 229 Transaction v6 payloads.
+    Emits simulation metadata only; never serializes a transaction or claims consensus readiness.
     """
     def __init__(self, ironwood_anchor: str = "5cbf3162257b772a43d8b9d517b11b7cd889a53753eb9b62d29031fd757ef52e"):
         self.ironwood_anchor = ironwood_anchor
