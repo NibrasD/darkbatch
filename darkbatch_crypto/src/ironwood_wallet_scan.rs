@@ -333,3 +333,67 @@ pub fn ironwood_tree_root_json(input_json: &str) -> Result<serde_json::Value, St
         "tree_root_hex": hex::encode(root),
     }))
 }
+
+
+/// Derive a standard Zcash Testnet Unified Address using the shared Orchard key
+/// material that authorizes both the old Orchard pool and the new Ironwood pool.
+/// The spending key is read from stdin by the caller and is never returned.
+pub fn derive_ironwood_address_json(input_json: &str) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        network: String,
+        spending_key_hex: String,
+        address_index: u32,
+    }
+    let request: Request = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid address request JSON: {e}"))?;
+    if request.network != "testnet" {
+        return Err("Address derivation is restricted to Testnet.".into());
+    }
+    let key_bytes: [u8; 32] = parse_fixed_hex(&request.spending_key_hex, "spending_key_hex")?;
+    let spending_key = SpendingKey::from_bytes(key_bytes)
+        .into_option()
+        .ok_or_else(|| "Invalid raw Orchard-protocol spending key.".to_owned())?;
+    let fvk = FullViewingKey::from(&spending_key);
+    let address = fvk.address_at(request.address_index, Scope::External);
+    let raw_address = address.to_raw_address_bytes();
+    let unified_address = zcash_keys::address::UnifiedAddress::from_receivers(
+        Some(address),
+        None,
+        None,
+        None,
+        None,
+    )
+    .ok_or_else(|| "Could not encode the Ironwood-capable receiver as a Unified Address.".to_owned())?;
+    let encoded = unified_address.encode(&Network::TestNetwork);
+    Ok(serde_json::json!({
+        "status": "DERIVED_TESTNET_ADDRESS",
+        "network": "testnet",
+        "address_index": request.address_index,
+        "unified_address": encoded,
+        "raw_ironwood_receiver_hex": hex::encode(raw_address),
+        "note": "The Orchard-protocol receiver format is shared; NU6.3 sends to the Ironwood pool in v6 transactions. The spending key was not returned."
+    }))
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::derive_ironwood_address_json;
+
+    #[test]
+    fn derives_a_standard_testnet_unified_address_without_returning_key_material() {
+        let request = serde_json::json!({
+            "network": "testnet",
+            "spending_key_hex": hex::encode([0u8; 32]),
+            "address_index": 0
+        });
+        let result = derive_ironwood_address_json(&request.to_string()).unwrap();
+        assert_eq!(result["status"], "DERIVED_TESTNET_ADDRESS");
+        assert_eq!(result["network"], "testnet");
+        assert!(result["unified_address"].as_str().unwrap().len() > 20);
+        assert_eq!(result["raw_ironwood_receiver_hex"].as_str().unwrap().len(), 86);
+        assert!(result.get("spending_key_hex").is_none());
+        assert!(result.get("ivk_hex").is_none());
+    }
+}
