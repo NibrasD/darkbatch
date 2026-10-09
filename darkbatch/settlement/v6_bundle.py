@@ -1,10 +1,9 @@
 """
-DarkBatch Zcash v6 / Ironwood Settlement Bundle Builder
-Implements authentic ZIP 228 and ZIP 229 consensus structures:
-- Each Swap Order Action Group contains at least [SwapAction, FeeAction] per ZIP 228.
-- Memo payload is strictly 512 bytes in total (ZIP 212 / ZIP 302).
-- Key derivation uses the recipient's Viewing Key (ivk) for individual recipient privacy.
-- Emits Transaction v6 raw binary encoding (header 0x80000006, version_group_id 0x26a7270a, branch 0x2f8b66c3).
+DarkBatch settlement simulation record builder.
+
+This module currently does not build or serialize a consensus-ready Ironwood transaction.
+It emits deterministic FBA simulation metadata until wallet-authorized Ironwood spends,
+valid witnesses, proofs, signatures, and canonical serialization are integrated.
 """
 
 from dataclasses import dataclass, field
