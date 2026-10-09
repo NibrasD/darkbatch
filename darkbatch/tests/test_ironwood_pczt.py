@@ -82,6 +82,42 @@ def test_create_requires_an_unsigned_official_pczt_and_does_not_overwrite(tmp_pa
         ironwood_pczt._write_private_json(target, result)
 
 
+
+def test_combine_requires_signed_pczt_status_and_saves_only_combined_copy(tmp_path, monkeypatch):
+    first = tmp_path / "signed-a.json"
+    second = tmp_path / "signed-b.json"
+    first.write_text(json.dumps({"pczt_hex": "aabb"}), encoding="utf-8")
+    second.write_text(json.dumps({"pczt_hex": "ccdd"}), encoding="utf-8")
+    target = tmp_path / "combined.json"
+    observed = {}
+
+    def fake_run(command, request, timeout_seconds=1800):
+        observed["command"] = command
+        observed["request"] = request
+        return {
+            "status": "PCZT_COMBINED_AND_READY_FOR_FINALIZATION",
+            "input_count": 2,
+            "participant_pczt_count": 2,
+            "sighash_hex": "56" * 32,
+            "pczt_hex": "eeff",
+            "broadcast": False,
+        }
+
+    monkeypatch.setattr(ironwood_pczt, "_run_rust", fake_run)
+    assert ironwood_pczt.command_combine(Namespace(
+        pczts=[str(first), str(second)],
+        nullifiers=("11" * 32) + "," + ("22" * 32),
+        out=str(target),
+    )) == 0
+
+    assert observed["command"] == "combine-ironwood-pczts-stdin"
+    assert observed["request"]["pczt_hexes"] == ["aabb", "ccdd"]
+    assert len(observed["request"]["required_nullifiers_hex"]) == 2
+    result = json.loads(target.read_text(encoding="utf-8"))
+    assert result["pczt_hex"] == "eeff"
+    assert result["broadcast"] is False
+
+
 def test_finalize_rejects_wrong_status_before_writing_raw_transaction(tmp_path, monkeypatch):
     request_path = tmp_path / "finalize.json"
     request_path.write_text(json.dumps({"network": "testnet"}), encoding="utf-8")
