@@ -78,7 +78,86 @@ python -m pytest -q
 
 The test suite should prove that matching remains available while incomplete settlements are rejected. Passing these tests does **not** establish live Zebra acceptance. The GitHub Actions workflow builds the native engine before running both suites; inspect its actual run result before describing the branch as passing.
 
-## 5. Local development
+## 5. Standalone real Ironwood Testnet wallet path
+
+The coordinator above remains **simulation-only**. A separate local CLI now supports building and broadcasting a normal single-wallet Ironwood transfer from real notes. It does not yet turn multiple users' FBA fills into a collaborative atomic settlement.
+
+**Requirements:** a NU6.3+-capable Zebra Testnet RPC endpoint with `getblockchaininfo`, `getblockhash`, `getblock`, `z_gettreestate`, `sendrawtransaction`, and `getrawtransaction`. Never put spending keys in API requests or on the public coordinator.
+
+### 1. Build the Rust engine
+
+```bash
+cargo build --manifest-path darkbatch_crypto/Cargo.toml --release
+```
+
+Configure the RPC endpoint and credentials in your local shell. Keep credentials private.
+
+PowerShell:
+```powershell
+$env:ZCASH_TESTNET_RPC_URL = "http://127.0.0.1:18232"
+$env:ZCASH_TESTNET_RPC_USER = "your-rpc-user"
+$env:ZCASH_TESTNET_RPC_PASS = "your-rpc-password"
+```
+
+Use the correct URL and credentials for your own node. The project does not provide a public RPC endpoint.
+
+### 2. Check or derive an Ironwood-capable Testnet address
+
+```bash
+python -m darkbatch.settlement.ironwood_wallet_sync address
+```
+
+The prompt requests the 32-byte raw Orchard-protocol `SpendingKey` in hex (input is hidden). This initial integration is **not** a BIP39/ZIP32 seed importer; use only a key you control and can safely back up. The output provides a standard Testnet Unified Address. Fund it with Testnet ZEC using a suitable Testnet faucet or wallet.
+
+### 3. Initialize before receiving funds and synchronize notes
+
+Choose a canonical activation-era height **before the transaction that funds this address**. The scanner will not discover older notes that precede the checkpoint.
+
+```bash
+python -m darkbatch.settlement.ironwood_wallet_sync init --state .\\darkbatch-ironwood-testnet.json --height 4134000
+python -m darkbatch.settlement.ironwood_wallet_sync sync --state .\\darkbatch-ironwood-testnet.json --max-blocks 100
+python -m darkbatch.settlement.ironwood_wallet_sync notes --state .\\darkbatch-ironwood-testnet.json
+```
+
+Repeat `sync` with reasonable block limits until the state reports that it has caught up with the node tip. The tool compares its reconstructed Ironwood tree state with Zebra before advancing the checkpoint; if they diverge, it refuses to use stale witnesses.
+
+### 4. Build (without broadcasting) a transfer
+
+Create an `outputs.json` file. The destination may be a normal **Testnet Unified Address** containing an Orchard-protocol receiver:
+
+```json
+[
+  {
+    "recipient_address": "u1...REPLACE_WITH_REAL_TESTNET_UNIFIED_ADDRESS",
+    "value_zat": 10000,
+    "memo_hex": ""
+  }
+]
+```
+
+The address above is a placeholder; replace it with a real address. One ZEC is 100,000,000 zatoshis. Then choose unspent note IDs shown by the `notes` command:
+
+```bash
+python -m darkbatch.settlement.ironwood_wallet_sync build --state .\\darkbatch-ironwood-testnet.json --notes "NOTE_ID_1,NOTE_ID_2" --outputs-json outputs.json --out built-tx.json
+```
+
+The command validates the live tip, anchor, note witnesses, key ownership, values, change and fee before asking the **official `zcash_primitives` builder** to produce one authorized v6 transaction. It saves the raw transaction locally and does not broadcast it.
+
+### 5. Broadcast and confirm
+
+After checking the recipient and amount:
+
+```bash
+python -m darkbatch.settlement.ironwood_wallet_sync broadcast --tx-file built-tx.json
+```
+
+A successful `sendrawtransaction` request is reported as `BROADCAST_PENDING`, with zero confirmations. A transaction is marked confirmed only after the node reports positive confirmations.
+
+**Security and scope:** the scanner/wallet state contains notes and witnesses but is not a seed backup. Keep the spending key offline/private and back up the original key safely. The initial builder accepts inputs from one wallet only; it is a real-transaction path for testing ordinary Ironwood transfers, not yet a non-custodial multi-party FBA settlement. A collaborative-signing design is needed before multiple traders' notes can fund one atomic FBA batch without handing their spending keys to a coordinator.
+
+---
+
+## 6. Local FBA simulation
 
 Start the coordinator API:
 
