@@ -1,7 +1,7 @@
 """
 DarkBatch Autonomous Solver Daemon
-Executes continuous Frequent Batch Auction (FBA) clearing, settles on Ironwood node simulator,
-and distributes strictly 512-byte encrypted receipts directly to each participant's viewing key.
+Executes off-chain Frequent Batch Auction (FBA) matching and emits simulation-only settlement records.
+This daemon does not spend Ironwood notes or claim on-chain settlement.
 """
 
 from dataclasses import dataclass, field
@@ -89,45 +89,6 @@ class AutonomousSolverDaemon:
             "raw_tx_hex": "",
             "raw_tx_bytes_len": 0,
             "validation_blockers": bundle.validation_blockers,
-        }
-        self.solved_history.append(summary)
-        return summary
-
-        # 4. Update Wallets & Balances
-        if wallets_map:
-            for fill in clear_result.buy_fills:
-                wallet = wallets_map.get(fill.shielded_address)
-                if wallet:
-                    wallet.shielded_balance_zat += fill.filled_zat
-                    wallet.quote_balance_cents -= int(round(fill.quote_filled_usd * 100))
-            for fill in clear_result.sell_fills:
-                wallet = wallets_map.get(fill.shielded_address)
-                if wallet:
-                    wallet.shielded_balance_zat -= fill.filled_zat
-                    wallet.quote_balance_cents += int(round(fill.quote_filled_usd * 100))
-
-        # 5. Update Telemetry
-        self.stats.total_epochs_solved += 1
-        self.stats.total_volume_cleared_zec += clear_result.total_cleared_zec
-        self.stats.total_volume_cleared_usd += clear_result.total_cleared_usd
-        self.stats.total_solver_revenue_zec += clear_result.solver_fee_zec
-        self.stats.total_settlement_txs_mined += 1
-        self.stats.avg_latency_ms = (self.stats.avg_latency_ms + elapsed_ms) / 2.0
-
-        summary = {
-            "epoch_id": epoch_id,
-            "status": "SETTLED_AND_MINED",
-            "clearing_price_usd": clear_result.clearing_price_usd,
-            "cleared_zec": clear_result.total_cleared_zec,
-            "cleared_usd": clear_result.total_cleared_usd,
-            "tx_id": bundle.tx_id,
-            "block_hash": block_hash,
-            "block_height": self.node.height,
-            "buy_fills_count": len(clear_result.buy_fills),
-            "sell_fills_count": len(clear_result.sell_fills),
-            "solver_fee_zec": clear_result.solver_fee_zec,
-            "execution_latency_ms": round(elapsed_ms, 2),
-            "raw_tx_bytes_len": bundle.raw_tx_bytes_len
         }
         self.solved_history.append(summary)
         return summary
