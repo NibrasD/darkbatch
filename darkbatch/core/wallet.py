@@ -1,6 +1,6 @@
 """
-DarkBatch Wallet & Unified Address (ZIP 316) Key Derivation
-Implements realistic key hierarchies for Zcash NU6.3 / Ironwood:
+DarkBatch simulated wallet for the off-chain FBA prototype.
+Keys, receiver strings, and balances are local demo data, not a Zcash ZIP-316/Ironwood wallet.
 - Spending Key (sk)
 - Full Viewing Key (fvk)
 - Incoming Viewing Key (ivk)
@@ -16,7 +16,7 @@ from darkbatch.core.crypto import blake2b_digest, encrypt_memo, decrypt_memo
 
 class ShieldedWallet:
     """
-    Simulated Zcash Ironwood Shielded Wallet with authentic key derivation hierarchies.
+    Local demo wallet only; it cannot receive or spend real Zcash notes.
     """
     def __init__(self, alias: str, seed: bytes = None):
         self.alias = alias
