@@ -165,12 +165,49 @@ def _load_state(path: str | Path) -> dict[str, Any]:
     return state
 
 
+def _derive_tree_root(tree_state_hex: str, binary_path: str | None = None) -> str:
+    """Derive the root through the same official Merkle implementation as the scanner."""
+    binary = binary_path or _default_binary_path()
+    if not os.path.isfile(binary):
+        raise RuntimeError(
+            f"DarkBatch Rust engine not found at {binary}; build darkbatch_crypto before wallet sync."
+        )
+    request = json.dumps({"tree_state_hex": tree_state_hex}, separators=(",", ":"))
+    try:
+        completed = subprocess.run(
+            [binary, "ironwood-tree-root-stdin"],
+            input=request,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Could not derive the official Ironwood tree root: {exc}") from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Official Ironwood tree root derivation failed: "
+            + (completed.stderr.strip() or f"exit status {completed.returncode}")
+        )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Rust root helper returned malformed JSON.") from exc
+    root = str(result.get("tree_root_hex", "")).lower()
+    if result.get("status") != "TREE_ROOT" or not re.fullmatch(r"[0-9a-f]{64}", root):
+        raise RuntimeError("Rust root helper returned an invalid anchor.")
+    return root
+
+
 def initialize_wallet_scan(
     state_path: str | Path,
     *,
     start_height: int | None = None,
     rpc: ZebraRpc | None = None,
     overwrite: bool = False,
+    binary_path: str | None = None,
 ) -> dict[str, Any]:
     rpc = rpc or ZebraRpc()
     if Path(state_path).expanduser().exists() and not overwrite:
@@ -193,6 +230,7 @@ def initialize_wallet_scan(
         "height": height,
         "block_hash": block_hash,
         "tree_state_hex": treestate["final_state_hex"],
+        "tree_root_hex": _derive_tree_root(treestate["final_state_hex"], binary_path),
         "tracked_notes": [],
         "notes": [
             "This checkpoint only enables discovery of wallet notes created in blocks after this height.",
@@ -267,6 +305,11 @@ def sync_wallet_scan(
         raise RuntimeError(
             "Saved Ironwood tree differs from Zebra at the saved block. Refusing to spend with stale witnesses."
         )
+    canonical_root = _derive_tree_root(state["tree_state_hex"], binary_path)
+    saved_root = state.get("tree_root_hex")
+    if saved_root and str(saved_root).lower() != canonical_root:
+        raise RuntimeError("Saved Ironwood anchor disagrees with its serialized tree; refusing stale witnesses.")
+    state["tree_root_hex"] = canonical_root
 
     key = spending_key_hex.strip()
     _validate_hex(key, "spending_key_hex")
@@ -314,6 +357,7 @@ def sync_wallet_scan(
         state["height"] = height
         state["block_hash"] = block_hash
         state["tree_state_hex"] = result["tree_state_hex"].lower()
+        state["tree_root_hex"] = str(result["tree_root_hex"]).lower()
         state["tracked_notes"] = result.get("tracked_notes", [])
         _atomic_save(state_path, state)
         new_notes += len(result.get("new_note_ids", []))
@@ -374,6 +418,10 @@ def build_transaction_from_notes(
     live_tree = rpc.treestate(state["block_hash"])
     if live_tree["final_state_hex"] != state["tree_state_hex"]:
         raise RuntimeError("Wallet tree checkpoint differs from Zebra. Refusing to spend.")
+    live_root = _derive_tree_root(state["tree_state_hex"], binary_path)
+    if state.get("tree_root_hex") and str(state["tree_root_hex"]).lower() != live_root:
+        raise RuntimeError("Stored Ironwood anchor differs from the canonical tree state. Refusing to spend.")
+    state["tree_root_hex"] = live_root
 
     by_id = {note["note_id"]: note for note in state.get("tracked_notes", [])}
     selected: list[dict[str, Any]] = []
@@ -391,6 +439,8 @@ def build_transaction_from_notes(
     if len(anchors) != 1 or not next(iter(anchors)):
         raise RuntimeError("Selected notes do not share the same canonical Ironwood anchor.")
     anchor = next(iter(anchors))
+    if anchor != live_root:
+        raise RuntimeError("Selected note witnesses are not anchored at the current canonical tree root.")
     if live_tree["final_state_hex"] != state["tree_state_hex"]:
         raise RuntimeError("Tree state changed; run sync before rebuilding.")
 
