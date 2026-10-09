@@ -34,11 +34,10 @@ def test_pedersen_commitment():
     assert c1 == c2
     assert len(c1) == 64
 
-def test_strictly_512_byte_encrypted_memo():
+def test_demo_receipt_envelope_is_512_bytes():
     """
-    CRITICAL PROTOCOL TEST:
-    Verifies that the encrypted memo buffer is STRICTLY 512 BYTES (ZIP 212 / ZIP 302).
-    Not 540 bytes, not 513 bytes, EXACTLY 512 bytes.
+    Local-demo receipt envelope size check only. This is not a Zcash memo or
+    Ironwood note-encryption conformance test.
     """
     alice_wallet = ShieldedWallet("alice")
     shared_key = derive_shared_key(alice_wallet.ivk)
@@ -46,7 +45,7 @@ def test_strictly_512_byte_encrypted_memo():
     payload = json.dumps({"test": "settlement_receipt", "epoch": 42, "p_star": 42.60}).encode()
     encrypted_memo = encrypt_512_memo(payload, shared_key)
     
-    assert len(encrypted_memo) == 512, "Zcash Shielded Memo MUST be strictly 512 bytes total!"
+    assert len(encrypted_memo) == 512, "Demo receipt envelope must be exactly 512 bytes."
     
     decrypted = decrypt_512_memo(encrypted_memo, shared_key)
     assert decrypted == payload
