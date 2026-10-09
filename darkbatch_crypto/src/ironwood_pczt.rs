@@ -518,7 +518,7 @@ pub fn combine_ironwood_pczts_json(input_json: &str) -> Result<serde_json::Value
     }
 
     let mut signed = std::collections::BTreeSet::new();
-    for action in actions.iter() {
+    for action in actions.iter().filter(|action| action.spend().recipient().is_some()) {
         if action.spend().spend_auth_sig().is_some() {
             signed.insert(*action.spend().nullifier());
         }
