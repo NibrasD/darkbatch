@@ -11,7 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | sign-bundle | generate-spend-keys | derive-orchard-keys]");
         return;
     }
 
