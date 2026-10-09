@@ -268,7 +268,8 @@ fn main() {
 
             match darkbatch_crypto::build_and_prove_ironwood_bundle(&raw_addr, val_zat, &memo, &anchor, &sighash) {
                 Ok((proof, anchor_used, n_actions)) => println!("{}", serde_json::json!({
-                    "status": "PROVEN_AND_VERIFIED",
+                    "status": "STANDALONE_OUTPUT_BUNDLE_PROOF_VERIFIED_NOT_SETTLEMENT_TX",
+                    "settlement_transaction": false,
                     "proof_hex": hex::encode(proof),
                     "anchor_hex": hex::encode(anchor_used),
                     "actions_count": n_actions
