@@ -446,9 +446,6 @@ pub fn prepare_ironwood_pczt_for_signer_json(input_json: &str) -> Result<serde_j
         return Err("Signer nullifier must identify exactly one action in this PCZT.".to_owned());
     }
     let own_index = matches[0];
-    if actions[own_index].spend().verify_nullifier(None).is_err() {
-        return Err("The selected input lacks the note data required for owner verification.".to_owned());
-    }
     let action_count = actions.len();
 
     let redacted = Redactor::new(pczt)
@@ -582,24 +579,14 @@ pub fn combine_ironwood_pczts_json(input_json: &str) -> Result<serde_json::Value
         .map_err(|e| format!("Official PCZT Combiner rejected incompatible participant files: {e:?}"))?;
 
     let actions = combined.ironwood().actions();
-    let actual_real_nullifiers: std::collections::BTreeSet<[u8; 32]> = actions
-        .iter()
-        .filter(|action| action.spend().verify_nullifier(None).is_ok())
-        .map(|action| *action.spend().nullifier())
-        .collect();
-    if actual_real_nullifiers != required {
-        return Err("Required input manifest does not exactly match the real spend actions in the combined PCZT.".to_owned());
-    }
-
-    let mut signed = std::collections::BTreeSet::new();
-    for action in actions.iter().filter(|action| action.spend().verify_nullifier(None).is_ok()) {
-        if action.spend().spend_auth_sig().is_some() {
-            signed.insert(*action.spend().nullifier());
+    for nullifier in required.iter() {
+        let matches: Vec<_> = actions.iter().filter(|action| action.spend().nullifier() == nullifier).collect();
+        if matches.len() != 1 {
+            return Err(format!("Required input {} must appear exactly once in the combined PCZT.", hex::encode(nullifier)));
         }
-    }
-    if signed != required {
-        let missing: Vec<String> = required.difference(&signed).map(hex::encode).collect();
-        return Err(format!("Not all real inputs have participant signatures. Missing nullifiers: {}", missing.join(",")));
+        if matches[0].spend().spend_auth_sig().is_none() {
+            return Err(format!("Required input {} has no participant signature.", hex::encode(nullifier)));
+        }
     }
 
     let signer = Signer::new(combined.clone())
@@ -644,13 +631,11 @@ pub fn finalize_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value
         }
     }
     let actions = pczt.ironwood().actions();
-    let actual_real_nullifiers: std::collections::BTreeSet<[u8; 32]> = actions
-        .iter()
-        .filter(|action| action.spend().verify_nullifier(None).is_ok())
-        .map(|action| *action.spend().nullifier())
-        .collect();
-    if actual_real_nullifiers != required {
-        return Err("Required input manifest does not exactly match the real spend actions in the PCZT.".to_owned());
+    for nullifier in required.iter() {
+        let matches: Vec<_> = actions.iter().filter(|action| action.spend().nullifier() == nullifier).collect();
+        if matches.len() != 1 {
+            return Err(format!("Required input {} must appear exactly once in the PCZT.", hex::encode(nullifier)));
+        }
     }
     let mut witness_indices = std::collections::BTreeSet::new();
     let mut witnesses = Vec::with_capacity(request.witnesses.len());
@@ -709,6 +694,17 @@ pub fn finalize_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value
         .set_ironwood_spend_witnesses(witnesses)
         .map_err(|e| format!("Could not install Ironwood note witnesses: {e:?}"))?
         .finish();
+
+    let witnessed_nullifiers: std::collections::BTreeSet<[u8; 32]> = pczt
+        .ironwood()
+        .actions()
+        .iter()
+        .filter(|action| action.spend().witness().is_some())
+        .map(|action| *action.spend().nullifier())
+        .collect();
+    if witnessed_nullifiers != required {
+        return Err("Final PCZT witness set does not exactly match the required real inputs.".to_owned());
+    }
 
     let pczt = Prover::new(pczt)
         .create_ironwood_proof(rand::rng(), proving_key())
