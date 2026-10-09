@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn standard_testnet_unified_address_decodes_to_the_same_ironwood_receiver() {
-        use orchard::{keys::{FullViewingKey, Scope, SpendingKey}, Address};
+        use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use zcash_protocol::consensus::Network;
 
         let spending_key = SpendingKey::from_bytes([0u8; 32])
@@ -217,7 +217,7 @@ mod tests {
         let fvk = FullViewingKey::from(&spending_key);
         let expected = fvk.address_at(0u32, Scope::External);
         let unified = zcash_keys::address::UnifiedAddress::from_receivers(
-            Some(expected),
+            Some(expected.clone()),
             None,
             None,
             None,
