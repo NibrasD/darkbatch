@@ -310,3 +310,26 @@ fn parse_fixed_hex<const N: usize>(hex_value: &str, field: &str) -> Result<[u8; 
         format!("{field} must be exactly {N} bytes; got {}.", bytes.len())
     })
 }
+
+
+/// Derive the official Ironwood anchor from Zebra's serialized finalState.
+/// This permits initial checkpoints to be validated without inventing an anchor.
+pub fn ironwood_tree_root_json(input_json: &str) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        tree_state_hex: String,
+    }
+    let request: Request = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid tree-root request JSON: {e}"))?;
+    let bytes = hex::decode(&request.tree_state_hex)
+        .map_err(|_| "tree_state_hex must be valid hexadecimal.".to_owned())?;
+    let tree: CommitmentTree<MerkleHashOrchard, 32> =
+        read_commitment_tree::<MerkleHashOrchard, _, 32>(bytes.as_slice())
+            .map_err(|e| format!("Could not decode Ironwood finalState: {e}"))?;
+    let root = tree.root_at_depth(32, PathFiller::empty()).to_bytes();
+    Ok(serde_json::json!({
+        "status": "TREE_ROOT",
+        "tree_root_hex": hex::encode(root),
+    }))
+}
