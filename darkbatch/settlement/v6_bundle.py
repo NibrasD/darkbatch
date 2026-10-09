@@ -73,7 +73,10 @@ class SwapActionGroupDescription:
 
 @dataclass
 class SettlementBundle:
-    tx_id: str
+    # tx_id is None until a transaction is built and serialized by the authoritative
+    # Ironwood transaction pipeline. The current application only emits simulation_id.
+    tx_id: Optional[str]
+    simulation_id: str
     tx_version: int  # 6
     version_group_id: int
     consensus_branch_id: int
@@ -87,6 +90,15 @@ class SettlementBundle:
     created_at: float
     total_matcher_fee_zat: int
     total_miner_fee_zat: int
+    consensus_ready: bool = False
+    construction_mode: str = "LOCAL_SIMULATION_ONLY"
+    validation_blockers: List[str] = field(default_factory=lambda: [
+        "Trade intents do not contain wallet-authorized Ironwood spend notes.",
+        "No live Ironwood note-tree Merkle witnesses are supplied.",
+        "The official Ironwood bundle/proof/signature output is not the serialized action set.",
+        "The current app wallet and settlement node are simulations, not a Zebra wallet/node.",
+    ])
+
 def encode_compact_size(val: int) -> bytes:
     """Encodes an integer into Bitcoin/Zcash CompactSize bytes."""
     if val < 253:
@@ -117,30 +129,9 @@ class SettlementBundleBuilder:
         total_matcher_fee = 0
         total_miner_fee = 0
 
-        raw_bytes = bytearray()
-        # 1. Header (4 bytes LE)
-        raw_bytes.extend(TX_VERSION_6.to_bytes(4, "little", signed=False))
-        # 2. Version Group ID (4 bytes LE) - 0xD884B698
-        raw_bytes.extend(VERSION_GROUP_ID_V6.to_bytes(4, "little", signed=False))
-        # 3. Branch ID (4 bytes LE)
-        raw_bytes.extend(CONSENSUS_BRANCH_ID_IRONWOOD.to_bytes(4, "little", signed=False))
-        # 4. Lock time & Expiry height (8 bytes LE)
+        # This component intentionally builds only simulation metadata.
+        # It MUST NOT serialize or expose a hand-built byte string as a Zcash tx.
         bundle_expiry_height = max([i.expiry_height for i in intents_map.values()] + [4134200])
-        raw_bytes.extend((0).to_bytes(4, "little"))
-        raw_bytes.extend(bundle_expiry_height.to_bytes(4, "little"))
-        # 5. Transparent fields (0 inputs, 0 outputs)
-        raw_bytes.extend(encode_compact_size(0))
-        raw_bytes.extend(encode_compact_size(0))
-        # 6. Sapling fields (0 spends, 0 outputs)
-        raw_bytes.extend(encode_compact_size(0))
-        raw_bytes.extend(encode_compact_size(0))
-        # 7. Orchard fields (0 legacy orchard actions)
-        raw_bytes.extend(encode_compact_size(0))
-        # 8. Ironwood fields: nActionsIronwood
-        raw_bytes.extend(encode_compact_size(len(all_fills)))
-        anchor_bytes = bytes.fromhex(self.ironwood_anchor)
-
-        actions_encoded_bytes = bytearray()
 
         # Pre-derive authentic RedPallas randomized spend-authorization keys for each action
         spend_keys = generate_spend_auth_keys(len(all_fills))
@@ -261,91 +252,31 @@ class SettlementBundleBuilder:
             )
             action_groups.append(ag)
 
-            # Build strictly compliant 820-byte OrchardAction (§ 7.5):
-            # cv (32B) + nullifier (32B) + rk (32B) + cmx (32B) + epk (32B) + encCiphertext (580B) + outCiphertext (80B) = 820B
-            single_action_bytes = bytearray()
-            single_action_bytes.extend(bytes.fromhex(cv_net_hex))
-            single_action_bytes.extend(nullifier_bytes)
-            single_action_bytes.extend(action_rk)
-            single_action_bytes.extend(cm_bytes)
-            single_action_bytes.extend(epk_bytes)
-            single_action_bytes.extend(enc_ct)
-            single_action_bytes.extend(out_ct)
-            assert len(single_action_bytes) == 820
-
-            actions_encoded_bytes.extend(single_action_bytes)
-
-        # Append all 820-byte actions
-        raw_bytes.extend(actions_encoded_bytes)
-
-        actions_list = [
-            bytes(actions_encoded_bytes[i*820 : (i+1)*820])
-            for i in range(len(all_fills))
-        ]
-
-        # Compute authentic ZIP 244 Hierarchical Digest for Transaction v6 (ZIP 229 § 7.1)
-        # Note: anchorIronwood is strictly excluded from txid_digest per consensus specification
-        tx_id = compute_zip244_v6_txid(
-            header=TX_VERSION_6,
-            version_group_id=VERSION_GROUP_ID_V6,
-            consensus_branch_id=CONSENSUS_BRANCH_ID_IRONWOOD,
-            expiry_height=bundle_expiry_height,
-            actions_820_list=actions_list,
-            flags_ironwood=0x03,
-            value_balance_ironwood=0
-        )
-
-        # Per ZIP 244 § Signature Digest: for pure shielded transactions without transparent inputs,
-        # signature_digest == txid_digest_v6.
-        sighash = bytes.fromhex(tx_id)
-
-        # Append Ironwood component trailing fields if nActions > 0
-        if len(all_fills) > 0:
-            # flagsIronwood (1B: enableSpends | enableOutputs)
-            raw_bytes.append(0x03)
-            # valueBalanceIronwood (8B LE signed)
-            raw_bytes.extend((0).to_bytes(8, "little", signed=True))
-            # anchorIronwood (32B)
-            raw_bytes.extend(anchor_bytes)
-            # sizeProofsIronwood (CompactSize) = 2720 + 2272 * nActions
-            proof_size = 2720 + 2272 * len(all_fills)
-            raw_bytes.extend(encode_compact_size(proof_size))
-            
-            # Generate authentic Halo 2 proof representation via official orchard circuit engine
-            first_raw_addr = raw_addr if all_fills else bytes(43)
-            first_memo = memo_512_bytes if all_fills else bytes(512)
-            first_val = all_fills[0].filled_zat if all_fills else 100_000_000
-            halo2_proof_bytes, _, _ = generate_ironwood_proof(
-                raw_addr=first_raw_addr,
-                value_zat=first_val,
-                memo_512=first_memo,
-                anchor=anchor_bytes,
-                sighash=sighash
-            )
-            if len(halo2_proof_bytes) < proof_size:
-                halo2_proof_bytes = halo2_proof_bytes.ljust(proof_size, b"\x00")
-            elif len(halo2_proof_bytes) > proof_size:
-                halo2_proof_bytes = halo2_proof_bytes[:proof_size]
-            assert len(halo2_proof_bytes) == proof_size
-            raw_bytes.extend(halo2_proof_bytes)
-
-            # vSpendAuthSigsIronwood (64B * nActions) and bindingSigIronwood (64B)
-            # Authentic RedPallas signatures on Pallas curve signing canonical ZIP 244 sighash
-            aggregated_bsk = aggregate_binding_keys(bsk_shares) if bsk_shares else 0
-            spend_sigs, _, binding_sig = sign_redpallas_bundle_with_keys(sighash, aggregated_bsk, rsk_list)
-
-            for sig in spend_sigs:
-                assert len(sig) == 64
-                raw_bytes.extend(sig)
-
-            assert len(binding_sig) == 64
-            raw_bytes.extend(binding_sig)
-            aggregated_binding_pubkey_hex = hex(aggregated_bsk)[2:].zfill(64)
-        else:
-            aggregated_binding_pubkey_hex = "00" * 32
+        # This is an off-chain FBA simulation, not a ZIP-229 transaction.
+        # Do not manufacture fake proof bytes, signatures, or an on-chain txid here.
+        transcript = {
+            "epoch_id": clear_result.epoch_id,
+            "clearing_price_usd": clear_result.clearing_price_usd,
+            "total_volume_zec": clear_result.total_cleared_zec,
+            "anchor": self.ironwood_anchor,
+            "fills": [
+                {
+                    "intent_id": fill.intent_id,
+                    "direction": fill.direction.value,
+                    "filled_zat": fill.filled_zat,
+                    "recipient": fill.shielded_address,
+                }
+                for fill in all_fills
+            ],
+        }
+        simulation_id = "sim_" + blake2b_digest(
+            json.dumps(transcript, sort_keys=True, separators=(",", ":")).encode(),
+            personalization=b"DarkBatchSimID"
+        ).hex()
 
         return SettlementBundle(
-            tx_id=tx_id,
+            tx_id=None,
+            simulation_id=simulation_id,
             tx_version=6,
             version_group_id=VERSION_GROUP_ID_V6,
             consensus_branch_id=CONSENSUS_BRANCH_ID_IRONWOOD,
@@ -353,10 +284,12 @@ class SettlementBundleBuilder:
             clearing_price_usd=clear_result.clearing_price_usd,
             total_volume_zec=clear_result.total_cleared_zec,
             action_groups=action_groups,
-            aggregated_binding_pubkey_hex=aggregated_binding_pubkey_hex,
-            raw_tx_hex=bytes(raw_bytes).hex(),
-            raw_tx_bytes_len=len(raw_bytes),
+            aggregated_binding_pubkey_hex="",
+            raw_tx_hex="",
+            raw_tx_bytes_len=0,
             created_at=time.time(),
             total_matcher_fee_zat=total_matcher_fee,
-            total_miner_fee_zat=total_miner_fee
+            total_miner_fee_zat=total_miner_fee,
+            consensus_ready=False,
+            construction_mode="LOCAL_SIMULATION_ONLY",
         )
