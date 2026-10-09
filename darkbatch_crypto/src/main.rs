@@ -9,7 +9,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | scan-ironwood-block-stdin | build-ironwood-transaction-stdin]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | ironwood-tree-root-stdin | scan-ironwood-block-stdin | build-ironwood-transaction-stdin]");
         return;
     }
 
@@ -42,6 +42,21 @@ fn main() {
             println!("Memo Length: {} bytes (strictly 512 bytes)", memo.len());
             let decrypted = decrypt_512_memo(&memo, &key).expect("Decrypt failed");
             println!("Decrypted: {}", String::from_utf8_lossy(&decrypted));
+        }
+        "ironwood-tree-root-stdin" => {
+            use std::io::Read;
+            let mut input_json = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut input_json) {
+                eprintln!("Could not read tree-root request from stdin: {e}");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::ironwood_tree_root_json(&input_json) {
+                Ok(result) => println!("{}", result),
+                Err(e) => {
+                    eprintln!("Ironwood root derivation failed closed: {e}");
+                    std::process::exit(2);
+                }
+            }
         }
         "scan-ironwood-block-stdin" => {
             // The spending key is passed only through stdin and is not emitted in output.
