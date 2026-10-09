@@ -572,6 +572,36 @@ def broadcast_built_transaction(transaction: BuiltIronwoodTransaction, *, rpc: Z
     return adapter.broadcast_raw_transaction(transaction.raw_tx_hex, transaction.txid)
 
 
+
+def get_testnet_transaction_status(txid: str, *, rpc: ZebraRpc | None = None) -> dict[str, Any]:
+    """Query Zebra for a transaction's actual mempool/mined state; never infer confirmation from broadcast."""
+    normalized = str(txid).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise RuntimeError("txid must be exactly 32 bytes encoded as 64 hexadecimal characters.")
+    rpc = rpc or ZebraRpc()
+    result = rpc.call("getrawtransaction", [normalized, True])
+    if not isinstance(result, dict):
+        raise RuntimeError("getrawtransaction returned a non-object result.")
+    actual_txid = str(result.get("txid", "")).lower()
+    if actual_txid != normalized:
+        raise RuntimeError("Zebra returned details for a different transaction ID.")
+    try:
+        confirmations = max(0, int(result.get("confirmations", 0)))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Zebra returned an invalid confirmation count.") from exc
+    return {
+        "txid": normalized,
+        "status": "MINED_CONFIRMED" if confirmations > 0 else "BROADCAST_PENDING",
+        "confirmations": confirmations,
+        "confirmed": confirmations > 0,
+        "blockhash": result.get("blockhash"),
+        "blocktime": result.get("blocktime"),
+        "height": result.get("height"),
+        "network": "testnet",
+        "source": "live-zebra-rpc",
+    }
+
+
 def _cli() -> int:
     parser = argparse.ArgumentParser(description="Local Zebra Testnet Ironwood wallet sync/build tools.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -599,6 +629,9 @@ def _cli() -> int:
 
     broadcast = sub.add_parser("broadcast", help="Broadcast a previously built raw transaction using live Zebra RPC.")
     broadcast.add_argument("--tx-file", required=True)
+
+    status = sub.add_parser("status", help="Query live Zebra for a transaction's real confirmation state.")
+    status.add_argument("--txid", required=True, help="64-hex-character txid returned by build/broadcast.")
 
     args = parser.parse_args()
     try:
@@ -660,6 +693,10 @@ def _cli() -> int:
             result = adapter.broadcast_raw_transaction(raw_tx_hex, expected_txid)
             print(json.dumps(result, indent=2))
             return 0 if result.get("broadcast") else 2
+        if args.command == "status":
+            result = get_testnet_transaction_status(args.txid)
+            print(json.dumps(result, indent=2))
+            return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=__import__("sys").stderr)
         return 2
