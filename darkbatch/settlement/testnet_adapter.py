@@ -14,6 +14,7 @@ import urllib.error
 from typing import Dict, Any, Optional
 
 from darkbatch.settlement.v6_bundle import SettlementBundle
+from darkbatch.settlement.ironwood_transaction_client import inspect_raw_ironwood_transaction
 
 logger = logging.getLogger("darkbatch.settlement.adapter")
 IRONWOOD_TESTNET_ACTIVATION_HEIGHT = 4_134_000
@@ -249,6 +250,29 @@ class TestnetSettlementAdapter:
                 "tx_id": None,
                 "confirmations": 0,
                 "reason": "Raw transaction has an unsupported Ironwood consensus branch ID.",
+            }
+
+        try:
+            inspected = inspect_raw_ironwood_transaction(raw_hex)
+        except Exception as exc:
+            return {
+                "status": "REJECTED_INVALID_RAW_TX",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": str(exc),
+            }
+        if inspected["txid"].lower() != txid_expected:
+            return {
+                "status": "REJECTED_TXID_MISMATCH",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "expected_tx_id": txid_expected,
+                "computed_tx_id": inspected["txid"].lower(),
+                "confirmations": 0,
+                "reason": "Expected txid does not match the txid computed from the exact raw transaction bytes.",
             }
 
         try:
