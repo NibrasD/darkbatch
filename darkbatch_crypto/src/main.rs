@@ -47,6 +47,7 @@ fn print_usage() {
     println!("  ironwood-tree-root-stdin");
     println!("  scan-ironwood-block-stdin");
     println!("  build-ironwood-transaction-stdin");
+    println!("  inspect-ironwood-transaction-stdin");
 }
 
 fn main() {
@@ -79,6 +80,9 @@ fn main() {
                 "version_group_id": format!("0x{:08x}", tx.version_group_id),
                 "note": "Built by the official zcash_primitives v6 builder from wallet inputs. Not broadcast or confirmed."
             }))),
+        "inspect-ironwood-transaction-stdin" => read_stdin_json_string()
+            .and_then(|input| darkbatch_crypto::inspect_ironwood_transaction_json(&input))
+            .map(|value| println!("{}", value)),
         _ => {
             print_usage();
             return;
