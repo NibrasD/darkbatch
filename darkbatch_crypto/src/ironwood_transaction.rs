@@ -238,6 +238,7 @@ struct IronwoodSpendRequest {
     /// Raw 43-byte address of the note being spent, decoded by the wallet scanner.
     note_address_raw_hex: String,
     value_zat: u64,
+    nullifier_hex: String,
     rho_hex: String,
     rseed_hex: String,
     witness_position: u32,
@@ -274,7 +275,7 @@ pub fn build_ironwood_transaction_from_json(
     input_json: &str,
 ) -> Result<BuiltIronwoodTransaction, String> {
     use orchard::{
-        keys::{FullViewingKey, OutgoingViewingKey, SpendAuthorizingKey, SpendingKey},
+        keys::{Diversifier, FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
         note::{ExtractedNoteCommitment, Note, NoteVersion, Rho, RandomSeed},
         tree::{MerkleHashOrchard, MerklePath},
         value::NoteValue,
@@ -382,6 +383,17 @@ pub fn build_ironwood_transaction_from_json(
         }
 
         let fvk = FullViewingKey::from(&spending_key);
+        if fvk.scope_for_address(&note_address).is_none() {
+            return Err(format!(
+                "{label}: the supplied spending key does not control this note's receiver."
+            ));
+        }
+        let expected_nullifier = hex::encode(note.nullifier(&fvk).to_bytes());
+        if expected_nullifier != spend_request.nullifier_hex.to_lowercase() {
+            return Err(format!(
+                "{label}: the note's derived nullifier does not match the synchronized wallet record."
+            ));
+        }
         spend_authorizing_keys.push(SpendAuthorizingKey::from(&spending_key));
         spends.push(IronwoodSpendInput {
             full_viewing_key: fvk,
