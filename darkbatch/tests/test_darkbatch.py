@@ -187,8 +187,8 @@ def test_testnet_settlement_adapter_broadcast():
     adapter = TestnetSettlementAdapter(node_simulator=node)
 
     receipt = adapter.broadcast(bundle)
-    assert receipt["status"] == "VERIFIED_LOCAL_CONSENSUS"
-    assert receipt["network"] == "Local Zebra NU6.3 Consensus Engine"
+    assert receipt["status"] == "LOCAL_FBA_SIMULATED_CONSENSUS"
+    assert receipt["network"] == "DarkBatch Local FBA Solver & Settlement Simulator (ZIP 228 / ZIP 229)"
     assert receipt["version_group_id"] == "0xd884b698"
     assert receipt["consensus_branch_id"] == "0x37a5165b"
     assert receipt["block_height"] >= 4134010

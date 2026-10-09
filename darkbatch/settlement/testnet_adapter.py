@@ -147,8 +147,8 @@ class TestnetSettlementAdapter:
         block_height = self.node_simulator.height
         record = {
             "txid": bundle.tx_id,
-            "status": "VERIFIED_LOCAL_CONSENSUS",
-            "network": "Local Zebra NU6.3 Consensus Engine",
+            "status": "LOCAL_FBA_SIMULATED_CONSENSUS",
+            "network": "DarkBatch Local FBA Solver & Settlement Simulator (ZIP 228 / ZIP 229)",
             "version_group_id": hex(bundle.version_group_id),
             "consensus_branch_id": hex(bundle.consensus_branch_id),
             "block_height": block_height,
@@ -159,7 +159,7 @@ class TestnetSettlementAdapter:
             "confirmations": 1,
             "explorer_url": None,
             "live_node": False,
-            "note": "Validated under Ironwood NU6.3 consensus rules locally. Connect live testnet node RPC to broadcast to network.",
+            "note": "Validated locally under ZIP 228 batching rules and ZIP 229 transaction v6 structure. This is DarkBatch's off-chain batch auction solver testbed, not a live Zebra node on testnet. To broadcast to live testnet, configure ZCASH_TESTNET_RPC_URL.",
         }
         self.broadcast_history[bundle.tx_id] = record
         return record
