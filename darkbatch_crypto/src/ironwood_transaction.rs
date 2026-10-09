@@ -587,8 +587,11 @@ pub fn build_ironwood_transaction_from_json(
         ));
     }
 
+    // Use the canonical display encoding. TxId::as_ref() exposes digest bytes,
+    // while Display/to_string() emits the byte-reversed txid hex expected by Zebra RPC.
+    let txid_hex = transaction.txid().to_string().to_lowercase();
     Ok(BuiltIronwoodTransaction {
-        txid_hex: hex::encode(transaction.txid().as_ref()),
+        txid_hex,
         raw_tx_hex: hex::encode(&raw_tx),
         raw_tx_bytes_len: raw_tx.len(),
         target_height: u32::from(BlockHeight::from_u32(request.target_height)),
