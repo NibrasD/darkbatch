@@ -678,3 +678,63 @@ pub fn build_ironwood_transaction_from_json(
         version_group_id,
     })
 }
+
+/// Parse and identify an already serialized Ironwood v6 transaction using the
+/// official Zcash transaction decoder. This is a local integrity check only;
+/// Zebra remains responsible for consensus validation.
+pub fn inspect_ironwood_transaction_json(input_json: &str) -> Result<serde_json::Value, String> {
+    use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::BranchId;
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        network: String,
+        raw_tx_hex: String,
+    }
+
+    let request: Request = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid raw transaction request JSON: {e}"))?;
+    if request.network != "testnet" {
+        return Err("Raw transaction inspection is restricted to Testnet.".to_owned());
+    }
+
+    let raw = hex::decode(&request.raw_tx_hex)
+        .map_err(|_| "raw_tx_hex must be valid hexadecimal.".to_owned())?;
+    if raw.len() < 12 {
+        return Err("Raw transaction is too short to contain the version-6 header.".to_owned());
+    }
+    let header = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let version_group_id = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+    let branch_id = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+    if header != 0x8000_0006 {
+        return Err("Raw transaction is not version 6.".to_owned());
+    }
+    if version_group_id != 0xD884_B698 {
+        return Err("Raw transaction has an unexpected version-group ID.".to_owned());
+    }
+    if branch_id != 0x37A5_165B && branch_id != 0x7719_0AD9 {
+        return Err("Raw transaction has an unsupported Ironwood branch ID.".to_owned());
+    }
+
+    // v6 carries its branch ID in the serialized header; the reader's parameter
+    // is used only for legacy versions, and is ignored by the v6 decoder.
+    let mut cursor = std::io::Cursor::new(raw.as_slice());
+    let transaction = Transaction::read(&mut cursor, BranchId::Nu6_3)
+        .map_err(|e| format!("Official Zcash transaction decoder rejected the raw bytes: {e}"))?;
+    if cursor.position() as usize != raw.len() {
+        return Err("Raw transaction contains trailing bytes after the decoded transaction.".to_owned());
+    }
+
+    let txid = transaction.txid().to_string().to_lowercase();
+    Ok(serde_json::json!({
+        "status": "PARSED_V6_TRANSACTION",
+        "network": "testnet",
+        "txid": txid,
+        "raw_tx_bytes_len": raw.len(),
+        "header": format!("0x{header:08x}"),
+        "version_group_id": format!("0x{version_group_id:08x}"),
+        "consensus_branch_id": format!("0x{branch_id:08x}"),
+    }))
+}
+
