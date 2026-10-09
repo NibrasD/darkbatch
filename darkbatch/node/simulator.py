@@ -60,7 +60,7 @@ class ZcashNodeSimulator:
             return False, f"Target metadata has invalid v6 version-group ID: {hex(vg_id)}"
         branch_id = bundle_dict.get("consensus_branch_id")
         if branch_id is not None and branch_id != 0x37A5165B:
-            return False, f"Target metadata has invalid Ironwood branch ID: {hex(branch_id)}"
+            return False, f"Target metadata has invalid Ironwood branch ID: {hex(branch_id)} (expected 0x37A5165B for NU6.3)"
         return False, "Local simulator is not a consensus validator and refuses transaction submission; use a compatible Zebra node."
 
     def get_blockchain_info(self) -> Dict[str, Any]:
