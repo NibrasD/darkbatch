@@ -13,7 +13,7 @@ use orchard::{
     tree::{Anchor, MerklePath},
     Address, Note,
 };
-use rand_core::{CryptoRng, RngCore};
+use rand_core_06::{CryptoRng, RngCore};
 use sapling::prover::{OutputProver, SpendProver};
 use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder, BuildResult, BundlePadding},
