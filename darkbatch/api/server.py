@@ -1,6 +1,6 @@
 """
-DarkBatch Persistent Coordinator API Server
-Integrated with SQLite repository, real-time WebSockets, and ZERO-LEAK Confidential Mempool.
+DarkBatch FBA prototype coordinator API.
+Provides local demo wallets, off-chain intent matching, and simulation-only state; no on-chain settlement.
 """
 
 import asyncio
@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="DarkBatch Protocol API",
-    description="Confidential Intent-Based Batch Auction & RFQ for Shielded Zcash (Ironwood Era)",
+    description="Ironwood-targeted FBA matching prototype; settlement is simulation-only",
     version="3.0.0",
     lifespan=lifespan
 )
@@ -282,7 +282,7 @@ def decrypt_memo_endpoint(req: dict):
         from darkbatch.core.crypto import decrypt_orchard_note, decrypt_512_memo, derive_shared_key
         memo_bytes = bytes.fromhex(memo_hex)
 
-        # 1. Authentic Orchard Note Plaintext decryption (580 bytes encCiphertext)
+        # 1. Ironwood decryption is disabled until official encryption vectors are implemented.
         if len(memo_bytes) == 580:
             epk_bytes = bytes.fromhex(epk_hex) if epk_hex else None
             if not epk_bytes:
