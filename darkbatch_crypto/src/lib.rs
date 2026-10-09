@@ -13,4 +13,4 @@ pub use orchard_compat::*;
 pub use ironwood_transaction::{build_ironwood_transaction, build_ironwood_transaction_from_json, inspect_ironwood_transaction_json, BuiltIronwoodTransaction, IronwoodOutput, IronwoodSpendInput};
 
 pub use ironwood_wallet_scan::{derive_ironwood_address_json, export_ironwood_fvk_json, ironwood_tree_root_json, scan_ironwood_block_json, IronwoodScanRequest, IronwoodScanResult, IronwoodTrackedNote};
-pub use ironwood_pczt::{create_ironwood_pczt_json, inspect_ironwood_pczt_json, sign_ironwood_pczt_json, combine_ironwood_pczts_json, finalize_ironwood_pczt_json};
+pub use ironwood_pczt::{create_ironwood_pczt_json, inspect_ironwood_pczt_json, prepare_ironwood_pczt_for_signer_json, sign_ironwood_pczt_json, combine_ironwood_pczts_json, finalize_ironwood_pczt_json};
