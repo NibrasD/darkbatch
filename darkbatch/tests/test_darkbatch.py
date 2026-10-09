@@ -221,18 +221,6 @@ def test_nu6_3_consensus_and_crypto_integrity():
             cmx=bytes(32)
         )
 
-    # 4. Check signature byte lengths only; no bundle-level authorization is proved here.
-    sighash = blake2b_digest(b"canonical_sighash_data", personalization=b"ZcashTxHashIronw")
-    bsk = 12345678901234567890
-    spend_sigs, rk_list, binding_sig = sign_redpallas_bundle(sighash, bsk, 2)
-    assert len(spend_sigs) == 2
-    assert len(rk_list) == 2
-    for s in spend_sigs:
-        assert len(s) == 64
-        assert s != bytes(64)  # STRICTLY non-zero
-    for r in rk_list:
-        assert len(r) == 32
-        assert r != bytes(32)  # STRICTLY non-zero
-    assert len(binding_sig) == 64
-    assert binding_sig != bytes(64)  # STRICTLY non-zero
-
+    # 4. Signatures generated independently of the official funded transaction must fail closed.
+    with pytest.raises(RuntimeError, match="official Zcash transaction builder"):
+        sign_redpallas_bundle(bytes(32), 1, 2)
