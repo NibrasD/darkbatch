@@ -14,7 +14,7 @@ use orchard::{
     Address, Note,
 };
 use rand_core::{CryptoRng, RngCore};
-use sapling_crypto::prover::{OutputProver, SpendProver};
+use sapling::prover::{OutputProver, SpendProver};
 use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder, BuildResult, BundlePadding, FeeRule},
 };
