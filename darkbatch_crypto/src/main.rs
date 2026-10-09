@@ -1,7 +1,5 @@
-use darkbatch_crypto::memo::{encrypt_512_memo, decrypt_512_memo, MEMO_SIZE};
+use darkbatch_crypto::memo::{encrypt_512_memo, decrypt_512_memo};
 use darkbatch_crypto::pallas_ops::{pedersen_commit, random_scalar};
-use darkbatch_crypto::zip228::{DesiredOutput, FeeAction, ProposedInput, SwapAction, SwapActionGroup, SwapBundle, SwapOrder};
-use darkbatch_crypto::v6_tx::TransactionV6;
 use group::GroupEncoding;
 use pasta_curves::pallas::Scalar;
 use ff::PrimeField;
