@@ -453,8 +453,7 @@ pub fn sign_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value, St
         .ironwood()
         .actions()
         .get(action_index)
-        .and_then(|action| action.spend().spend_auth_sig())
-        .is_some();
+        .is_some_and(|action| action.spend().spend_auth_sig().is_some());
     if !signature_present {
         return Err("Official PCZT signer returned without an authorization signature.".to_owned());
     }
@@ -548,10 +547,10 @@ pub fn finalize_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value
         }
     }
 
-    let pczt = Updater::new(pczt)
+    let updater = Updater::new(pczt)
         .set_ironwood_anchor(anchor)
         .map_err(|e| format!("Could not set current Ironwood anchor: {e:?}"))?;
-    let pczt = Updater::new(pczt)
+    let pczt = updater
         .set_ironwood_spend_witnesses(witnesses)
         .map_err(|e| format!("Could not install Ironwood note witnesses: {e:?}"))?
         .finish();
