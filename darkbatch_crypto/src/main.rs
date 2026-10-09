@@ -9,7 +9,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-ironwood-transaction-stdin | derive-orchard-keys | derive-note-commitments | generate-ironwood-proof (standalone proof only)]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | scan-ironwood-block-stdin | build-ironwood-transaction-stdin]");
         return;
     }
 
@@ -42,6 +42,22 @@ fn main() {
             println!("Memo Length: {} bytes (strictly 512 bytes)", memo.len());
             let decrypted = decrypt_512_memo(&memo, &key).expect("Decrypt failed");
             println!("Decrypted: {}", String::from_utf8_lossy(&decrypted));
+        }
+        "scan-ironwood-block-stdin" => {
+            // The spending key is passed only through stdin and is not emitted in output.
+            use std::io::Read;
+            let mut input_json = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut input_json) {
+                eprintln!("Could not read scan request from stdin: {e}");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::scan_ironwood_block_json(&input_json) {
+                Ok(result) => println!("{}", serde_json::to_string(&result).expect("scan result serializes")),
+                Err(e) => {
+                    eprintln!("Ironwood wallet scan failed closed: {e}");
+                    std::process::exit(2);
+                }
+            }
         }
         "build-ironwood-transaction-stdin" => {
             // Raw secret keys are read from stdin, not command-line arguments or logs.
