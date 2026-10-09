@@ -156,6 +156,30 @@ def command_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_prepare_signer(args: argparse.Namespace) -> int:
+    pczt_hex = _pczt_hex_from_file(args.pczt)
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", args.nullifier):
+        raise RuntimeError("--nullifier must be a 32-byte nullifier encoded as 64 hex characters.")
+    result = _run_rust("prepare-ironwood-pczt-signer-stdin", {
+        "pczt_hex": pczt_hex,
+        "signer_nullifier_hex": args.nullifier.lower(),
+    })
+    if result.get("status") != "PCZT_REDACTED_FOR_PARTICIPANT" or result.get("broadcast") is not False:
+        raise RuntimeError("Signer redactor returned an unexpected status.")
+    _write_private_json(args.out, result)
+    print(json.dumps({
+        "status": result["status"],
+        "signer_nullifier_hex": result.get("signer_nullifier_hex"),
+        "action_index": result.get("action_index"),
+        "sighash_hex": result.get("sighash_hex"),
+        "pczt_file": str(Path(args.out).resolve()),
+        "broadcast": False,
+        "privacy_note": result.get("privacy_note"),
+    }, indent=2))
+    print("Review all output effects, amounts, recipients, fees and the sighash before signing.")
+    return 0
+
+
 def command_sign(args: argparse.Namespace) -> int:
     pczt_hex = _pczt_hex_from_file(args.pczt)
     key = getpass.getpass("Your raw Ironwood SpendingKey (hex; input hidden): ").strip()
@@ -262,6 +286,12 @@ def _cli(argv: list[str] | None = None) -> int:
     inspect = sub.add_parser("inspect", help="Inspect a PCZT's output/action manifest and sighash.")
     inspect.add_argument("--pczt", required=True)
     inspect.set_defaults(func=command_inspect)
+
+    prepare_signer = sub.add_parser("prepare-signer", help="Redact other input-note data before sending a PCZT to one participant.")
+    prepare_signer.add_argument("--pczt", required=True, help="Private PCZT file created by the local transaction assembler.")
+    prepare_signer.add_argument("--nullifier", required=True, help="The participant's own input nullifier.")
+    prepare_signer.add_argument("--out", required=True, help="New redacted PCZT for this one signer.")
+    prepare_signer.set_defaults(func=command_prepare_signer)
 
     sign = sub.add_parser("sign", help="Sign only your input after verifying its details and sighash.")
     sign.add_argument("--pczt", required=True)
