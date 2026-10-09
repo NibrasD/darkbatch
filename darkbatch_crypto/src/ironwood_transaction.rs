@@ -302,7 +302,7 @@ fn parse_fixed_hex<const N: usize>(hex_value: &str, field: &str) -> Result<[u8; 
 }
 
 /// Decode a Testnet recipient as an Ironwood-capable Orchard-protocol receiver.
-fn decode_ironwood_recipient(
+pub(crate) fn decode_ironwood_recipient(
     unified_address: Option<&str>,
     raw_receiver_hex: Option<&str>,
     label: &str,
