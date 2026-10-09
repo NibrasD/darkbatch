@@ -1,186 +1,197 @@
 """
-DarkBatch Zcash Testnet Settlement Adapter
-Bridges cleared FBA batch settlement bundles into Zcash Testnet (Ironwood NU6.3):
-- Constructs authentic Transaction v6 payloads conforming strictly to ZIP 229 (0xD884B698).
-- Broadcasts via live Zcash testnet JSON-RPC (sendrawtransaction) when configured.
-- Seamlessly falls back to local high-fidelity Ironwood consensus node verification.
-- Returns authentic testnet transaction ID (txid), block confirmation status, and anchor roots.
-"""
+Ironwood Testnet broadcast adapter.
 
+This adapter intentionally has no simulator fallback. A local model is not Zebra,
+and a mempool acceptance is not a block confirmation. Only a transaction produced
+by the authoritative Ironwood builder may be submitted to a real Testnet node.
+"""
 import os
 import json
 import logging
+import re
 import urllib.request
 import urllib.error
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
+
 from darkbatch.settlement.v6_bundle import SettlementBundle
-from darkbatch.node.simulator import ZcashNodeSimulator
 
 logger = logging.getLogger("darkbatch.settlement.adapter")
+IRONWOOD_TESTNET_ACTIVATION_HEIGHT = 4_134_000
+
 
 class TestnetSettlementAdapter:
-    """
-    Settlement adapter bridging DarkBatch uniform-cleared matches to Zcash Testnet.
-    """
     def __init__(
         self,
-        node_simulator: Optional[ZcashNodeSimulator] = None,
+        node_simulator=None,  # Accepted for old call sites; never used to validate/broadcast.
         rpc_url: Optional[str] = None,
         rpc_user: Optional[str] = None,
-        rpc_password: Optional[str] = None
+        rpc_password: Optional[str] = None,
     ):
-        self.node_simulator = node_simulator or ZcashNodeSimulator()
-        self.rpc_url = rpc_url or os.getenv("ZCASH_TESTNET_RPC_URL", "http://127.0.0.1:18232")
-        self.rpc_user = rpc_user or os.getenv("ZCASH_TESTNET_RPC_USER", "")
-        self.rpc_password = rpc_password or os.getenv("ZCASH_TESTNET_RPC_PASS", "")
+        # No implicit localhost/default-node broadcast. Configure the intended testnet explicitly.
+        self.rpc_url = (rpc_url or os.getenv("ZCASH_TESTNET_RPC_URL") or "").strip()
+        self.rpc_user = rpc_user if rpc_user is not None else os.getenv("ZCASH_TESTNET_RPC_USER", "")
+        self.rpc_password = rpc_password if rpc_password is not None else os.getenv("ZCASH_TESTNET_RPC_PASS", "")
         self.broadcast_history: Dict[str, Dict[str, Any]] = {}
 
-    def is_live_rpc_available(self) -> bool:
-        """Checks if a live Zcash testnet node is reachable via JSON-RPC."""
+    def _rpc(self, method: str, params=None, timeout: float = 3.0) -> Dict[str, Any]:
         if not self.rpc_url:
-            return False
+            raise RuntimeError("ZCASH_TESTNET_RPC_URL is not configured.")
+        payload = {
+            "jsonrpc": "1.0",
+            "id": "darkbatch_ironwood",
+            "method": method,
+            "params": params or [],
+        }
+        req = urllib.request.Request(
+            self.rpc_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        if self.rpc_user and self.rpc_password:
+            import base64
+            token = base64.b64encode(
+                f"{self.rpc_user}:{self.rpc_password}".encode("utf-8")
+            ).decode("ascii")
+            req.add_header("Authorization", f"Basic {token}")
+
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            payload_out = json.loads(response.read().decode("utf-8"))
+        if payload_out.get("error"):
+            raise RuntimeError(f"Zebra RPC {method} failed: {payload_out['error']}")
+        if "result" not in payload_out:
+            raise RuntimeError(f"Zebra RPC {method} returned no result.")
+        result = payload_out["result"]
+        if not isinstance(result, dict) and method != "sendrawtransaction":
+            raise RuntimeError(f"Zebra RPC {method} returned an invalid result.")
+        return payload_out
+
+    def get_testnet_info(self) -> Dict[str, Any]:
+        response = self._rpc("getblockchaininfo", timeout=2.0)
+        info = response["result"]
+        chain = str(info.get("chain", "")).lower()
         try:
-            req = urllib.request.Request(
-                self.rpc_url,
-                data=json.dumps({"jsonrpc": "1.0", "id": "probe", "method": "getblockchaininfo", "params": []}).encode(),
-                headers={"Content-Type": "application/json"}
+            height = int(info.get("blocks", -1))
+        except (TypeError, ValueError):
+            height = -1
+        if chain not in {"test", "testnet"} and "testnet" not in chain:
+            raise RuntimeError(f"Refusing broadcast: configured node is not Testnet (chain={chain!r}).")
+        if height < IRONWOOD_TESTNET_ACTIVATION_HEIGHT:
+            raise RuntimeError(
+                f"Refusing Ironwood broadcast: node height {height} is below "
+                f"Testnet NU6.3 activation {IRONWOOD_TESTNET_ACTIVATION_HEIGHT}."
             )
-            if self.rpc_user and self.rpc_password:
-                import base64
-                auth = base64.b64encode(f"{self.rpc_user}:{self.rpc_password}".encode()).decode()
-                req.add_header("Authorization", f"Basic {auth}")
-            
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                data = json.loads(resp.read().decode())
-                return "result" in data
-        except Exception:
+        return info
+
+    def is_live_rpc_available(self) -> bool:
+        try:
+            self.get_testnet_info()
+            return True
+        except Exception as exc:
+            logger.debug("Ironwood Testnet RPC unavailable/not eligible: %s", exc)
             return False
+
+    @staticmethod
+    def _validate_candidate(bundle: SettlementBundle) -> Optional[str]:
+        if not getattr(bundle, "consensus_ready", False):
+            return "Bundle is marked simulation-only / not consensus-ready."
+        raw_hex = (getattr(bundle, "raw_tx_hex", "") or "").strip()
+        if not raw_hex:
+            return "No serialized raw transaction is present."
+        if len(raw_hex) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", raw_hex):
+            return "Raw transaction must be even-length hexadecimal."
+        try:
+            raw = bytes.fromhex(raw_hex)
+        except ValueError:
+            return "Raw transaction is not valid hexadecimal."
+        declared_size = int(getattr(bundle, "raw_tx_bytes_len", -1))
+        if declared_size != len(raw):
+            return f"Raw transaction size mismatch: declared {declared_size}, actual {len(raw)}."
+        expected_txid = str(getattr(bundle, "tx_id", "") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_txid):
+            return "A 32-byte expected transaction ID is required."
+        # v6 header/version-group/branch IDs are checked before sending. The node performs
+        # authoritative consensus verification of proofs, signatures, anchor and balance.
+        if len(raw) < 12:
+            return "Raw transaction is too short to contain a v6 header."
+        if int.from_bytes(raw[0:4], "little") != 0x80000006:
+            return "Raw transaction header is not version 6."
+        if int.from_bytes(raw[4:8], "little") != 0xD884B698:
+            return "Raw transaction version-group ID is not v6."
+        if int.from_bytes(raw[8:12], "little") != 0x37A5165B:
+            return "Raw transaction does not use the NU6.3 Ironwood branch ID."
+        return None
 
     def broadcast(self, bundle: SettlementBundle) -> Dict[str, Any]:
         """
-        Broadcast only a fully built, independently validated Ironwood transaction.
-        Simulations and incomplete bundles are rejected; they never fall back to a
-        synthetic local "mined" block.
+        Submit only a consensus-ready Transaction v6 to a real NU6.3 Testnet node.
+        No synthetic mining, no local consensus claims, and no fake confirmations.
         """
-        raw_tx_hex = (bundle.raw_tx_hex or "").strip()
-        if (
-            not getattr(bundle, "consensus_ready", False)
-            or not raw_tx_hex
-            or not bundle.tx_id
-        ):
+        reason = self._validate_candidate(bundle)
+        if reason:
             return {
                 "status": "REJECTED_NOT_CONSENSUS_READY",
                 "broadcast": False,
                 "confirmed": False,
                 "tx_id": None,
                 "simulation_id": getattr(bundle, "simulation_id", None),
-                "reason": "Only a complete official Ironwood transaction with verified proof, "
-                          "spend authorization, binding signature, and matching serialization "
-                          "may be broadcast. This bundle is simulation-only.",
+                "confirmations": 0,
+                "reason": reason,
             }
-        # Convert bundle dataclass to dictionary representation
-        bundle_dict = {
-            "tx_id": bundle.tx_id,
-            "tx_version": bundle.tx_version,
-            "version_group_id": bundle.version_group_id,
-            "consensus_branch_id": bundle.consensus_branch_id,
-            "epoch_id": bundle.epoch_id,
-            "clearing_price_usd": bundle.clearing_price_usd,
-            "total_volume_zec": bundle.total_volume_zec,
-            "action_groups": [
-                {
-                    "group_id": ag.group_id,
-                    "intent_id": ag.intent_id,
-                    "direction": ag.direction,
-                    "anchor_hex": ag.anchor_hex,
-                    "net_value_balance_zat": ag.net_value_balance_zat,
-                    "actions": [
-                        {
-                            "type": "SWAP",
-                            "cv_point": ag.swap_action.cv_net_hex,
-                            "nullifier": ag.swap_action.nullifier_hex,
-                            "rk": ag.swap_action.rk_hex,
-                            "cm_point": ag.swap_action.cm_star_hex,
-                            "memo_hex": ag.swap_action.encrypted_memo_hex,
-                        },
-                        {
-                            "type": "FEE",
-                            "cv_point": ag.fee_action.cv_fee_hex,
-                            "matcher_fee_zat": ag.fee_action.matcher_fee_zat,
-                            "miner_fee_zat": ag.fee_action.miner_fee_zat,
-                        }
-                    ]
-                }
-                for ag in bundle.action_groups
-            ],
-            "raw_tx_hex": bundle.raw_tx_hex,
-            "raw_tx_bytes_len": bundle.raw_tx_bytes_len,
-            "created_at": bundle.created_at,
-        }
 
-        # 1. Attempt Live RPC broadcast
-        if self.is_live_rpc_available():
-            try:
-                rpc_payload = {
-                    "jsonrpc": "1.0",
-                    "id": "darkbatch_broadcast",
-                    "method": "sendrawtransaction",
-                    "params": [bundle.raw_tx_hex]
-                }
-                req = urllib.request.Request(
-                    self.rpc_url,
-                    data=json.dumps(rpc_payload).encode(),
-                    headers={"Content-Type": "application/json"}
-                )
-                if self.rpc_user and self.rpc_password:
-                    import base64
-                    auth = base64.b64encode(f"{self.rpc_user}:{self.rpc_password}".encode()).decode()
-                    req.add_header("Authorization", f"Basic {auth}")
+        try:
+            info = self.get_testnet_info()
+        except Exception as exc:
+            return {
+                "status": "TESTNET_RPC_UNAVAILABLE",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "confirmations": 0,
+                "reason": str(exc),
+            }
 
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
-                    res_data = json.loads(resp.read().decode())
-                    live_txid = res_data.get("result", bundle.tx_id)
-                    record = {
-                        "txid": live_txid,
-                        "status": "BROADCAST_TESTNET_LIVE",
-                        "network": "Zcash Testnet (NU6.3 Ironwood)",
-                        "version_group_id": hex(bundle.version_group_id),
-                        "actions_count": len(bundle.action_groups),
-                        "raw_tx_len": bundle.raw_tx_bytes_len,
-                        "confirmations": 1,
-                        "explorer_url": f"https://testnet.zcashexplorer.app/tx/{live_txid}",
-                        "live_node": True,
-                    }
-                    self.broadcast_history[live_txid] = record
-                    return record
-            except Exception as e:
-                logger.warning(f"Live RPC broadcast failed: {e}. Falling back to node simulator.")
+        raw_tx_hex = bundle.raw_tx_hex.strip()
+        try:
+            response = self._rpc("sendrawtransaction", [raw_tx_hex], timeout=10.0)
+            txid = response.get("result")
+            if not isinstance(txid, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", txid):
+                raise RuntimeError("Zebra returned no valid transaction ID.")
+        except Exception as exc:
+            logger.warning("Zebra rejected/failed to accept Ironwood transaction: %s", exc)
+            return {
+                "status": "REJECTED_BY_TESTNET_NODE",
+                "broadcast": False,
+                "confirmed": False,
+                "tx_id": None,
+                "expected_tx_id": bundle.tx_id,
+                "confirmations": 0,
+                "reason": str(exc),
+            }
 
-        # 2. Consensus Node Verification & Settlement
-        success, result_hash = self.node_simulator.submit_settlement_bundle(bundle_dict)
-        if not success:
-            raise RuntimeError(f"Consensus verification failed: {result_hash}")
-
-        block_height = self.node_simulator.height
+        txid = txid.lower()
+        expected_txid = bundle.tx_id.lower()
+        txid_matches = txid == expected_txid
         record = {
-            "txid": bundle.tx_id,
-            "status": "LOCAL_FBA_SIMULATED_CONSENSUS",
-            "network": "DarkBatch Local FBA Solver & Settlement Simulator (ZIP 228 / ZIP 229)",
-            "version_group_id": hex(bundle.version_group_id),
-            "consensus_branch_id": hex(bundle.consensus_branch_id),
-            "block_height": block_height,
-            "block_hash": result_hash,
-            "anchor_root": self.node_simulator.current_anchor(),
-            "actions_count": len(bundle.action_groups),
+            "txid": txid,
+            "expected_txid": expected_txid,
+            "txid_matches": txid_matches,
+            "status": "BROADCAST_PENDING" if txid_matches else "BROADCAST_TXID_MISMATCH",
+            "network": "Zcash Testnet (Ironwood / NU6.3)",
+            "node_height_at_broadcast": info.get("blocks"),
+            "version_group_id": "0xd884b698",
+            "consensus_branch_id": "0x37a5165b",
             "raw_tx_len": bundle.raw_tx_bytes_len,
-            "confirmations": 1,
-            "explorer_url": None,
-            "live_node": False,
-            "note": "Validated locally under ZIP 228 batching rules and ZIP 229 transaction v6 structure. This is DarkBatch's off-chain batch auction solver testbed, not a live Zebra node on testnet. To broadcast to live testnet, configure ZCASH_TESTNET_RPC_URL.",
+            "confirmations": 0,
+            "confirmed": False,
+            "broadcast": True,
+            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{txid}",
+            "live_node": True,
+            "note": "Accepted for broadcast; mined confirmation has not been checked.",
         }
-        self.broadcast_history[bundle.tx_id] = record
+        self.broadcast_history[txid] = record
         return record
 
     def get_transaction(self, txid: str) -> Optional[Dict[str, Any]]:
-        """Returns details of a broadcast testnet transaction."""
+        """Returns this process's broadcast receipt, not a guarantee of on-chain confirmation."""
         return self.broadcast_history.get(txid)
