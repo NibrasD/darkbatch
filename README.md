@@ -166,7 +166,14 @@ The Rust PCZT path supports a single v6 transaction whose real inputs are signed
 
 ### 1. Create a proposed PCZT locally
 
-Build the Rust engine first, then make a private request file from actual unspent Ironwood V3 notes and real recipient addresses. The structure is:
+Build the Rust engine first. Each participant should scan their own wallet locally and export sensitive viewing material only for the trusted local assembler, if that privacy trade-off is acceptable:
+
+```bash
+python -m darkbatch.settlement.ironwood_pczt export-fvk --out private-fvk.json
+python -m darkbatch.settlement.ironwood_wallet_sync notes --state .\\darkbatch-ironwood-testnet.json
+```
+
+Use the scanner's protected state file to obtain the selected note's receiver, value, rho, rseed and nullifier. Do not publish that state file. Then make a private request file from actual unspent Ironwood V3 notes and real recipient addresses. The structure is:
 
 ```json
 {
