@@ -149,15 +149,129 @@ After checking the recipient and amount:
 
 ```bash
 python -m darkbatch.settlement.ironwood_wallet_sync broadcast --tx-file built-tx.json
+python -m darkbatch.settlement.ironwood_wallet_sync status --txid YOUR_64_HEX_TXID
 ```
 
-A successful `sendrawtransaction` request is reported as `BROADCAST_PENDING`, with zero confirmations. A transaction is marked confirmed only after the node reports positive confirmations.
+A successful `sendrawtransaction` request is reported as `BROADCAST_PENDING`, with zero confirmations. The `status` command queries `getrawtransaction` from the configured Zebra node and marks a transaction confirmed only when the node reports positive confirmations. Depending on your node's transaction-index configuration, looking up an already-mined transaction may require `txindex=1`.
 
 **Security and scope:** the scanner/wallet state contains notes and witnesses but is not a seed backup. Keep the spending key offline/private and back up the original key safely. The initial builder accepts inputs from one wallet only; it is a real-transaction path for testing ordinary Ironwood transfers, not yet a non-custodial multi-party FBA settlement. A collaborative-signing design is needed before multiple traders' notes can fund one atomic FBA batch without handing their spending keys to a coordinator.
 
 ---
 
-## 6. Local FBA simulation
+## 6. Collaborative Ironwood PCZT workflow (manual Testnet integration)
+
+The Rust PCZT path supports a single v6 transaction whose real inputs are signed separately by their owners. It does **not** automatically turn the current FBA solver's simulated fills into a batch transaction yet. Use it as a local, manually coordinated Testnet workflow while keeping the public FBA API out of the key-handling path.
+
+**Privacy warning:** PCZT creation needs input-note openings and each input's Full Viewing Key. The local assembler sees those values. Never upload them to a public coordinator or send them to an untrusted party. Participants should receive only their redacted PCZT copy, review all public output effects and the exact sighash locally, and sign only their own input.
+
+### 1. Create a proposed PCZT locally
+
+Build the Rust engine first, then make a private request file from actual unspent Ironwood V3 notes and real recipient addresses. The structure is:
+
+```json
+{
+  "network": "testnet",
+  "target_height": 4134011,
+  "expiry_height": 4134031,
+  "spends": [
+    {
+      "input_id": "input-alice-1",
+      "full_viewing_key_hex": "FVK_HEX_FROM_LOCAL_WALLET",
+      "note_address_raw_hex": "86_HEX_CHARACTERS_FOR_RAW_43_BYTE_RECEIVER",
+      "value_zat": 200000,
+      "rho_hex": "64_HEX_CHARACTERS",
+      "rseed_hex": "64_HEX_CHARACTERS",
+      "nullifier_hex": "64_HEX_CHARACTERS"
+    }
+  ],
+  "outputs": [
+    {
+      "output_id": "recipient-1",
+      "recipient_address": "REAL_TESTNET_UNIFIED_ADDRESS",
+      "value_zat": 180000,
+      "memo_hex": ""
+    },
+    {
+      "output_id": "change",
+      "recipient_address": "SENDER_TESTNET_UNIFIED_ADDRESS",
+      "value_zat": 10000,
+      "memo_hex": ""
+    }
+  ]
+}
+```
+
+This JSON is a schema example only; replace every placeholder with real wallet data and use the current node tip plus one for `target_height`. The sum of inputs minus outputs must equal the official ZIP-317 fee exactly. Include an explicit change output when needed.
+
+```bash
+python -m darkbatch.settlement.ironwood_pczt create --request pczt-request.json --out unsigned-pczt.json
+python -m darkbatch.settlement.ironwood_pczt inspect --pczt unsigned-pczt.json
+```
+
+### 2. Prepare and sign each participant's input
+
+For each participant, create a separate redacted copy using that participant's own nullifier:
+
+```bash
+python -m darkbatch.settlement.ironwood_pczt prepare-signer --pczt unsigned-pczt.json --nullifier PARTICIPANT_NULLIFIER --out participant-to-sign.json
+```
+
+Review the returned action manifest, recipient outputs, values, fee and `sighash_hex`. On that participant's trusted machine, use the redacted PCZT and the exact reviewed sighash:
+
+```bash
+python -m darkbatch.settlement.ironwood_pczt sign --pczt participant-to-sign.json --nullifier PARTICIPANT_NULLIFIER --sighash REVIEWED_SIGHASH_HEX --out participant-signed.json
+```
+
+Repeat separately for every real input owner. Do not pass any spending key through the coordinator or command-line arguments; the CLI asks for it via hidden input.
+
+### 3. Combine signatures and finalize against a fresh anchor
+
+Bring the participant-signed PCZT copies together on the trusted local finalizer:
+
+```bash
+python -m darkbatch.settlement.ironwood_pczt combine --pczts alice-signed.json bob-signed.json --nullifiers ALICE_NULLIFIER,BOB_NULLIFIER --out combined-pczt.json
+```
+
+Create a private `finalize-request.json` from the combined PCZT and the **same current canonical Ironwood root** and one witness for every required input:
+
+```json
+{
+  "pczt_hex": "PCZT_HEX_FROM_COMBINED_FILE",
+  "anchor_hex": "CURRENT_64_HEX_IRONWOOD_ROOT",
+  "required_nullifiers_hex": [
+    "ALICE_64_HEX_NULLIFIER",
+    "BOB_64_HEX_NULLIFIER"
+  ],
+  "witnesses": [
+    {
+      "nullifier_hex": "ALICE_64_HEX_NULLIFIER",
+      "witness_position": 1,
+      "witness_auth_path_hex": ["32_BYTE_HEX_NODE_0", "REPLACE_WITH_31_MORE_NODES"]
+    },
+    {
+      "nullifier_hex": "BOB_64_HEX_NULLIFIER",
+      "witness_position": 2,
+      "witness_auth_path_hex": ["32_BYTE_HEX_NODE_0", "REPLACE_WITH_31_MORE_NODES"]
+    }
+  ]
+}
+```
+
+The witness data must come from each participant's current local wallet scan and match that canonical root. The abbreviated values above are placeholders, **not valid witness arrays**.
+
+```bash
+python -m darkbatch.settlement.ironwood_pczt finalize --request finalize-request.json --out finalized-tx.json
+python -m darkbatch.settlement.ironwood_pczt broadcast --tx-file finalized-tx.json
+python -m darkbatch.settlement.ironwood_wallet_sync status --txid YOUR_64_HEX_TXID
+```
+
+Finalization asks the official PCZT prover and transaction extractor to prove and serialize the same signed transaction. The broadcast step decodes the raw bytes and checks its txid before contacting Zebra; broadcast acceptance still is not a mined confirmation.
+
+**Limit:** this operational PCZT toolchain is separate from the FBA coordinator. The coordinator still emits `SIMULATED_ONLY`; automatic matching-to-PCZT construction, a privacy-preserving participant input workflow, and verified payment of any non-ZEC quote leg remain to be integrated before claiming a full atomic FBA exchange.
+
+---
+
+## 7. Local FBA simulation
 
 Start the coordinator API:
 
