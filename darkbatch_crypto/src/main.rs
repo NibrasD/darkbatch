@@ -9,7 +9,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | sign-bundle | generate-spend-keys | derive-orchard-keys]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | derive-orchard-keys | derive-note-commitments | generate-ironwood-proof (standalone proof only)]");
         return;
     }
 
@@ -47,134 +47,9 @@ fn main() {
             eprintln!("build-demo-v6 is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
             std::process::exit(2);
         }
-        "sign-bundle" => {
-            let sighash_hex = args.get(2).cloned().unwrap_or_default();
-            let bsk_hex = args.get(3).cloned().unwrap_or_default();
-            let n_actions: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
-
-            let sighash_bytes = hex::decode(&sighash_hex).unwrap_or_else(|_| vec![0u8; 32]);
-            let mut sighash_arr = [0u8; 32];
-            if sighash_bytes.len() >= 32 {
-                sighash_arr.copy_from_slice(&sighash_bytes[..32]);
-            }
-
-            let bsk_bytes = hex::decode(&bsk_hex).unwrap_or_else(|_| vec![0u8; 32]);
-            let mut bsk_arr = [0u8; 32];
-            if bsk_bytes.len() >= 32 {
-                bsk_arr.copy_from_slice(&bsk_bytes[..32]);
-            }
-
-            let mut rng = rand::rng();
-            let mut spend_sigs = Vec::new();
-            let mut rk_list = Vec::new();
-
-            for _ in 0..n_actions {
-                let ask = reddsa::SigningKey::<reddsa::orchard::SpendAuth>::new(&mut rng);
-                let alpha = darkbatch_crypto::random_scalar();
-                let (rsk, rk) = darkbatch_crypto::derive_randomized_spend_auth(&ask, &alpha);
-                let sig = rsk.sign(&mut rng, &sighash_arr);
-                let sig_bytes: [u8; 64] = sig.into();
-                let rk_bytes: [u8; 32] = rk.clone().into();
-                assert!(rk.verify(&sighash_arr, &sig).is_ok());
-
-                spend_sigs.push(hex::encode(sig_bytes));
-                rk_list.push(hex::encode(rk_bytes));
-            }
-
-            let bsk_sk = reddsa::SigningKey::<reddsa::orchard::Binding>::from_bytes(&bsk_arr)
-                .unwrap_or_else(|_| reddsa::SigningKey::new(&mut rng));
-            let binding_sig = bsk_sk.sign(&mut rng, &sighash_arr);
-            let binding_sig_bytes: [u8; 64] = binding_sig.into();
-
-            println!("{}", serde_json::json!({
-                "spend_auth_sigs": spend_sigs,
-                "rk_list": rk_list,
-                "binding_sig": hex::encode(binding_sig_bytes)
-            }));
-        }
-        "generate-spend-keys" => {
-            let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let mut rng = rand::rng();
-            let mut key_pairs = Vec::new();
-            for _ in 0..n {
-                let ask = reddsa::SigningKey::<reddsa::orchard::SpendAuth>::new(&mut rng);
-                let alpha = darkbatch_crypto::random_scalar();
-                let (rsk, rk) = darkbatch_crypto::derive_randomized_spend_auth(&ask, &alpha);
-                let rsk_bytes: [u8; 32] = rsk.to_bytes();
-                let rk_bytes: [u8; 32] = rk.into();
-                key_pairs.push(serde_json::json!({
-                    "rsk_hex": hex::encode(rsk_bytes),
-                    "rk_hex": hex::encode(rk_bytes)
-                }));
-            }
-            println!("{}", serde_json::json!({ "keys": key_pairs }));
-        }
-        "sign-bundle-with-keys" => {
-            let sighash_hex = args.get(2).cloned().unwrap_or_default();
-            let bsk_hex = args.get(3).cloned().unwrap_or_default();
-            let rsks_csv = args.get(4).cloned().unwrap_or_default();
-
-            let sighash_bytes = hex::decode(&sighash_hex).unwrap_or_else(|_| vec![0u8; 32]);
-            let mut sighash_arr = [0u8; 32];
-            if sighash_bytes.len() >= 32 { sighash_arr.copy_from_slice(&sighash_bytes[..32]); }
-
-            let bsk_bytes = hex::decode(&bsk_hex).unwrap_or_else(|_| vec![0u8; 32]);
-            let mut bsk_arr = [0u8; 32];
-            if bsk_bytes.len() >= 32 { bsk_arr.copy_from_slice(&bsk_bytes[..32]); }
-
-            let mut rng = rand::rng();
-            let mut spend_sigs = Vec::new();
-            let mut rk_list = Vec::new();
-
-            for rsk_hex in rsks_csv.split(',').filter(|s| !s.is_empty()) {
-                let rsk_raw = hex::decode(rsk_hex).unwrap_or_default();
-                let mut rsk_arr = [0u8; 32];
-                if rsk_raw.len() >= 32 { rsk_arr.copy_from_slice(&rsk_raw[..32]); }
-                let rsk = reddsa::SigningKey::<reddsa::orchard::SpendAuth>::from_bytes(&rsk_arr)
-                    .unwrap_or_else(|_| reddsa::SigningKey::new(&mut rng));
-                let rk = reddsa::VerificationKey::from(&rsk);
-                let sig = rsk.sign(&mut rng, &sighash_arr);
-                let sig_bytes: [u8; 64] = sig.into();
-                let rk_bytes: [u8; 32] = rk.clone().into();
-                assert!(rk.verify(&sighash_arr, &sig).is_ok());
-
-                spend_sigs.push(hex::encode(sig_bytes));
-                rk_list.push(hex::encode(rk_bytes));
-            }
-
-            let bsk_sk = reddsa::SigningKey::<reddsa::orchard::Binding>::from_bytes(&bsk_arr)
-                .unwrap_or_else(|_| reddsa::SigningKey::new(&mut rng));
-            let binding_sig = bsk_sk.sign(&mut rng, &sighash_arr);
-            let binding_sig_bytes: [u8; 64] = binding_sig.into();
-
-            println!("{}", serde_json::json!({
-                "spend_auth_sigs": spend_sigs,
-                "rk_list": rk_list,
-                "binding_sig": hex::encode(binding_sig_bytes)
-            }));
-        }
-        "derive-spend-auth" => {
-            let sighash_hex = args.get(2).cloned().unwrap_or_default();
-            let sighash_bytes = hex::decode(&sighash_hex).unwrap_or_else(|_| vec![0u8; 32]);
-            let mut sighash_arr = [0u8; 32];
-            if sighash_bytes.len() >= 32 {
-                sighash_arr.copy_from_slice(&sighash_bytes[..32]);
-            }
-
-            let mut rng = rand::rng();
-            let ask = reddsa::SigningKey::<reddsa::orchard::SpendAuth>::new(&mut rng);
-            let alpha = darkbatch_crypto::random_scalar();
-            let (rsk, rk) = darkbatch_crypto::derive_randomized_spend_auth(&ask, &alpha);
-            let sig = rsk.sign(&mut rng, &sighash_arr);
-            let sig_bytes: [u8; 64] = sig.into();
-            let rk_bytes: [u8; 32] = rk.clone().into();
-            assert!(rk.verify(&sighash_arr, &sig).is_ok());
-
-            println!("{}", serde_json::json!({
-                "rk_hex": hex::encode(rk_bytes),
-                "sig_hex": hex::encode(sig_bytes),
-                "alpha_hex": hex::encode(alpha.to_repr())
-            }));
+        "sign-bundle" | "sign-bundle-with-keys" | "generate-spend-keys" | "derive-spend-auth" => {
+            eprintln!("Standalone spend/binding signing is disabled: signatures must be produced by the official Zcash transaction builder for the exact funded Ironwood bundle.");
+            std::process::exit(2);
         }
         "encrypt-orchard-note" => {
             eprintln!("encrypt-orchard-note is disabled: this path is not verified against authoritative Ironwood consensus vectors and must not emit protocol-shaped data.");
