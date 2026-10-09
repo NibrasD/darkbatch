@@ -473,7 +473,7 @@ pub fn build_and_prove_ironwood_bundle(
     
     let anchor = Anchor::from_bytes(*anchor_bytes)
         .into_option()
-        .unwrap_or_else(Anchor::empty_tree);
+        .ok_or_else(|| "Invalid Ironwood anchor encoding; refusing to substitute the empty tree".to_string())?;
 
     let bundle_type = BundleType::Transactional {
         bundle_required: true,
@@ -490,7 +490,7 @@ pub fn build_and_prove_ironwood_bundle(
     builder.add_output(None, addr, NoteValue::from_raw(value_zat), *memo)
         .map_err(|e| format!("add_output failed: {:?}", e))?;
 
-    let mut rng = rand::rng();
+    let mut rng = rand_08::thread_rng();
     let unauthorized = builder.build::<i64>(&mut rng)
         .map_err(|e| format!("build failed: {:?}", e))?
         .ok_or_else(|| "Unauthorized bundle was None".to_string())?;
@@ -523,10 +523,11 @@ mod tests {
     use reddsa::Signature;
 
     #[test]
-    fn test_authentic_randomized_spend_auth() {
+    fn test_redpallas_key_randomization_is_mathematically_valid() {
         let mut rng = rand::rng();
         let ask = SigningKey::<SpendAuth>::new(&mut rng);
-        let alpha = Scalar::random(&mut rng);
+        let mut field_rng = rand_08::thread_rng();
+        let alpha = Scalar::random(&mut field_rng);
         let (rsk, rk) = derive_randomized_spend_auth(&ask, &alpha);
 
         let sighash = b"Zcash NU6.3 Ironwood canonical SIGHASH digest";
@@ -538,8 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn test_authentic_zcash_note_encryption_roundtrip() {
-        let mut rng = rand::rng();
+    fn test_legacy_note_cipher_roundtrip_is_not_consensus_validation() {
+        let mut rng = rand_08::thread_rng();
         let esk = Scalar::random(&mut rng);
         let ivk = Scalar::random(&mut rng);
         let diversifier = [0x77u8; 11];
@@ -577,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zip244_exact_hierarchical_txid() {
+    fn test_legacy_txid_hash_is_deterministic_only_not_vector_validation() {
         let dummy_action = vec![0x42u8; 820];
 
         let txid1 = compute_zip244_v6_txid(
@@ -658,7 +659,7 @@ mod tests {
         let memo = [0u8; 512];
         builder.add_output(None, addr, NoteValue::from_raw(100_000_000), memo).unwrap();
 
-        let mut rng = rand::rng();
+        let mut rng = rand_08::thread_rng();
         let unauthorized = builder.build::<i64>(&mut rng).unwrap();
         assert!(unauthorized.is_some());
         let (bundle, _meta) = unauthorized.unwrap();
