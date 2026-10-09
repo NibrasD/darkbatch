@@ -1,19 +1,15 @@
-//! Authentic Zcash Orchard / Ironwood Cryptographic Protocol Compliance
+//! Ironwood-targeted cryptographic experiments, not a complete consensus implementation.
 //!
-//! Implements strict consensus rules for Zcash NU6.3 / Ironwood (ZIP 229, ZIP 258, ZIP 244, ZIP 2005):
-//! 1. Spend authorization keys: ask -> rsk = ask.randomize(alpha) -> rk = vk(rsk)
-//! 2. Zcash Protocol § 5.4.3.4 & § 5.4.3.5 Note Encryption:
-//!    - epk = [esk] DiversifyHash(d)
-//!    - K_enc = BLAKE2b-256("Zcash_OrchardKDF", sharedSecret || epk)
-//!    - encCiphertext = ChaCha20Poly1305(K_enc, 0^12, NotePlaintext[564]) -> 580 bytes (leadByte 0x03)
-//!    - ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv || cmx || epk)
-//!    - outCiphertext = ChaCha20Poly1305(ock, 0^12, pk_d || esk) -> 80 bytes
-//! 3. Official Sinsemilla note commitment (cmx) and Orchard PRF nullifier derivation via `orchard::note`.
-//! 4. ZIP 244 / ZIP 229 Hierarchical Digest Tree for Transaction v6:
-//!    - 3-digest Ironwood Action breakdown: Compact (ZTxIdIrnActCH_v6), Memos (ZTxIdIrnActMH_v6), Noncompact (ZTxIdIrnActNH_v6).
-//!    - Anchor is strictly excluded from `txid_digest` (ZIP 229 assigns anchor to authorizing `auth_digest`).
-//!    - Root personalization: BLAKE2b-256("ZcashTxHash_" || consensusBranchId).
-//! 5. Halo 2 Orchard circuit keys and Ironwood bundle proof pipeline.
+//! Consensus-ready transactions must be created by `ironwood_transaction` through
+//! the official Zcash transaction builder. The custom DiversifyHash, note-encryption,
+//! and hand-written ZIP-244 digest routines below are legacy experiments and are kept
+//! private so they cannot be called by other crates. They are not suitable for creating
+//! broadcastable transaction fields.
+//!
+//! `derive_orchard_keys_and_address` and `derive_orchard_note_commitments` use
+//! official `orchard` key/note APIs. `build_and_prove_ironwood_bundle` constructs
+//! and verifies a standalone output-only bundle proof for experimentation; that proof
+//! is NOT a settlement transaction and must never be stitched into a different bundle.
 
 use pasta_curves::pallas::{Point, Scalar};
 use group::{Group, GroupEncoding};
@@ -35,7 +31,7 @@ use orchard::tree::Anchor;
 
 /// DiversifyHash: Maps an 11-byte diversifier to a basepoint on Pallas.
 /// Per Zcash Protocol Specification § 5.4.1.6: DiversifyHash^P(d) = GroupHash^P("z.cash:Orchard-gd", d)
-pub fn diversify_hash(d: &[u8; 11]) -> Point {
+fn diversify_hash(d: &[u8; 11]) -> Point {
     let h = Params::new()
         .hash_length(32)
         .personal(b"z.cash:Orchard-g")
@@ -63,7 +59,7 @@ pub fn derive_randomized_spend_auth(
 }
 
 /// Derives authentic diversified transmission key pk_d = [ivk] DiversifyHash(d)
-pub fn derive_pk_d(ivk: &Scalar, diversifier: &[u8; 11]) -> [u8; 32] {
+fn derive_pk_d(ivk: &Scalar, diversifier: &[u8; 11]) -> [u8; 32] {
     let gd = diversify_hash(diversifier);
     let pk_d = gd * ivk;
     pk_d.to_bytes()
@@ -71,7 +67,7 @@ pub fn derive_pk_d(ivk: &Scalar, diversifier: &[u8; 11]) -> [u8; 32] {
 
 /// Computes authentic Zcash Orchard Note Encryption per § 5.4.3.4 & § 5.4.3.5
 /// Returns (enc_ciphertext: 580B, out_ciphertext: 80B, epk: 32B)
-pub fn orchard_encrypt_note(
+fn orchard_encrypt_note(
     diversifier: &[u8; 11],
     pk_d_bytes: &[u8; 32],
     value_zat: u64,
@@ -156,7 +152,7 @@ pub fn orchard_encrypt_note(
 }
 
 /// Decrypts authentic Orchard Note Plaintext using incoming viewing key (ivk)
-pub fn orchard_decrypt_note(
+fn orchard_decrypt_note(
     enc_ciphertext: &[u8],
     ivk: &Scalar,
     epk_bytes: &[u8; 32],
@@ -211,7 +207,7 @@ pub fn orchard_decrypt_note(
 /// 1. Action data is separated into 3 sub-digests: Compact (ZTxIdIrnActCH_v6), Memos (ZTxIdIrnActMH_v6), Noncompact (ZTxIdIrnActNH_v6).
 /// 2. `anchorIronwood` is strictly OMITTED from the effecting TxID digest (ZIP 229 § 7.1 moved anchor to `auth_digest`).
 /// 3. Root TxID personalization is strictly `BLAKE2b-256("ZcashTxHash_" || consensusBranchId)`.
-pub fn compute_zip244_v6_txid(
+fn compute_zip244_v6_txid(
     header: u32,
     version_group_id: u32,
     consensus_branch_id: u32,
@@ -341,7 +337,7 @@ pub fn compute_zip244_v6_txid(
 
 /// Computes authentic ZIP 229 Authorizing Data Digest (`auth_digest`) for Transaction v6.
 /// Anchor resides in this digest per ZIP 229 § 7.2.
-pub fn compute_v6_auth_digest(
+fn compute_v6_auth_digest(
     anchor_ironwood: &[u8; 32],
     proofs_ironwood: &[u8],
     spend_auth_sigs_ironwood: &[u8],
@@ -374,7 +370,7 @@ pub fn compute_v6_auth_digest(
 
 /// Computes canonical SIGHASH (Signature Digest) for Transaction v6 without transparent inputs.
 /// Per ZIP 244 § Signature Digest: for pure shielded transactions, signature_digest == txid_digest_v6.
-pub fn compute_v6_sighash(
+fn compute_v6_sighash(
     header: u32,
     version_group_id: u32,
     consensus_branch_id: u32,
