@@ -164,13 +164,8 @@ def test_testnet_adapter_rejects_simulation_without_broadcast():
 
 def test_nu6_3_consensus_and_crypto_integrity():
     """
-    Directly verifies NU6.3 (Ironwood) consensus rules:
-    - Official branch ID 0x37A5165B (ZIP 258)
-    - Version Group ID 0xD884B698 (ZIP 229)
-    - Testnet Activation Height >= 4,134,000 (ZIP 258)
-    - RFC 8439 ChaCha20Poly1305 580-byte note ciphertext with lead byte 0x03 (ZIP 2005)
-    - Authentic RedPallas spend authorization & binding signatures on Pallas curve
-    - Zebra validator consensus rejection of non-conforming blocks/bundles
+    Checks target constants and primitive output shapes only. This test does not
+    establish Ironwood consensus compliance or Zebra transaction acceptance.
     """
     from darkbatch.core.crypto import encrypt_orchard_note, sign_redpallas_bundle, blake2b_digest
     from darkbatch.node.simulator import ZcashNodeSimulator
@@ -181,9 +176,9 @@ def test_nu6_3_consensus_and_crypto_integrity():
     info = node.get_blockchain_info()
     assert info["consensus"]["branch_id"] == "0x37a5165b"
     assert info["consensus"]["activation_height"] == 4134000
-    assert "Zebra" in info["validator"]
+    assert "NOT a consensus validator" in info["validator"]
 
-    # 2. Rejection of invalid Branch ID
+    # 2. Reject invalid target branch metadata (the simulator does not validate consensus)
     invalid_bundle = {
         "tx_id": "test_invalid_branch",
         "version_group_id": 0xD884B698,
@@ -194,7 +189,7 @@ def test_nu6_3_consensus_and_crypto_integrity():
     assert ok is False
     assert "0x37A5165B" in err
 
-    # 3. Authentic 580-byte Orchard / Ironwood Note Encryption (RFC 8439 ChaCha20Poly1305)
+    # 3. Check expected ciphertext lengths from the Rust primitive; not a consensus test.
     enc_ct, out_ct, epk = encrypt_orchard_note(
         lead_byte=0x03,
         diversifier=bytes(11),
@@ -211,7 +206,7 @@ def test_nu6_3_consensus_and_crypto_integrity():
     assert len(epk) == 32
     assert enc_ct != bytes(580)
 
-    # 4. Authentic RedPallas Signatures on Pallas curve
+    # 4. Check signature byte lengths only; no bundle-level authorization is proved here.
     sighash = blake2b_digest(b"canonical_sighash_data", personalization=b"ZcashTxHashIronw")
     bsk = 12345678901234567890
     spend_sigs, rk_list, binding_sig = sign_redpallas_bundle(sighash, bsk, 2)
