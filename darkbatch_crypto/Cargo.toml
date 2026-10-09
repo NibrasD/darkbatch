@@ -23,3 +23,7 @@ zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "9181e
 zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "9181ef851c7fa4100c28a7df6bcf1a5ff4c81dbd" }
 sapling = { package = "sapling-crypto", version = "0.9.0" }
 
+
+# Only used for the Sapling prover interface required by the generic transaction builder.
+# This command builds Ironwood-only transactions; it never adds Sapling actions.
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "9181ef851c7fa4100c28a7df6bcf1a5ff4c81dbd", features = ["bundled-prover"] }
