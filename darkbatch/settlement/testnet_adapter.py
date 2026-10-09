@@ -118,8 +118,8 @@ class TestnetSettlementAdapter:
             return "Raw transaction header is not version 6."
         if int.from_bytes(raw[4:8], "little") != 0xD884B698:
             return "Raw transaction version-group ID is not v6."
-        if int.from_bytes(raw[8:12], "little") != 0x37A5165B:
-            return "Raw transaction does not use the NU6.3 Ironwood branch ID."
+        if int.from_bytes(raw[8:12], "little") not in {0x37A5165B, 0x77190AD9}:
+            return "Raw transaction does not use a supported v6 branch ID (NU6.3 or NU7)."
         return None
 
     def broadcast(self, bundle: SettlementBundle) -> Dict[str, Any]:
