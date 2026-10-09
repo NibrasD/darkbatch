@@ -63,39 +63,24 @@ def test_full_system_lifecycle():
     }
     result = solver.run_epoch_settlement(epoch_id=1, intents=all_intents, wallets_map=wallets_map)
 
-    # 6. Verify Settlement Results
-    assert result["status"] == "SETTLED_AND_MINED"
+    # 6. Verify matching only; intents are not wallet-authorized spends.
+    assert result["status"] == "SIMULATED_ONLY"
+    assert result["consensus_ready"] is False
     assert result["cleared_zec"] == 15.0
-    # Uniform price should be within [41.50, 43.50]
     assert 41.50 <= result["clearing_price_usd"] <= 43.50
-    assert result["block_height"] == 4134011
-    assert result["tx_id"] is not None
+    assert result["tx_id"] is None
+    assert result["block_hash"] is None
+    assert result["simulation_id"].startswith("sim_")
+    assert result["raw_tx_hex"] == ""
 
-    # 7. Verify Blockchain State & Mining
-    assert len(node.blocks) == 2
-    assert len(node.nullifier_set) >= 2
-    # Verify that new note commitments updated the Merkle tree
-    new_anchor = node.current_anchor()
-    assert new_anchor != initial_anchor
+    # 7. No simulated mining, nullifier mutation, or balance changes are represented
+    # as a real settlement until a complete official Ironwood transaction exists.
+    assert len(node.blocks) == 1
+    assert len(node.nullifier_set) == 0
+    assert node.current_anchor() == initial_anchor
 
-    # 8. Verify Double-Spend Rejection (Consensus Rule)
-    # Attempting to re-submit the same settlement bundle should fail
-    re_bundle = {
-        "tx_id": "duplicate_attempt_tx",
-        "action_groups": [
-            {
-                "actions": [
-                    {"nullifier": list(node.nullifier_set)[0], "cm_point": "00" * 32}
-                ]
-            }
-        ]
-    }
-    success, err_msg = node.submit_settlement_bundle(re_bundle)
-    assert success is False
-    assert "already spent" in err_msg
-
-    # 9. Verify Balances updated
-    assert alice.shielded_balance_zec == 35.0  # 50 - 15
-    assert bob.shielded_balance_zec == 25.0    # 10 + 15
+    # 8. Simulated wallet balances are unchanged by a non-consensus-ready match.
+    assert alice.shielded_balance_zec == 50.0
+    assert bob.shielded_balance_zec == 10.0
 
     print("\n[E2E VERIFICATION PASSED 100%]")
