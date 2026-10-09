@@ -51,6 +51,7 @@ fn print_usage() {
     println!("  inspect-ironwood-transaction-stdin");
     println!("  create-ironwood-pczt-stdin");
     println!("  inspect-ironwood-pczt-stdin");
+    println!("  prepare-ironwood-pczt-signer-stdin");
     println!("  sign-ironwood-pczt-stdin");
     println!("  combine-ironwood-pczts-stdin");
     println!("  finalize-ironwood-pczt-stdin");
@@ -97,6 +98,9 @@ fn main() {
             .map(|value| println!("{}", value)),
         "inspect-ironwood-pczt-stdin" => read_stdin_json_string()
             .and_then(|input| darkbatch_crypto::inspect_ironwood_pczt_json(&input))
+            .map(|value| println!("{}", value)),
+        "prepare-ironwood-pczt-signer-stdin" => read_stdin_json_string()
+            .and_then(|input| darkbatch_crypto::prepare_ironwood_pczt_for_signer_json(&input))
             .map(|value| println!("{}", value)),
         "sign-ironwood-pczt-stdin" => read_stdin_json_string()
             .and_then(|input| darkbatch_crypto::sign_ironwood_pczt_json(&input))
