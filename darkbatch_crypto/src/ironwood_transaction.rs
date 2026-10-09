@@ -216,3 +216,227 @@ mod tests {
         assert!(validate_ironwood_request(BranchId::Nu7, 1, 0).is_err());
     }
 }
+
+
+/// Untrusted JSON envelope accepted by the local transaction-building CLI.
+/// Secret keys are read from stdin, never from command-line arguments or logs.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IronwoodBuildRequest {
+    network: String,
+    target_height: u32,
+    ironwood_anchor_hex: String,
+    spends: Vec<IronwoodSpendRequest>,
+    outputs: Vec<IronwoodOutputRequest>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IronwoodSpendRequest {
+    /// Raw protocol SpendingKey bytes from a real Ironwood-capable wallet.
+    spending_key_hex: String,
+    /// Raw 43-byte address of the note being spent, decoded by the wallet scanner.
+    note_address_raw_hex: String,
+    value_zat: u64,
+    rho_hex: String,
+    rseed_hex: String,
+    witness_position: u32,
+    /// Exactly 32 canonical MerkleHashOrchard nodes, leaf-to-root order.
+    witness_auth_path_hex: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IronwoodOutputRequest {
+    recipient_address_raw_hex: String,
+    value_zat: u64,
+    #[serde(default)]
+    memo_hex: String,
+    #[serde(default)]
+    ovk_hex: Option<String>,
+}
+
+fn parse_fixed_hex<const N: usize>(hex_value: &str, field: &str) -> Result<[u8; N], String> {
+    let bytes = hex::decode(hex_value)
+        .map_err(|_| format!("{field} must be valid hexadecimal."))?;
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        format!("{field} must be exactly {} bytes; got {}.", N, bytes.len())
+    })
+}
+
+/// Builds a fully-authorized v6 Ironwood transaction from real wallet inputs.
+///
+/// Input data must come from an Ironwood-capable wallet scanner and current Zebra
+/// tree state. This method will not derive fake notes, witnesses, roots, or keys.
+/// It uses the official zcash_primitives transaction builder; the returned txid and
+/// raw transaction are generated from that same authorized transaction object.
+pub fn build_ironwood_transaction_from_json(
+    input_json: &str,
+) -> Result<BuiltIronwoodTransaction, String> {
+    use orchard::{
+        keys::{FullViewingKey, OutgoingViewingKey, SpendAuthorizingKey, SpendingKey},
+        note::{ExtractedNoteCommitment, Note, NoteVersion, Rho, RandomSeed},
+        tree::{MerkleHashOrchard, MerklePath},
+        value::NoteValue,
+        Address,
+    };
+    use zcash_protocol::{
+        consensus::{BlockHeight, Network},
+        memo::MemoBytes,
+        value::Zatoshis,
+    };
+
+    let request: IronwoodBuildRequest = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid build request JSON: {e}"))?;
+
+    // The initial wallet integration is deliberately testnet-only.
+    if request.network != "testnet" {
+        return Err("Only network='testnet' is enabled in this initial real-transaction path; mainnet build is deliberately disabled.".into());
+    }
+    if request.target_height < 4_134_000 {
+        return Err("Target height is before NU6.3 Testnet activation (4,134,000).".into());
+    }
+    if request.spends.is_empty() {
+        return Err("At least one real wallet-authorized Ironwood note is required.".into());
+    }
+    if request.outputs.is_empty() {
+        return Err("At least one Ironwood output is required.".into());
+    }
+    if request.spends.len() > 64 || request.outputs.len() > 64 {
+        return Err("This CLI accepts at most 64 spends and 64 outputs per transaction.".into());
+    }
+
+    let anchor_bytes = parse_fixed_hex::<32>(&request.ironwood_anchor_hex, "ironwood_anchor_hex")?;
+    let anchor = Anchor::from_bytes(anchor_bytes)
+        .into_option()
+        .ok_or_else(|| "Ironwood anchor is not a canonical field encoding.".to_owned())?;
+
+    let mut spends = Vec::with_capacity(request.spends.len());
+    let mut spend_authorizing_keys = Vec::with_capacity(request.spends.len());
+
+    for (index, spend_request) in request.spends.into_iter().enumerate() {
+        let label = format!("spends[{index}]");
+        let spending_key_bytes =
+            parse_fixed_hex::<32>(&spend_request.spending_key_hex, &format!("{label}.spending_key_hex"))?;
+        let spending_key = SpendingKey::from_bytes(spending_key_bytes)
+            .into_option()
+            .ok_or_else(|| format!("{label}: invalid raw Ironwood spending key."))?;
+
+        let raw_note_address =
+            parse_fixed_hex::<43>(&spend_request.note_address_raw_hex, &format!("{label}.note_address_raw_hex"))?;
+        let note_address = Address::from_raw_address_bytes(&raw_note_address)
+            .into_option()
+            .ok_or_else(|| format!("{label}: invalid raw 43-byte Ironwood note address."))?;
+
+        let rho_bytes = parse_fixed_hex::<32>(&spend_request.rho_hex, &format!("{label}.rho_hex"))?;
+        let rho = Rho::from_bytes(&rho_bytes)
+            .into_option()
+            .ok_or_else(|| format!("{label}: invalid note rho encoding."))?;
+        let rseed_bytes = parse_fixed_hex::<32>(&spend_request.rseed_hex, &format!("{label}.rseed_hex"))?;
+        let rseed = RandomSeed::from_bytes(rseed_bytes, &rho)
+            .into_option()
+            .ok_or_else(|| format!("{label}: rseed does not correspond to the supplied rho."))?;
+
+        // Reject out-of-range values before passing them to protocol constructors.
+        let note_value = Zatoshis::from_u64(spend_request.value_zat)
+            .map_err(|e| format!("{label}: note value is outside MAX_MONEY: {e}"))?;
+        if note_value.is_zero() {
+            return Err(format!("{label}: zero-value notes are not spendable inputs."));
+        }
+        let note = Note::from_parts(
+            note_address,
+            NoteValue::from_raw(note_value.into_u64()),
+            rho,
+            rseed,
+            NoteVersion::V3,
+        )
+        .into_option()
+        .ok_or_else(|| format!("{label}: failed to reconstruct the Ironwood V3 note."))?;
+
+        if spend_request.witness_auth_path_hex.len() != 32 {
+            return Err(format!("{label}.witness_auth_path_hex must contain exactly 32 Merkle nodes."));
+        }
+        let mut auth_path = [MerkleHashOrchard::empty_leaf(); 32];
+        for (level, encoded_node) in spend_request.witness_auth_path_hex.iter().enumerate() {
+            let node_bytes = parse_fixed_hex::<32>(
+                encoded_node,
+                &format!("{label}.witness_auth_path_hex[{level}]"),
+            )?;
+            auth_path[level] = MerkleHashOrchard::from_bytes(&node_bytes)
+                .into_option()
+                .ok_or_else(|| format!("{label}: Merkle path node {level} is not canonical."))?;
+        }
+        let witness = MerklePath::from_parts(spend_request.witness_position, auth_path);
+
+        // Check note membership locally before asking the prover to do expensive work.
+        let cmx = ExtractedNoteCommitment::from(note.commitment());
+        if witness.root(cmx) != anchor {
+            return Err(format!(
+                "{label}: witness root does not equal ironwood_anchor_hex. Refresh the witness and anchor from the same Zebra treestate."
+            ));
+        }
+
+        let fvk = FullViewingKey::from(&spending_key);
+        spend_authorizing_keys.push(SpendAuthorizingKey::from(&spending_key));
+        spends.push(IronwoodSpendInput {
+            full_viewing_key: fvk,
+            note,
+            witness,
+        });
+    }
+
+    let mut outputs = Vec::with_capacity(request.outputs.len());
+    for (index, output_request) in request.outputs.into_iter().enumerate() {
+        let label = format!("outputs[{index}]");
+        let raw_recipient =
+            parse_fixed_hex::<43>(&output_request.recipient_address_raw_hex, &format!("{label}.recipient_address_raw_hex"))?;
+        let recipient = Address::from_raw_address_bytes(&raw_recipient)
+            .into_option()
+            .ok_or_else(|| format!("{label}: invalid raw Ironwood recipient address."))?;
+        let value = Zatoshis::from_u64(output_request.value_zat)
+            .map_err(|e| format!("{label}: output value is outside MAX_MONEY: {e}"))?;
+        if value.is_zero() {
+            return Err(format!("{label}: output value must be greater than zero."));
+        }
+
+        let memo_bytes = if output_request.memo_hex.is_empty() {
+            Vec::new()
+        } else {
+            hex::decode(&output_request.memo_hex)
+                .map_err(|_| format!("{label}.memo_hex must be valid hexadecimal."))?
+        };
+        let memo = MemoBytes::from_bytes(&memo_bytes)
+            .map_err(|e| format!("{label}: memo is invalid or exceeds 512 bytes: {e}"))?;
+
+        let ovk = output_request
+            .ovk_hex
+            .as_deref()
+            .map(|raw| {
+                parse_fixed_hex::<32>(raw, &format!("{label}.ovk_hex"))
+                    .map(OutgoingViewingKey::from)
+            })
+            .transpose()?;
+
+        outputs.push(IronwoodOutput {
+            ovk,
+            recipient,
+            value,
+            memo,
+        });
+    }
+
+    let prover = zcash_proofs::prover::LocalTxProver::bundled();
+    let fee_rule = zcash_primitives::transaction::fees::zip317::FeeRule::standard();
+    build_ironwood_transaction(
+        Network::TestNetwork,
+        BlockHeight::from_u32(request.target_height),
+        anchor,
+        spends,
+        outputs,
+        &spend_authorizing_keys,
+        rand::rng(),
+        &prover,
+        &prover,
+        &fee_rule,
+    )
+}
