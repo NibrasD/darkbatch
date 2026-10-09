@@ -17,6 +17,7 @@ use orchard::{
 use pczt::{
     Pczt,
     roles::{
+        combiner::Combiner,
         creator::Creator,
         io_finalizer::IoFinalizer,
         prover::Prover,
@@ -95,6 +96,13 @@ struct SignRequest {
 #[serde(deny_unknown_fields)]
 struct InspectRequest {
     pczt_hex: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CombineRequest {
+    pczt_hexes: Vec<String>,
+    required_nullifiers_hex: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,6 +478,68 @@ pub fn sign_ironwood_pczt_json(input_json: &str) -> Result<serde_json::Value, St
         "pczt_hex": signed_hex,
         "broadcast": false,
         "note": "Only the selected participant's action was signed. Send this PCZT to the next signer/prover over a secure channel."
+    }))
+}
+
+/// Combines separately signed copies of the same PCZT without reconstructing
+/// or changing transaction effects. Every required real input must have a signature.
+pub fn combine_ironwood_pczts_json(input_json: &str) -> Result<serde_json::Value, String> {
+    let request: CombineRequest = serde_json::from_str(input_json)
+        .map_err(|e| format!("Invalid PCZT combine request JSON: {e}"))?;
+    if request.pczt_hexes.is_empty() || request.pczt_hexes.len() > MAX_SPENDS + 1 {
+        return Err("pczt_hexes must contain between 1 and 65 participant PCZTs.".to_owned());
+    }
+    if request.required_nullifiers_hex.is_empty() {
+        return Err("required_nullifiers_hex must enumerate every real input.".to_owned());
+    }
+
+    let mut required = std::collections::BTreeSet::new();
+    for (index, value) in request.required_nullifiers_hex.iter().enumerate() {
+        let nullifier = parse_hex::<32>(value, &format!("required_nullifiers_hex[{index}]"))?;
+        if !required.insert(nullifier) {
+            return Err("required_nullifiers_hex contains a duplicate nullifier.".to_owned());
+        }
+    }
+    let pczts = request.pczt_hexes.iter()
+        .map(|value| decode_pczt(value))
+        .collect::<Result<Vec<_>, _>>()?;
+    let combined = Combiner::new(pczts)
+        .combine()
+        .map_err(|e| format!("Official PCZT Combiner rejected incompatible participant files: {e:?}"))?;
+
+    let actions = combined.ironwood().actions();
+    let actual_real_nullifiers: std::collections::BTreeSet<[u8; 32]> = actions
+        .iter()
+        .filter(|action| action.spend().value().as_ref().is_some_and(|value| *value > 0))
+        .map(|action| *action.spend().nullifier())
+        .collect();
+    if actual_real_nullifiers != required {
+        return Err("Required input manifest does not exactly match the real spend actions in the combined PCZT.".to_owned());
+    }
+
+    let mut signed = std::collections::BTreeSet::new();
+    for action in actions.iter() {
+        if action.spend().spend_auth_sig().is_some() {
+            signed.insert(*action.spend().nullifier());
+        }
+    }
+    if signed != required {
+        let missing: Vec<String> = required.difference(&signed).map(hex::encode).collect();
+        return Err(format!("Not all real inputs have participant signatures. Missing nullifiers: {}", missing.join(",")));
+    }
+
+    let signer = Signer::new(combined.clone())
+        .map_err(|e| format!("Combined PCZT cannot produce a canonical signing digest: {e:?}"))?;
+    let encoded = encode_pczt(combined)?;
+    Ok(serde_json::json!({
+        "status": "PCZT_COMBINED_AND_READY_FOR_FINALIZATION",
+        "network": "testnet",
+        "input_count": required.len(),
+        "participant_pczt_count": request.pczt_hexes.len(),
+        "sighash_hex": hex::encode(signer.shielded_sighash()),
+        "pczt_hex": encoded,
+        "broadcast": false,
+        "note": "Official PCZT Combiner merged the participant signatures; fresh canonical Ironwood witnesses are still required before proving."
     }))
 }
 
