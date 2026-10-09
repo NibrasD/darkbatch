@@ -4,7 +4,6 @@
 [![Zcash Protocol](https://img.shields.io/badge/Zcash-NU6.3%20Ironwood-blue.svg)](https://z.cash)
 [![Specification](https://img.shields.io/badge/Spec-ZIP--229%20v6%20(0xD884B698)-amber.svg)](https://zips.z.cash/zip-0229)
 [![Rust Engine](https://img.shields.io/badge/Rust-pasta__curves%20Pallas-orange.svg)](https://crates.io/crates/pasta_curves)
-[![MEV Protection](https://img.shields.io/badge/MEV%20Protection-100%25%20FBA-emerald.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)]()
 
 ---
@@ -15,6 +14,7 @@
 
 - **Ironwood is the new shielded pool introduced for NU6.3.** The Rust `orchard` crate is currently a code dependency exposing shared protocol primitives and an `ironwood_v3()` bundle version; using that crate does not by itself make a transaction an Ironwood consensus transaction.
 - **Available now:** off-chain signed intent submission, FBA matching, epoch coordination, and deterministic simulation records.
+- **New Rust integration point:** `darkbatch_crypto::build_ironwood_transaction` delegates transaction construction, proof/signature generation, and serialization to the official `zcash_primitives` v6 builder when supplied with real Ironwood spend notes, matching Merkle witnesses, authorization keys, proving implementations, and a fee rule. This interface is not yet wired to the Python coordinator or its simulated wallet.
 - **Not yet implemented end-to-end:** spending real Ironwood notes, acquiring valid note-tree Merkle witnesses, building the exact set of actions in one official Ironwood bundle, generating the proof for that same bundle, deriving valid spend/binding authorization from the matching witnesses and value commitments, serializing the exact authorized transaction, and verifying it against a live NU6.3-capable Zebra node.
 - The settlement builder therefore returns `SIMULATED_ONLY`, `tx_id: null`, and no raw transaction. The broadcast adapter rejects incomplete bundles. This is intentional fail-closed behavior, not a live settlement failure.
 - The local node is a simulator, **not Zebra**. Simulated block heights, anchors, and duplicate-nullifier checks are not evidence of consensus acceptance.
@@ -59,7 +59,7 @@ Deterministic simulation record
 No balance mutation, no simulated mining, no RPC broadcast
 ```
 
-This is intentional until wallet-authorized Ironwood spends, valid note-tree witnesses, value-conserving outputs, proof generation for the exact action set, spend/binding signatures, and canonical transaction serialization are integrated in one authoritative path.
+The Rust entry point now delegates transaction-level operations to the official builder, but the coordinator still has no real Ironwood notes, current Merkle witnesses, spend keys, or configured proving/fee providers to pass into it. Until that wallet/node integration is complete, settlement remains simulation-only.
 
 ## 4. Tests
 
