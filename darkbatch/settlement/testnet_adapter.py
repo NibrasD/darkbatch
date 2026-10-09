@@ -303,5 +303,33 @@ class TestnetSettlementAdapter:
         return record
 
     def get_transaction(self, txid: str) -> Optional[Dict[str, Any]]:
-        """Returns this process's broadcast receipt, not a guarantee of on-chain confirmation."""
-        return self.broadcast_history.get(txid)
+        """
+        Refresh a known broadcast from the live node if possible.
+
+        sendrawtransaction acceptance is only mempool/broadcast status. A mined status is
+        recorded only when Zebra returns a positive confirmation count for this txid.
+        """
+        record = self.broadcast_history.get(txid)
+        if not record:
+            return None
+        if not record.get("broadcast") or not record.get("live_node"):
+            return record
+
+        try:
+            response = self._rpc("getrawtransaction", [txid, True], timeout=3.0)
+            tx = response["result"]
+            confirmations = int(tx.get("confirmations", 0))
+            record["confirmations"] = max(0, confirmations)
+            record["confirmed"] = confirmations > 0
+            if confirmations > 0 and record.get("txid_matches"):
+                record["status"] = "MINED_CONFIRMED"
+                record["blockhash"] = tx.get("blockhash")
+                record["blocktime"] = tx.get("blocktime")
+                record["height"] = tx.get("height")
+            elif record.get("txid_matches"):
+                record["status"] = "BROADCAST_PENDING"
+                record["note"] = "Node reports no mined confirmation yet."
+        except Exception as exc:
+            # A mempool tx may not yet be indexed by getrawtransaction; remain pending.
+            logger.debug("Could not refresh tx confirmation state for %s: %s", txid, exc)
+        return record
