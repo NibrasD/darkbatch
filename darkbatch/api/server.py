@@ -19,8 +19,10 @@ from darkbatch.core.repo import (
     save_intent,
     get_pending_intents,
     mark_intents_settled,
+    mark_intents_simulated,
     get_active_epoch_id,
     record_epoch_clear,
+    record_epoch_simulation,
     get_epoch_history,
     update_wallet_balance
 )
@@ -94,6 +96,17 @@ async def lifespan(app: FastAPI):
                             block_hash=res["block_hash"]
                         )
                         mark_intents_settled([i.intent_id for i in pending])
+                    elif res.get("status") == "SIMULATED_ONLY":
+                        record_epoch_simulation(
+                            epoch_id=epoch_id,
+                            clearing_price_usd=res["clearing_price_usd"],
+                            total_cleared_zec=res["cleared_zec"],
+                            total_cleared_usd=res["cleared_usd"],
+                            simulation_id=res["simulation_id"],
+                        )
+                        # Exclude these exact orders from being re-matched every 30s;
+                        # this status explicitly does not mean filled/settled on-chain.
+                        mark_intents_simulated([i.intent_id for i in pending])
                     await manager.broadcast({
                         "type": "EPOCH_CLEARED",
                         "epoch_id": epoch_id,
@@ -231,6 +244,15 @@ async def clear_current_epoch():
             block_hash=res["block_hash"]
         )
         mark_intents_settled([i.intent_id for i in pending])
+    elif res.get("status") == "SIMULATED_ONLY":
+        record_epoch_simulation(
+            epoch_id=epoch_id,
+            clearing_price_usd=res["clearing_price_usd"],
+            total_cleared_zec=res["cleared_zec"],
+            total_cleared_usd=res["cleared_usd"],
+            simulation_id=res["simulation_id"],
+        )
+        mark_intents_simulated([i.intent_id for i in pending])
 
     epoch_start_time = time.time()
 
