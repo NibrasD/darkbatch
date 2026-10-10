@@ -899,11 +899,28 @@ mod tests {
         let encoded = pczt.clone().serialize().expect("serialize PCZT");
         let decoded = Pczt::parse(&encoded).expect("parse PCZT");
         assert_eq!(encoded, decoded.serialize().expect("reserialize PCZT"));
-        let signed = sign_pczt_value(pczt, report.ironwood_spend_action_indexes[0], &sk)
-            .expect("sign local spend");
-        // A participant returns only their signed PCZT. The official Combiner merges it
-        // with the unsigned transaction skeleton without pretending the signature is a proof.
+        let action_index = report.ironwood_spend_action_indexes[0];
+        let participant_pczt = redact_pczt_for_participant_value(pczt.clone(), action_index)
+            .expect("make participant-specific redacted PCZT");
+        assert!(participant_pczt.ironwood().anchor().is_none());
+        assert!(participant_pczt.ironwood().actions().iter()
+            .all(|action| action.spend().witness().is_none()));
+        let participant_bytes = participant_pczt.clone().serialize().expect("serialize redacted contribution");
+        assert!(Pczt::parse(&participant_bytes).is_ok());
+
+        let signed = sign_pczt_value(participant_pczt, action_index, &sk)
+            .expect("sign local spend from redacted PCZT");
+        assert!(signed.ironwood().anchor().is_none());
+        assert!(signed.ironwood().actions().iter()
+            .all(|action| action.spend().witness().is_none()));
+
+        // The coordinator combines the complete private base with signed, redacted participant
+        // copies. The private base restores the anchor/witnesses; participant files alone cannot
+        // be proved or broadcast.
         let combined = Combiner::new(vec![decoded, signed]).combine().expect("combine signed PCZT contribution");
+        assert!(combined.ironwood().anchor().is_some());
+        assert!(combined.ironwood().actions().iter()
+            .any(|action| action.spend().witness().is_some()));
         let (raw, txid, branch_id) = prove_and_extract(combined).expect("prove and extract real v6 transaction");
         assert!(raw.len() > 1_000);
         assert_eq!(branch_id, TESTNET_NU7_BRANCH_ID);
