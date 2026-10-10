@@ -166,12 +166,12 @@
                 </div>
             </div>
 
-            <!-- Right: ZERO-LEAK SEALED MEMPOOL (8 Cols) -->
+            <!-- Right: Local sealed-intent prototype (not privacy-audited) -->
             <div class="lg:col-span-8 space-y-5">
                 <!-- Epoch Header Banner -->
                 <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
                     <div>
-                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Zero-Leak Confidential Mempool</span>
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Local Sealed-Intent Pool</span>
                         <div class="flex items-baseline gap-3 mt-1">
                             <span class="text-2xl font-bold text-white mono" id="banner-epoch">Epoch #1</span>
                             <span class="text-xs text-purple-400 font-semibold" id="banner-pending-count">0 sealed orders</span>
@@ -187,7 +187,7 @@
                 <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 space-y-3">
                     <div class="flex justify-between items-center border-b border-slate-800 pb-2">
                         <h3 class="text-xs font-bold text-purple-400 flex items-center gap-2">
-                            <span>🔒</span> ACTIVE SEALED INTENT POOL (ZERO-LEAK)
+                            <span>🔒</span> LOCAL INTENT POOL (NOT AUDITED)
                         </h3>
                         <span id="sealed-count-badge" class="text-xs mono text-slate-400">0 orders committed</span>
                     </div>
@@ -289,15 +289,15 @@
             <p>
                 DarkBatch is an experimental sealed-intent FBA matching prototype. It is not yet able to settle real ZEC on Zcash Testnet.
             </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Zero-Leak Sealed Intent Protocol</h3>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Sealed-Intent Prototype (not privacy-audited)</h3>
             <p>
                 This prototype calculates batch matches from locally stored order intents. The current UI hides raw order details from its public orderbook endpoint, but the implementation has not been independently audited for confidentiality and is not a production privacy guarantee.</p>
             <h3 class="text-base font-semibold text-amber-400 mt-4">2. Experimental Settlement Builder (not live-safe)</h3>
             <p>
-                The current builder is experimental. It does not yet consume participants’ real unspent notes, Merkle witnesses, and participant-authorized PCZT spends; its output is blocked from live broadcasting. Local proofs and signatures are not evidence of consensus validity.</p>
+                The legacy FBA API assembler remains unsafe for live broadcast. A separate Rust command-line tool uses the official Zcash transaction builder to create a V6 PCZT from supplied real notes and Merkle witnesses, accepts local participant signatures, creates the Ironwood proof and extracts raw transaction bytes. It is not yet automatically driven by FBA fills and does not implement the USDC leg.</p>
             <h3 class="text-base font-semibold text-amber-400 mt-4">3. Work required before Testnet</h3>
             <p>
-                Real-note discovery, valid cooperative PCZT creation and authorization, matching multi-action Halo 2 proofs, official Zebra validation, and confirmation tracking still need implementation. The API intentionally reports settlement as blocked rather than presenting a local simulation as a real transfer.</p>
+                The local Rust tool requires real note data, full viewing keys and current Merkle witnesses supplied privately; it does not scan the wallet automatically or combine independent participant contributions yet. A separate local command can submit its extracted V6 transaction to Zebra Testnet and poll for a block confirmation, but only then can the ZEC leg be described as confirmed. USDC settlement remains unimplemented.</p>
         </div>
 
     </main>

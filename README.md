@@ -13,11 +13,11 @@
 >
 > The FBA matching engine and cryptographic experiments are a prototype. The built-in wallets, balances, notes, anchors and mined blocks are local simulation data; the local simulator is **not Zebra** and does not verify Zcash consensus.
 >
-> The current settlement builder does not yet construct a complete cooperative PCZT transaction from participants' real unspent notes, Merkle witnesses, spend-authorizing keys/signatures, and a matching multi-action Halo 2 proof. Its output is therefore explicitly marked unsafe for live broadcast. The API now fails closed: it will not silently substitute local simulation for Testnet, does not assign fake confirmations, and will not mark an epoch as settled when the transaction is only simulated or merely broadcast.
+> The legacy FBA assembler still produces experimental transaction-shaped data and is blocked from live broadcast. A separate Rust tool now uses the official Zcash transaction builder and PCZT roles to construct a V6 PCZT from supplied real notes, Merkle witnesses, recipient outputs and per-owner change outputs; it can apply signatures locally, create an Ironwood Halo 2 proof, and extract raw V6 transaction bytes. This tool is not integrated with epoch clearing, does not scan for unspent notes, and does not yet provide a genuinely separated multi-party PCZT combiner.
 >
 > Passing unit tests demonstrates the tested local logic only; it is not evidence that a transaction is accepted by Zebra or can spend real ZEC. Do not use this prototype for real funds.
 >
-> The on-chain settlement flow remains blocked until real-note selection, participant-side PCZT construction/authorization, official transaction validation, and confirmation tracking are implemented and tested against an activated Zebra Testnet node.
+> The API deliberately refuses to claim FBA settlement until automatic spendable-note selection, a privacy-preserving participant contribution/combination flow, FBA-fill-to-output allocation, activated Zebra submission/confirmation, and the quote-asset (USDC) settlement leg are integrated and tested. A separate local raw-V6 submitter can send a manually extracted transaction to Zebra, but it does not record an FBA epoch.
 
 ## 1. Executive Summary & Design Philosophy
 
@@ -26,8 +26,8 @@
 ### Intended Architecture (not end-to-end complete)
 The following describes the intended design; it is not a claim of production or consensus correctness:
 1. **The Off-Chain Matching Layer (FBA / RFQ):** Market participants commit off-chain sealed limit intents. In discrete epochs, an autonomous solver aggregates supply and demand curves to calculate a single **Uniform Clearing Price ($P^*$)**. All inframarginal orders are filled 100%, and pro-rata rationing is applied strictly to marginal orders at $P^*$.
-2. **Settlement prototype:** The legacy assembler creates experimental transaction-shaped bytes but does not yet build a valid cooperative PCZT spend transaction from real participant notes, witnesses, authorizations, and matching proofs. Live broadcasting is blocked.
-3. **Execution Transparency:** Distinguishes local simulation from live RPC status. The current transaction builder is blocked from live broadcast until cooperative PCZT transaction construction and authorization are implemented.
+2. **Legacy FBA path:** The old assembler remains unsafe and is blocked from live broadcast. The separate Rust PCZT tool uses the official transaction builder, signer, prover and transaction extractor, but relies on caller-supplied real notes/witnesses and is not yet integrated with FBA epoch clearing.
+3. **Execution transparency:** Local simulation, raw-transaction broadcast and block confirmation are separate states. Only the local raw-V6 submitter sends an extracted transaction to Zebra; its RPC acceptance is not a confirmation or proof that the USDC leg settled.
 
 ---
 
@@ -83,7 +83,7 @@ The following describes the intended design; it is not a claim of production or 
 
 ```
 Trader A (Buyer)  ─── Sealed Limit Intent ────┐
-Trader B (Seller) ─── Sealed Limit Intent ────┼──> [ DarkBatch Zero-Leak Mempool ]
+Trader B (Seller) ─── Sealed Limit Intent ────┼──> [ DarkBatch local sealed-intent prototype ]
 Trader C (Whale)  ─── Sealed Limit Intent ────┘                   │
                                                                    ▼
                                                        [ Batch Solver Engine ]
@@ -92,7 +92,7 @@ Trader C (Whale)  ─── Sealed Limit Intent ────┘                 
                                                        - Marginal prorated
                                                                    │
                                                                    ▼
-                                                   [ ZIP-229 Settlement Engine ]
+                                                   [ Experimental legacy FBA assembler — blocked ]
                                                    - Version Group ID: 0xD884B698
                                                    - Branch ID: 0x37A5165B (NU6.3)
                                                    - 820B OrchardActions (§ 7.5)
@@ -132,9 +132,9 @@ The Python unit and end-to-end tests exercise local simulation. They are not liv
 * `test_intent_creation_and_signature`
 * `test_fba_inframarginal_priority_and_marginal_rationing`
 * `test_mev_resistance_and_order_invariance`
-* `test_zip228_action_groups_and_v6_bundle` (ZIP 229 v6 bundle with 0xD884B698, 580B ciphertext, and IVK note decryption)
+* `test_zip228_action_groups_and_v6_bundle` (experimental v6-shaped bundle and byte lengths; not a real-note decrypt test)
 * `test_testnet_settlement_adapter_broadcast` (explicitly enabled local simulation receipt)
-* `test_nu6_3_consensus_and_crypto_integrity` (NU6.3 consensus constants & RedPallas signatures)
+* `test_nu6_3_consensus_and_crypto_integrity` (constant/byte-shape checks in the local simulator; not a Zebra consensus or signature-verification test)
 * `test_full_system_lifecycle` (local simulator lifecycle; not real node consensus)
 
 ---
@@ -153,15 +153,15 @@ python -m uvicorn darkbatch.api.server:app --host 127.0.0.1 --port 8000
 # Seed realistic sealed liquidity
 python darkbatch/cli/darkbatch_cli.py epoch seed
 
-# View zero-leak mempool
+# View local intent commitments (privacy is not independently audited)
 python darkbatch/cli/darkbatch_cli.py epoch status
 
-# Trigger uniform clearing & settlement
+# Attempt local FBA clear; live settlement is intentionally blocked
 python darkbatch/cli/darkbatch_cli.py epoch clear
 ```
 
 ### 3. Web Dashboard
 Navigate to `http://127.0.0.1:8000` to interact with:
-* Real-time sealed orderbook (zero cleartext leaks).
-* Dynamic supply & demand depth chart showing $P^*$ clearing price.
+* Local intent preview; not an audited zero-leak guarantee.
+* Experimental supply/demand depth chart showing an indicative $P^*$.
 * Ironwood block explorer with Action Groups and 512-byte memo decrypter using wallet IVKs.

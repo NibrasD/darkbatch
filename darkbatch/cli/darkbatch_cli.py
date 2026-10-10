@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DarkBatch Persistent CLI Tool
-Integrated with SQLite storage, zero-leak sealed mempool, and viewing key memo decrypter.
+Experimental local FBA coordinator CLI. Wallets, balances, and settlement output are simulated; no zero-leak privacy or live Zcash settlement is claimed.
 """
 
 import argparse
@@ -32,7 +32,7 @@ SOLVER = AutonomousSolverDaemon(NODE)
 
 def main():
     parser = argparse.ArgumentParser(
-        description="DarkBatch Persistent CLI - Confidential Batch Auction Protocol for Zcash Ironwood"
+        description="DarkBatch local FBA prototype CLI (epoch clearing does not perform live Zcash settlement)"
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -101,7 +101,7 @@ def main():
             print(f"Epoch:           #{epoch_id}\n")
         elif args.action == "list":
             pending = get_pending_intents()
-            print(f"\nConfidential Sealed Mempool ({len(pending)} intents):")
+            print(f"\nLocal intent pool (privacy not independently audited) ({len(pending)} intents):")
             for i in pending:
                 print(f" * [SEALED] ID: {i.intent_id[:16]}... | Commitment: {i.value_commitment[:24]}... | Expires: #{i.expiry_height}")
 
@@ -122,7 +122,7 @@ def main():
             save_intent(create_intent(OrderDirection.BUY_ZEC, 25.0, 42.80, whale.unified_address), epoch_id)
             save_intent(create_intent(OrderDirection.SELL_ZEC, 20.0, 41.20, alice.unified_address), epoch_id)
             save_intent(create_intent(OrderDirection.SELL_ZEC, 15.0, 42.40, maker.unified_address), epoch_id)
-            print(f"Seeded 4 sealed orders into Epoch #{epoch_id} (Concealed with Pallas commitments).")
+            print(f"Seeded 4 intents into local demo Epoch #{epoch_id}; this does not create live Zcash orders.")
         elif args.action == "clear":
             pending = get_pending_intents()
             if not pending:

@@ -206,7 +206,8 @@ def get_current_epoch():
         "seconds_remaining": round(remaining, 1),
         "sealed_orders_count": len(sealed_orders),
         "sealed_orders": sealed_orders,
-        "confidentiality_guarantee": "ZERO_LEAK_MEV_IMMUNE"
+        "confidentiality_status": "UNAUDITED_PROTOTYPE",
+        "privacy_guarantee": False
     }
 
 @app.post("/api/v1/epoch/clear")
