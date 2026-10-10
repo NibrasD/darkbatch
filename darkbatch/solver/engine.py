@@ -41,6 +41,8 @@ class AutonomousSolverDaemon:
         self.bundle_builder = SettlementBundleBuilder(ironwood_anchor=node.current_anchor())
         self.stats = SolverStats()
         self.solved_history: List[Dict[str, Any]] = []
+        # Sensitive FBA fills are kept in-process and returned only to the local PCZT agent.
+        self.local_settlement_plans: Dict[int, Dict[str, Any]] = {}
 
     def run_epoch_settlement(
         self,
@@ -70,6 +72,66 @@ class AutonomousSolverDaemon:
                 "block_hash": None
             }
 
+        # The public API never sends mock IVKs or the legacy transaction-shaped bundle to Zebra.
+        # It publishes only a summary and keeps the participant-level fill plan behind a local token.
+        if self.settlement_adapter is not None:
+            plan = {
+                "schema": "darkbatch.fba-local-pczt-plan.v1",
+                "epoch_id": epoch_id,
+                "clearing_price_usd": clear_result.clearing_price_usd,
+                "total_cleared_zec": clear_result.total_cleared_zec,
+                "total_cleared_usd": clear_result.total_cleared_usd,
+                "solver_fee_zec": clear_result.solver_fee_zec,
+                "buy_fills": [
+                    {
+                        "intent_id": f.intent_id,
+                        "direction": f.direction.value,
+                        "original_zat": f.original_zat,
+                        "filled_zat": f.filled_zat,
+                        "clearing_price_usd": f.clearing_price_usd,
+                        "quote_filled_usd": f.quote_filled_usd,
+                        "shielded_address": f.shielded_address,
+                        "fill_percentage": f.fill_percentage,
+                        "is_marginal": f.is_marginal,
+                    }
+                    for f in clear_result.buy_fills
+                ],
+                "sell_fills": [
+                    {
+                        "intent_id": f.intent_id,
+                        "direction": f.direction.value,
+                        "original_zat": f.original_zat,
+                        "filled_zat": f.filled_zat,
+                        "clearing_price_usd": f.clearing_price_usd,
+                        "quote_filled_usd": f.quote_filled_usd,
+                        "shielded_address": f.shielded_address,
+                        "fill_percentage": f.fill_percentage,
+                        "is_marginal": f.is_marginal,
+                    }
+                    for f in clear_result.sell_fills
+                ],
+                "intent_ids": sorted({f.intent_id for f in clear_result.buy_fills + clear_result.sell_fills}),
+                "status": "LOCAL_PCZT_REQUIRED",
+                "created_at": time.time(),
+            }
+            self.local_settlement_plans[epoch_id] = plan
+            return {
+                "epoch_id": epoch_id,
+                "status": "LOCAL_PCZT_REQUIRED",
+                "clearing_price_usd": clear_result.clearing_price_usd,
+                "cleared_zec": clear_result.total_cleared_zec,
+                "cleared_usd": clear_result.total_cleared_usd,
+                "buy_fills_count": len(clear_result.buy_fills),
+                "sell_fills_count": len(clear_result.sell_fills),
+                "tx_id": None,
+                "block_hash": None,
+                "local_pczt_required": True,
+                "quote_leg_status": "NOT_SETTLED",
+                "message": "FBA matched locally. Build, sign, prove, and extract a real V6 PCZT with the local agent; no funds moved.",
+            }
+
+        # Legacy deterministic simulator path is retained for isolated unit tests only.
+        # It is unreachable from the public API because the API injects a settlement adapter.
         # 2. Build ZIP 228 Bundle
         intents_map = {i.intent_id: i for i in intents}
         bundle = self.bundle_builder.build_bundle(clear_result, intents_map, wallets_ivk_map=wallets_ivk_map)
