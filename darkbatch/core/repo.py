@@ -180,6 +180,9 @@ def record_epoch_zec_pending(
     total_cleared_usd: float,
     tx_id: str,
     intent_ids: List[str],
+    quote_batch_id: Optional[str] = None,
+    quote_plan_hash: Optional[str] = None,
+    quote_total_micro: Optional[int] = None,
 ):
     """Persist broadcast-pending ZEC leg, but do not mark the cross-asset trade as filled."""
     conn = get_connection()
@@ -188,8 +191,9 @@ def record_epoch_zec_pending(
         """
         INSERT INTO epochs (
             epoch_id, status, clearing_price_usd, total_cleared_zec,
-            total_cleared_usd, tx_id, block_hash, created_at
-        ) VALUES (?, 'ZEC_LEG_PENDING', ?, ?, ?, ?, NULL, ?)
+            total_cleared_usd, tx_id, block_hash, quote_batch_id,
+            quote_plan_hash, quote_total_micro, quote_tx_id, created_at
+        ) VALUES (?, 'ZEC_LEG_PENDING', ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
         ON CONFLICT(epoch_id) DO UPDATE SET
             status='ZEC_LEG_PENDING',
             clearing_price_usd=excluded.clearing_price_usd,
@@ -197,9 +201,16 @@ def record_epoch_zec_pending(
             total_cleared_usd=excluded.total_cleared_usd,
             tx_id=excluded.tx_id,
             block_hash=NULL,
+            quote_batch_id=excluded.quote_batch_id,
+            quote_plan_hash=excluded.quote_plan_hash,
+            quote_total_micro=excluded.quote_total_micro,
+            quote_tx_id=NULL,
             created_at=excluded.created_at
         """,
-        (epoch_id, clearing_price_usd, total_cleared_zec, total_cleared_usd, tx_id, time.time()),
+        (
+            epoch_id, clearing_price_usd, total_cleared_zec, total_cleared_usd, tx_id,
+            quote_batch_id, quote_plan_hash, quote_total_micro, time.time(),
+        ),
     )
     for intent_id in intent_ids:
         cur.execute(
@@ -231,6 +242,49 @@ def record_epoch_zec_confirmed(epoch_id: int, tx_id: str, block_hash: str):
         UPDATE intents
         SET status='ZEC_CONFIRMED_QUOTE_PENDING'
         WHERE epoch_id=? AND status IN ('ZEC_LEG_PENDING', 'ZEC_CONFIRMED_QUOTE_PENDING')
+        """,
+        (epoch_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_epoch_quote_settled(
+    epoch_id: int,
+    zec_tx_id: str,
+    zec_block_hash: str,
+    quote_batch_id: str,
+    quote_plan_hash: str,
+    quote_total_micro: int,
+    quote_tx_id: str,
+):
+    """Mark FBA intents FILLED only after both ZEC confirmation and on-chain USDC release."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE epochs
+        SET status='CLEARED', tx_id=?, block_hash=?, quote_batch_id=?,
+            quote_plan_hash=?, quote_total_micro=?, quote_tx_id=?
+        WHERE epoch_id=?
+          AND status='ZEC_CONFIRMED_QUOTE_PENDING'
+          AND tx_id=? AND block_hash=?
+          AND quote_batch_id=? AND quote_plan_hash=? AND quote_total_micro=?
+        """,
+        (
+            zec_tx_id, zec_block_hash, quote_batch_id, quote_plan_hash,
+            int(quote_total_micro), quote_tx_id, epoch_id, zec_tx_id, zec_block_hash,
+            quote_batch_id, quote_plan_hash, int(quote_total_micro),
+        ),
+    )
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise RuntimeError("epoch no longer matches the confirmed ZEC transaction and funded quote batch")
+    cur.execute(
+        """
+        UPDATE intents SET status='FILLED'
+        WHERE epoch_id=? AND status='ZEC_CONFIRMED_QUOTE_PENDING'
         """,
         (epoch_id,),
     )
