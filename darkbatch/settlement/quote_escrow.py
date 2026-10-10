@@ -257,6 +257,39 @@ def verify_funded_quote_batch(batch_id: str, plan: Dict[str, Any]) -> Dict[str, 
     }
 
 
+def verify_released_quote_batch_by_hash(
+    batch_id: str,
+    expected_plan_hash: str,
+    expected_total_micro: int,
+    release_txid: str,
+) -> Dict[str, Any]:
+    """Verify an EVM batch is RELEASED for the plan attached to a confirmed ZEC transaction."""
+    normalized_hash = str(expected_plan_hash).lower().removeprefix("0x")
+    if not _BYTES32_RE.fullmatch(normalized_hash):
+        raise QuoteEscrowError("expected FBA plan hash must be 32-byte hex")
+    batch = _read_batch(batch_id)
+    if batch["status_code"] != STATUS_RELEASED:
+        raise QuoteEscrowError(f"USDC escrow has not released payouts (status={batch['status_code']})")
+    if batch["plan_hash"] != normalized_hash:
+        raise QuoteEscrowError("released USDC batch belongs to a different FBA quote plan")
+    if batch["buyer_total_micro"] != int(expected_total_micro) or batch["seller_total_micro"] != int(expected_total_micro):
+        raise QuoteEscrowError("released USDC totals do not match the FBA quote")
+    if batch["token_address"] != batch["expected_token_address"]:
+        raise QuoteEscrowError("released quote batch uses the wrong token contract")
+    txid = _batch_id_hex(release_txid)
+    receipt = _rpc(_config()["rpc_url"], "eth_getTransactionReceipt", ["0x" + txid])
+    if not isinstance(receipt, dict) or int(receipt.get("status", "0x0"), 16) != 1:
+        raise QuoteEscrowError("USDC release transaction is not confirmed successfully on the EVM network")
+    if str(receipt.get("to", "")).lower() != batch["escrow_address"]:
+        raise QuoteEscrowError("USDC release receipt was not sent to the configured escrow contract")
+    return {
+        "status": "USDC_RELEASED",
+        "release_txid": "0x" + txid,
+        **batch,
+        "plan_hash": normalized_hash,
+    }
+
+
 def verify_released_quote_batch(batch_id: str, plan: Dict[str, Any],
                                 release_txid: str) -> Dict[str, Any]:
     """Verify the escrow is RELEASED and the associated EVM release transaction succeeded."""
