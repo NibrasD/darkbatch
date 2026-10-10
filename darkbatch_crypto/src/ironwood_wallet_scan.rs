@@ -106,8 +106,13 @@ pub fn scan_ironwood_block_json(input_json: &str) -> Result<IronwoodScanResult, 
         .into_option()
         .ok_or_else(|| "Invalid Ironwood spending key encoding.".to_owned())?;
     let fvk = FullViewingKey::from(&spending_key);
-    let ivk = fvk.to_ivk(Scope::External);
-    let prepared_ivk = PreparedIncomingViewingKey::new(&ivk);
+    // Wallet scans must cover both scopes. External is for received funds;
+    // Internal is commonly used for change outputs. Missing the latter can
+    // silently hide a wallet's own spendable change notes from later batches.
+    let external_ivk = fvk.to_ivk(Scope::External);
+    let prepared_external_ivk = PreparedIncomingViewingKey::new(&external_ivk);
+    let internal_ivk = fvk.to_ivk(Scope::Internal);
+    let prepared_internal_ivk = PreparedIncomingViewingKey::new(&internal_ivk);
 
     let tree_bytes = hex::decode(&request.tree_state_hex)
         .map_err(|_| "tree_state_hex must be valid hexadecimal.".to_owned())?;
@@ -201,9 +206,13 @@ pub fn scan_ironwood_block_json(input_json: &str) -> Result<IronwoodScanResult, 
                 tree.append(leaf)
                     .map_err(|_| "Ironwood commitment tree could not append a leaf.".to_owned())?;
 
-                if let Some((note, recipient, memo)) =
-                    try_note_decryption(&IronwoodDomain::for_action(action), &prepared_ivk, action)
-                {
+                let domain = IronwoodDomain::for_action(action);
+                // Try the external receiver first, then the internal receiver
+                // used by ordinary wallet change. Both are controlled by the
+                // same spending key but derive distinct incoming viewing keys.
+                let decrypted = try_note_decryption(&domain, &prepared_external_ivk, action)
+                    .or_else(|| try_note_decryption(&domain, &prepared_internal_ivk, action));
+                if let Some((note, recipient, memo)) = decrypted {
                     if note.version() != NoteVersion::V3 {
                         return Err("Ironwood decryption returned a non-V3 note; refusing to track it.".into());
                     }
