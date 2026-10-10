@@ -1,6 +1,6 @@
 """
 DarkBatch Persistent Coordinator API Server
-Integrated with SQLite repository, real-time WebSockets, and ZERO-LEAK Confidential Mempool.
+Integrated with SQLite and WebSockets for an unaudited sealed-intent prototype; no zero-leak privacy guarantee.
 """
 
 import asyncio
@@ -162,7 +162,7 @@ async def submit_intent(req: IntentSubmitRequest):
     epoch_id = get_active_epoch_id()
     save_intent(intent, epoch_id)
 
-    # ZERO-LEAK BROADCAST: broadcast ONLY the sealed commitment hash!
+    # Public WebSocket feed omits order terms; the complete confidentiality properties of this prototype have not been independently audited.
     await manager.broadcast({
         "type": "NEW_SEALED_INTENT",
         "intent_id": intent.intent_id,

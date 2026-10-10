@@ -13,11 +13,11 @@
 >
 > The FBA matching engine and cryptographic experiments are a prototype. The built-in wallets, balances, notes, anchors and mined blocks are local simulation data; the local simulator is **not Zebra** and does not verify Zcash consensus.
 >
-> The legacy FBA assembler still produces experimental transaction-shaped data and is blocked from live broadcast. A separate Rust tool now uses the official Zcash transaction builder and PCZT roles to construct a V6 PCZT from supplied real notes, Merkle witnesses, recipient outputs and per-owner change outputs; it can apply signatures locally, create an Ironwood Halo 2 proof, and extract raw V6 transaction bytes. This tool is not integrated with epoch clearing, does not scan for unspent notes, and does not yet provide a genuinely separated multi-party PCZT combiner.
+> The legacy FBA assembler still produces experimental transaction-shaped data and is blocked from live broadcast. A separate Rust tool now uses the official Zcash transaction builder and PCZT roles to construct a V6 PCZT from supplied real notes, Merkle witnesses, recipient outputs and per-owner change outputs; it can apply signatures locally, create an Ironwood Halo 2 proof, and extract raw V6 transaction bytes. This tool is not integrated with epoch clearing, does not scan for unspent notes, and includes an official PCZT contribution combiner, but participant PCZT files have not been redacted to remove other owners' Note metadata, so this is not yet a privacy-preserving distributed protocol.
 >
 > Passing unit tests demonstrates the tested local logic only; it is not evidence that a transaction is accepted by Zebra or can spend real ZEC. Do not use this prototype for real funds.
 >
-> The API deliberately refuses to claim FBA settlement until automatic spendable-note selection, a privacy-preserving participant contribution/combination flow, FBA-fill-to-output allocation, activated Zebra submission/confirmation, and the quote-asset (USDC) settlement leg are integrated and tested. A separate local raw-V6 submitter can send a manually extracted transaction to Zebra, but it does not record an FBA epoch.
+> The API deliberately refuses to claim FBA settlement until automatic spendable-note selection, a privacy-preserving/redacted participant contribution flow, automatic wiring from epoch clearing to the FBA PCZT builder, activated Zebra submission/confirmation, and the quote-asset (USDC) settlement leg are integrated and tested. A separate local raw-V6 submitter can send a manually extracted transaction to Zebra, but it does not record an FBA epoch.
 
 ## 1. Executive Summary & Design Philosophy
 
@@ -26,7 +26,7 @@
 ### Intended Architecture (not end-to-end complete)
 The following describes the intended design; it is not a claim of production or consensus correctness:
 1. **The Off-Chain Matching Layer (FBA / RFQ):** Market participants commit off-chain sealed limit intents. In discrete epochs, an autonomous solver aggregates supply and demand curves to calculate a single **Uniform Clearing Price ($P^*$)**. All inframarginal orders are filled 100%, and pro-rata rationing is applied strictly to marginal orders at $P^*$.
-2. **Legacy FBA path:** The old assembler remains unsafe and is blocked from live broadcast. The separate Rust PCZT tool uses the official transaction builder, signer, prover and transaction extractor, but relies on caller-supplied real notes/witnesses and is not yet integrated with FBA epoch clearing.
+2. **Settlement tools:** The legacy assembler remains unsafe and blocked from live broadcast. Local Rust commands can build a general PCZT or map supplied buyer fills and per-owner seller fills to ZEC outputs/change, combine PCZT contributions, sign, prove, and extract V6 bytes. They rely on caller-supplied real notes/witnesses and are not invoked automatically by the FBA API.
 3. **Execution transparency:** Local simulation, raw-transaction broadcast and block confirmation are separate states. Only the local raw-V6 submitter sends an extracted transaction to Zebra; its RPC acceptance is not a confirmation or proof that the USDC leg settled.
 
 ---
@@ -92,17 +92,19 @@ Trader C (Whale)  ─── Sealed Limit Intent ────┘                 
                                                        - Marginal prorated
                                                                    │
                                                                    ▼
-                                                   [ Experimental legacy FBA assembler — blocked ]
-                                                   - Version Group ID: 0xD884B698
-                                                   - Branch ID: 0x37A5165B (NU6.3)
-                                                   - 820B OrchardActions (§ 7.5)
-                                                   - 580B encCiphertext (lead 0x03)
-                                                   - ZIP 244 Hierarchical Digest TxID
+                                                   [ Legacy FBA adapter — LIVE BLOCKED ]
+                                                   - Must not broadcast generated bundle bytes
                                                                    │
                                                                    ▼
-                                                   [ Testnet Settlement Adapter ]
-                                                   - Live RPC sendrawtransaction (live_node: true)
-                                                   - Local Zebra NU6.3 validator (live_node: false)
+                                                   [ Local official PCZT tools ]
+                                                   - Buyer-fill ZEC outputs + per-owner seller change
+                                                   - ZIP 317 fee check + real witness-to-anchor validation
+                                                   - Local participant signatures + official proof/extraction
+                                                                   │
+                                                                   ▼
+                                                   [ Optional local Zebra Testnet submitter ]
+                                                   - Broadcast != confirmation
+                                                   - ZEC confirmation != USDC settlement
 ```
 
 ---
@@ -141,7 +143,7 @@ The Python unit and end-to-end tests exercise local simulation. They are not liv
 
 ## 5. Local Demo (not a live Testnet settlement)
 
-The official-library PCZT builder/signing/proving path and the local raw-V6 Testnet submitter are documented in [docs/LOCAL_PCZT_SETTLEMENT.md](docs/LOCAL_PCZT_SETTLEMENT.md). The workflow still requires real spendable notes and current Merkle witnesses supplied by a trusted local wallet/scanner; it does not auto-discover notes or settle the USDC leg. The legacy FBA API remains blocked from live settlement.
+The official-library PCZT builder/signing/combiner/proving path, the FBA buyer-output/seller-change mapping tool, and the local raw-V6 Testnet submitter are documented in [docs/LOCAL_PCZT_SETTLEMENT.md](docs/LOCAL_PCZT_SETTLEMENT.md). The workflow still requires real spendable notes and current Merkle witnesses supplied by a trusted local wallet/scanner; it does not auto-discover notes or settle the USDC leg. The legacy FBA API remains blocked from live settlement.
 
 ### 1. Start Coordinator API
 ```bash

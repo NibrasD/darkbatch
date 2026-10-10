@@ -66,6 +66,37 @@ For a multi-owner transaction, do not use the single change fallback. Supply cha
 
 The total change outputs must equal input total minus recipient outputs minus the calculated ZIP 317 fee. The builder checks this conservation equation. The numeric values above are examples only. Each change FVK must match an owner of an input note, and every change address must derive from that FVK. Multi-owner settlement rejects the common-wallet fallback.
 
+## Map an FBA result to a ZEC-only PCZT
+
+If the FBA matching engine has already produced buyer fills and seller fills, a trusted local program can build the input JSON for `build-fba-pczt-local`. The JSON's `outputs` array contains the **ZEC received by each buyer**; each output value must match the corresponding buyer fill in zatoshis. In `change_outputs`, include exactly one entry for each distinct seller input owner:
+- `fvk_hex`: the FVK for that seller's real spend input notes.
+- `address_raw_hex`: that seller's own change receiver.
+- `value_zat`: `null`, so the builder can calculate change after the ZIP 317 fee.
+- `seller_fill_zat`: the sum of that owner's matched sell fills, in zatoshis.
+
+Example of a single seller's allocation:
+
+~~~json
+"change_outputs": [
+  {
+    "fvk_hex": "<seller FVK>",
+    "address_raw_hex": "<seller-owned raw Ironwood change address>",
+    "value_zat": null,
+    "seller_fill_zat": 97000000
+  }
+]
+~~~
+
+The builder rejects the plan unless total buyer ZEC outputs equal total seller fill ZEC, each seller fill is covered by that owner's input notes, every input owner has a change allocation, the ownership/address check passes, each witness resolves to the shared anchor, and the final outputs plus network fee balance the input value. The ZIP 317 network fee is allocated deterministically over sellers' residual value; if an owner cannot cover their share or would receive zero change, use different input notes rather than silently shifting their change to another wallet.
+
+Run it with:
+
+~~~bash
+target/release/darkbatch_crypto build-fba-pczt-local private-fba-settlement.json unsigned-fba.pczt fba-pczt-report.json
+~~~
+
+This creates the ZEC side only. It does not automatically take the FBA engine's match result, and it does not pay USDC to sellers or collect USDC from buyers. The output PCZT contains transaction-wide Note metadata for all inputs; until a redaction step is implemented and tested, do **not** distribute these PCZT files to a public coordinator or other participants. The official Combiner merges contributions, but that alone does not make their contents private.
+
 ## Create, sign, prove, extract
 
 ~~~bash
@@ -80,7 +111,7 @@ target/release/darkbatch_crypto sign-pczt-local unsigned.pczt seller-a-spending-
 target/release/darkbatch_crypto prove-extract-pczt-local signed-all.pczt raw-transaction.hex extraction-report.json
 ~~~
 
-Each signing invocation outputs a new PCZT; do not overwrite the unsigned file. The CLI can sign locally, but the participant keys must match the inputs and all participants must supply their own signatures. For genuine cooperative signing across independent users, use a protocol-compatible PCZT combiner; do not place everyone’s spending keys on one coordinator.
+Each signing invocation outputs a new PCZT; do not overwrite the unsigned file. Combine signed contributions with the official Combiner, for example: target/release/darkbatch_crypto combine-pczts-local combined.pczt signed-a.pczt signed-b.pczt. Important: the current PCZTs have not had other participants' Note metadata redacted. Keep all files private on one trusted machine; this is not yet a privacy-preserving multi-party protocol.
 
 Successful local proof/extraction does not prove the note remains unspent at broadcast time or that Zebra accepts the transaction.
 
