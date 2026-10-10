@@ -17,3 +17,8 @@ reddsa = "0.6"
 chacha20poly1305 = "0.10"
 rand_core = "0.10"
 orchard = "0.16.0"
+
+# Pinned together to the same upstream revision for V6 / NU6.3 PCZT API compatibility.
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "3c76c2d822446a68b67cd25692aaf92b4f6cb98c" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "3c76c2d822446a68b67cd25692aaf92b4f6cb98c" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "3c76c2d822446a68b67cd25692aaf92b4f6cb98c", features = ["zcp-builder", "io-finalizer", "prover", "signer", "tx-extractor"] }
