@@ -491,7 +491,7 @@ fn main() {
                     "status":"PARTICIPANT_PCZT_REDACTED",
                     "ironwood_action_index":action_index,
                     "output":pczt_output,
-                    "private_note_metadata_shared":false
+                    "other_spend_note_metadata_shared":false,"output_wallet_metadata_shared":false
                 })),
                 Err(e) => { eprintln!("PCZT redaction failed: {e}"); std::process::exit(1); }
             }
