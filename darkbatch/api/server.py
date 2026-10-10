@@ -5,6 +5,7 @@ SQLite/WebSocket order handling is not independently privacy-audited; real settl
 
 import asyncio
 from contextlib import asynccontextmanager
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import os
 import re
 import secrets
@@ -568,7 +569,9 @@ def submit_local_pczt_transaction(
         raise HTTPException(status_code=422, detail="Build report network or staged-build fields are invalid")
     try:
         input_total = int(build["input_total_zat"])
+        buyer_output_total = int(build["buyer_output_total_zat"])
         recipient_total = int(build["recipient_total_zat"])
+        solver_fee_output_zat = int(build["solver_fee_output_zat"])
         fee_zat = int(build["fee_zat"])
         change_zat = int(build["change_zat"])
         seller_fill_total = int(build["seller_fill_total_zat"])
@@ -577,17 +580,32 @@ def submit_local_pczt_transaction(
         change_count = int(build["change_output_count"])
     except (KeyError, TypeError, ValueError):
         raise HTTPException(status_code=422, detail="Build report is missing numeric transaction-balance fields")
+    try:
+        planned_solver_fee = Decimal(str(plan.get("solver_fee_zec", 0)))
+        if not planned_solver_fee.is_finite() or planned_solver_fee < 0:
+            raise ValueError("non-finite or negative solver fee")
+        expected_solver_fee_zat = int(
+            (planned_solver_fee * Decimal(100_000_000)).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+    except (InvalidOperation, ValueError, TypeError):
+        raise HTTPException(status_code=409, detail="FBA plan has an invalid ZEC solver fee")
+
     if (
-        recipient_total != total_buys
-        or seller_fill_total != total_sells
-        or recipient_count != len(buy_fills)
+        solver_fee_output_zat != expected_solver_fee_zat
+        or buyer_output_total != total_buys
+        or recipient_total != total_buys + expected_solver_fee_zat
+        or seller_fill_total != total_sells + expected_solver_fee_zat
+        or seller_fill_total != recipient_total
+        or recipient_count != len(buy_fills) + (1 if expected_solver_fee_zat > 0 else 0)
         or input_count < change_count
         or change_count <= 0
         or fee_zat <= 0
         or change_zat <= 0
         or input_total != recipient_total + fee_zat + change_zat
     ):
-        raise HTTPException(status_code=422, detail="Build report does not balance against the FBA fill plan")
+        raise HTTPException(status_code=422, detail="Build report does not balance against buyer fills, solver fee, seller debits and network fee")
     # USDC must be fully escrowed before we submit any ZEC transaction. If the quote leg is
     # unavailable, incorrectly funded, or belongs to a different fill plan, nothing is broadcast.
     try:

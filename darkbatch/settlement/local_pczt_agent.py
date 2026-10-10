@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 from pathlib import Path
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Tuple
 
 
@@ -252,8 +253,48 @@ def _make_memo(kind: str, epoch_id: int, intent_id: str, amount_zat: int,
     return encoded.hex()
 
 
+def _solver_fee_zat(value: Any) -> int:
+    if isinstance(value, bool):
+        raise AgentError("solver_fee_zec must be a finite, non-negative decimal amount")
+    try:
+        fee = Decimal(str(0 if value is None else value)) * Decimal(100_000_000)
+    except (InvalidOperation, ValueError):
+        raise AgentError("solver_fee_zec must be a finite, non-negative decimal amount")
+    if not fee.is_finite() or fee < 0:
+        raise AgentError("solver_fee_zec must be a finite, non-negative decimal amount")
+    return int(fee.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _allocate_pro_rata(total: int, weights: List[int]) -> List[int]:
+    if total < 0 or any(weight < 0 for weight in weights):
+        raise AgentError("pro-rata allocation amounts must be non-negative integers")
+    if not weights:
+        if total == 0:
+            return []
+        raise AgentError("cannot allocate a non-zero solver fee without seller owners")
+    if total == 0:
+        return [0 for _ in weights]
+    weight_total = sum(weights)
+    if weight_total <= 0:
+        raise AgentError("cannot allocate a solver fee across zero seller fills")
+    shares, remainders = [], []
+    assigned = 0
+    for index, weight in enumerate(weights):
+        base, remainder = divmod(total * weight, weight_total)
+        shares.append(base)
+        remainders.append((index, remainder))
+        assigned += base
+    remaining = total - assigned
+    remainders.sort(key=lambda item: (-item[1], item[0]))
+    if remaining > len(remainders):
+        raise AgentError("pro-rata solver fee remainder exceeded seller count")
+    for index, _ in remainders[:remaining]:
+        shares[index] += 1
+    return shares
+
+
 def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: str,
-                   target_height: int) -> Tuple[Dict[str, Any], List[Tuple[Dict[str, Any], Path]]]:
+                   target_height: int, solver_fee_receiver: Any = None) -> Tuple[Dict[str, Any], List[Tuple[Dict[str, Any], Path]]]:
     buys = plan.get("buy_fills")
     sells = plan.get("sell_fills")
     if not isinstance(buys, list) or not isinstance(sells, list) or not buys or not sells:
@@ -303,6 +344,36 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
     if len(owner_map) == 0:
         raise AgentError("no sellers available for ZEC-side funding")
     owners = sorted(owner_map.values(), key=lambda owner: owner["fvk_hex"])
+    solver_fee_zat = _solver_fee_zat(plan.get("solver_fee_zec", 0))
+    if solver_fee_zat > total_sells:
+        raise AgentError("solver fee in ZEC exceeds the matched seller ZEC fills")
+    fee_shares = _allocate_pro_rata(
+        solver_fee_zat, [int(owner["seller_fill_zat"]) for owner in owners]
+    )
+    for owner, share in zip(owners, fee_shares):
+        owner["solver_fee_share_zat"] = share
+    solver_fee_output_index = None
+    fee_receiver_hex = ""
+    fee_memo = ""
+    if solver_fee_zat:
+        if isinstance(solver_fee_receiver, str):
+            solver_fee_receiver = {"address_raw_hex": solver_fee_receiver}
+        if not isinstance(solver_fee_receiver, dict):
+            raise AgentError(
+                "non-zero solver fee requires a top-level solver_fee_receiver in the private wallet inventory"
+            )
+        fee_receiver_hex = _require_hex(
+            solver_fee_receiver.get("address_raw_hex"), 43, "solver_fee_receiver.address_raw_hex"
+        )
+        fee_memo = solver_fee_receiver.get("memo_hex", "")
+        if not isinstance(fee_memo, str):
+            raise AgentError("solver_fee_receiver.memo_hex must be hexadecimal text")
+        if fee_memo:
+            try:
+                if len(bytes.fromhex(fee_memo)) > 512:
+                    raise AgentError("solver fee memo exceeds 512 bytes")
+            except ValueError as exc:
+                raise AgentError("solver_fee_receiver.memo_hex is invalid hex") from exc
     for owner in owners:
         owner["candidates"] = sorted(owner["candidates"].values(),
                                      key=lambda note: (-note["_value"], note["_id"]))
@@ -327,6 +398,17 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
             ),
         })
 
+    if solver_fee_zat:
+        solver_fee_output_index = len(outputs)
+        outputs.append({
+            "address_raw_hex": fee_receiver_hex,
+            "value_zat": solver_fee_zat,
+            "memo_hex": fee_memo or _make_memo(
+                "SOLVER_FEE", int(plan["epoch_id"]), "solver",
+                solver_fee_zat, float(plan["clearing_price_usd"]), "NOT_SETTLED",
+            ),
+        })
+
     change_outputs = []
     for owner in owners:
         receipt_total = owner["seller_fill_zat"]
@@ -334,7 +416,7 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
             "fvk_hex": owner["fvk_hex"],
             "address_raw_hex": owner["change_address_raw_hex"],
             "value_zat": None,
-            "seller_fill_zat": receipt_total,
+            "seller_fill_zat": receipt_total + owner["solver_fee_share_zat"],
             "memo_hex": _make_memo(
                 "SELL_RECEIPT", int(plan["epoch_id"]), ",".join(owner["addresses"])[:64],
                 receipt_total, float(plan["clearing_price_usd"]), "NOT_SETTLED",
@@ -351,13 +433,13 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
     for owner in owners:
         reserve = max(25_000, 5_000 * (len(outputs) + len(owners) + 2))
         for candidate in owner["candidates"]:
-            if owner["selected_value"] >= owner["seller_fill_zat"] + reserve:
+            if owner["selected_value"] >= owner["seller_fill_zat"] + owner["solver_fee_share_zat"] + reserve:
                 break
             owner["selected"].append(candidate)
             owner["selected_value"] += candidate["_value"]
-        if owner["selected_value"] < owner["seller_fill_zat"] + 10_000:
+        if owner["selected_value"] < owner["seller_fill_zat"] + owner["solver_fee_share_zat"] + 10_000:
             raise AgentError(
-                f"seller {owner['addresses'][0]!r} does not have enough confirmed notes above their sell fill "
+                f"seller {owner['addresses'][0]!r} does not have enough confirmed notes above their sell fill plus solver-fee share "
                 "to cover change and the network fee"
             )
 
@@ -383,6 +465,8 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
         "ironwood_anchor_hex": anchor_hex,
         "inputs": inputs,
         "outputs": outputs,
+        "solver_fee_output_zat": solver_fee_zat,
+        "solver_fee_output_index": solver_fee_output_index,
         "change_outputs": change_outputs,
         "change_fvk_hex": "",
         "change_address_raw_hex": "",
@@ -446,8 +530,14 @@ def _run_full_pczt(binary: Path, workdir: Path, request: Dict[str, Any],
 
     if build_report.get("status") != "FBA_PCZT_READY_FOR_LOCAL_PARTICIPANT_SIGNATURES":
         raise AgentError("Rust builder returned an unexpected FBA PCZT status")
-    if int(build_report.get("recipient_total_zat", -1)) != sum(int(o["value_zat"]) for o in request["outputs"]):
-        raise AgentError("PCZT builder report does not match buyer output totals")
+    output_total = sum(int(o["value_zat"]) for o in request["outputs"])
+    buyer_total = output_total - int(request["solver_fee_output_zat"])
+    if int(build_report.get("recipient_total_zat", -1)) != output_total:
+        raise AgentError("PCZT builder report does not match buyer plus solver-fee output totals")
+    if int(build_report.get("buyer_output_total_zat", -1)) != buyer_total:
+        raise AgentError("PCZT builder report does not match buyer-only output totals")
+    if int(build_report.get("solver_fee_output_zat", -1)) != int(request["solver_fee_output_zat"]):
+        raise AgentError("PCZT builder report does not match the configured solver fee output")
     if int(build_report.get("seller_fill_total_zat", -1)) != sum(int(c["seller_fill_zat"]) for c in request["change_outputs"]):
         raise AgentError("PCZT builder report does not match seller fill totals")
 
@@ -562,7 +652,9 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
     # Write it only after any escrow preflight succeeds, so an unfunded batch can retry cleanly.
     plan_artifact = workdir / "fba-plan.json"
     _write_private_json(plan_artifact, plan)
-    request, signing_rows = _build_request(plan, wallets, anchor_hex, target_height)
+    request, signing_rows = _build_request(
+        plan, wallets, anchor_hex, target_height, snapshot.get("solver_fee_receiver")
+    )
     reports, raw_tx_hex = _run_full_pczt(binary, workdir, request, signing_rows)
     build_report, proof_report = reports["build_report"], reports["proof_report"]
     if int(build_report.get("target_height", -1)) != target_height:

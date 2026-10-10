@@ -48,6 +48,11 @@ pub struct PcztBuildRequest {
     pub ironwood_anchor_hex: String,
     pub inputs: Vec<PcztSpendInput>,
     pub outputs: Vec<PcztRecipient>,
+    /// Optional extra ZEC output for the FBA solver fee.
+    #[serde(default)]
+    pub solver_fee_output_zat: u64,
+    #[serde(default)]
+    pub solver_fee_output_index: Option<usize>,
     /// Explicit per-owner change outputs are required for multi-participant settlements.
     /// Each change note must return to the FVK that owned the corresponding input note.
     #[serde(default)]
@@ -135,7 +140,11 @@ pub struct PcztBuildReport {
     pub input_count: usize,
     pub recipient_output_count: usize,
     pub input_total_zat: u64,
+    /// Buyer ZEC only; excludes the optional solver-fee output.
+    pub buyer_output_total_zat: u64,
+    /// All recipient outputs, including the optional solver-fee output.
     pub recipient_total_zat: u64,
+    pub solver_fee_output_zat: u64,
     pub fee_zat: u64,
     pub change_zat: u64,
     pub change_output_count: usize,
@@ -336,6 +345,26 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
     zatoshis(input_total, "input total")?;
     zatoshis(output_total, "recipient output total")?;
 
+    let solver_fee_output_zat = request.solver_fee_output_zat;
+    match (solver_fee_output_zat, request.solver_fee_output_index) {
+        (0, None) => {}
+        (0, Some(_)) => return Err("solver_fee_output_index must be absent when solver_fee_output_zat is zero".into()),
+        (fee, Some(index)) => {
+            zatoshis(fee, "solver fee output")?;
+            let fee_output = outputs.get(index)
+                .ok_or_else(|| "solver_fee_output_index is outside the outputs array".to_string())?;
+            if fee_output.value_zat != fee {
+                return Err(format!(
+                    "solver fee output at index {index} is {} zat, but solver_fee_output_zat is {fee}",
+                    fee_output.value_zat
+                ));
+            }
+        }
+        (_, None) => return Err("solver_fee_output_index is required for a non-zero solver fee".into()),
+    }
+    let buyer_output_total = output_total.checked_sub(solver_fee_output_zat)
+        .ok_or_else(|| "solver fee output exceeds total recipient outputs".to_string())?;
+
     // Probe and final transaction use identical action counts. For multiple input owners,
     // every change output remains with its original owner; no common-wallet fallback is allowed.
     macro_rules! make_builder {
@@ -482,7 +511,9 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         input_count: spends.len(),
         recipient_output_count: outputs.len(),
         input_total_zat: input_total,
+        buyer_output_total_zat: buyer_output_total,
         recipient_total_zat: output_total,
+        solver_fee_output_zat,
         fee_zat: fee,
         change_zat: change_sum,
         change_output_count: change_values.len(),
@@ -832,24 +863,36 @@ mod tests {
                 merkle_position: 0,
                 merkle_path_hex: vec![hex::encode([0u8; 32]); 32],
             }],
-            outputs: vec![PcztRecipient {
-                address_raw_hex: hex::encode(address_raw),
-                value_zat: 970_000,
-                memo_hex: String::new(),
-            }],
+            outputs: vec![
+                PcztRecipient {
+                    address_raw_hex: hex::encode(address_raw),
+                    value_zat: 970_000,
+                    memo_hex: String::new(),
+                },
+                PcztRecipient {
+                    address_raw_hex: hex::encode(address_raw),
+                    value_zat: 5_000,
+                    memo_hex: String::new(),
+                },
+            ],
+            solver_fee_output_zat: 5_000,
+            solver_fee_output_index: Some(1),
             change_fvk_hex: String::new(),
             change_address_raw_hex: String::new(),
             change_outputs: vec![PcztChangeOutput {
                 fvk_hex: hex::encode(fvk.to_bytes()),
                 address_raw_hex: hex::encode(address_raw),
                 value_zat: None,
-                seller_fill_zat: 970_000,
+                seller_fill_zat: 975_000,
                 memo_hex: String::new(),
             }],
         };
         let (pczt, report) = build_pczt(&request).expect("balanced FBA PCZT");
         assert_eq!(report.input_total_zat, 1_000_000);
-        assert_eq!(report.recipient_total_zat, 970_000);
+        assert_eq!(report.buyer_output_total_zat, 970_000);
+        assert_eq!(report.solver_fee_output_zat, 5_000);
+        assert_eq!(report.recipient_total_zat, 975_000);
+        assert_eq!(report.seller_fill_total_zat, 975_000);
         assert!(report.fee_zat > 0);
         assert!(report.change_zat > 0);
         assert_eq!(report.recipient_total_zat + report.fee_zat + report.change_zat, report.input_total_zat);
@@ -891,6 +934,8 @@ mod tests {
                 value_zat: 970_000,
                 memo_hex: String::new(),
             }],
+            solver_fee_output_zat: 0,
+            solver_fee_output_index: None,
             change_fvk_hex: hex::encode(fvk.to_bytes()),
             change_address_raw_hex: hex::encode(address_raw),
             change_outputs: Vec::new(),

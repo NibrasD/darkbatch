@@ -110,6 +110,7 @@ def build_pczt_request(fills: dict[str, Any], wallet_data: dict[str, Any]) -> di
         raise ValueError("private wallet data must contain real spendable note inputs")
 
     outputs = []
+    solver_fee_output_index = None
     for row in buys:
         receiver = buyer_receivers.get(row["intent_id"])
         if isinstance(receiver, str):
@@ -134,6 +135,7 @@ def build_pczt_request(fills: dict[str, Any], wallet_data: dict[str, Any]) -> di
         memo = fee_receiver.get("memo_hex", "")
         if not isinstance(memo, str):
             raise ValueError("solver_fee_receiver.memo_hex must be a hex string")
+        solver_fee_output_index = len(outputs)
         outputs.append({
             "address_raw_hex": _hex(fee_receiver.get("address_raw_hex"), 43, "solver_fee_receiver.address_raw_hex"),
             "value_zat": fee_zat,
@@ -236,6 +238,8 @@ def build_pczt_request(fills: dict[str, Any], wallet_data: dict[str, Any]) -> di
         "ironwood_anchor_hex": anchor,
         "inputs": notes,
         "outputs": outputs,
+        "solver_fee_output_zat": fee_zat,
+        "solver_fee_output_index": solver_fee_output_index,
         "change_fvk_hex": "",
         "change_address_raw_hex": "",
         "change_outputs": change_outputs,

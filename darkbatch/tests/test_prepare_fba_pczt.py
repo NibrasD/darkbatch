@@ -66,6 +66,8 @@ def test_fba_request_maps_buyer_output_seller_fill_and_fee_conservatively():
     assert len(request["outputs"]) == 2
     assert request["outputs"][0]["value_zat"] == 100_000
     assert request["outputs"][1]["value_zat"] == 1_000
+    assert request["solver_fee_output_zat"] == 1_000
+    assert request["solver_fee_output_index"] == 1
     assert sum(o["value_zat"] for o in request["outputs"]) == 101_000
     assert len(request["change_outputs"]) == 1
     change = request["change_outputs"][0]
