@@ -646,6 +646,12 @@ def _settle_usdc_after_zec_confirmation(
         "--wait-seconds", str(evm_wait_seconds),
         "--submit", "--release-usdc",
     ]
+    oracle_artifact = plan_path.parent / "usdc-oracle-result.json"
+    if oracle_artifact.is_file():
+        # The oracle validates this file against the epoch, confirmed ZEC TXID, and both
+        # escrow commitments, then polls any saved pending EVM TX hashes instead of sending
+        # another transaction with a new nonce.
+        command.extend(["--resume-result-json", str(oracle_artifact)])
     try:
         completed = subprocess.run(
             command,
