@@ -417,6 +417,14 @@ def run(
         batch = _read_batch(batch_id)
         if batch["status_code"] != STATUS_RELEASED:
             raise OracleError("release transaction receipt is confirmed, but escrow does not report RELEASED")
+    if batch["status_code"] == STATUS_RELEASED and isinstance(resume_result, dict):
+        # Preserve the receipt hash needed by coordinator finalization when the escrow was
+        # already released before this recovery attempt. Do not overwrite the only local
+        # reference with a fresh status response that has no release_transaction field.
+        for field in ("attestation_transaction", "release_transaction"):
+            saved_tx = resume_result.get(field)
+            if isinstance(saved_tx, dict) and saved_tx.get("transaction_hash"):
+                result[field] = saved_tx
     result["onchain_escrow_status"] = batch["status_code"]
     result["status"] = "USDC_RELEASED" if batch["status_code"] == STATUS_RELEASED else "ZEC_CONFIRMED_USDC_LOCKED"
     return result
