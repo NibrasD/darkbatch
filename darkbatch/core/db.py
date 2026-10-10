@@ -72,6 +72,17 @@ def init_db():
     )
     """)
 
+    # Safe migration for existing epoch history rows.
+    epoch_columns = {row[1] for row in cur.execute("PRAGMA table_info(epochs)").fetchall()}
+    for column, declaration in (
+        ("quote_batch_id", "TEXT"),
+        ("quote_plan_hash", "TEXT"),
+        ("quote_total_micro", "INTEGER"),
+        ("quote_tx_id", "TEXT"),
+    ):
+        if column not in epoch_columns:
+            cur.execute(f"ALTER TABLE epochs ADD COLUMN {column} {declaration}")
+
     # Blocks
     cur.execute("""
     CREATE TABLE IF NOT EXISTS blocks (
