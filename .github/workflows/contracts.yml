@@ -1,0 +1,19 @@
+name: DarkBatch quote escrow contract
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  solidity-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Run escrow state-machine tests
+        run: forge test --root contracts -vv
