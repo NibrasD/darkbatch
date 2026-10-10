@@ -529,7 +529,6 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
     api_base = _validated_api_base(api_base)
     if wait_for_confirmation < 0 or poll_interval <= 0:
         raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
-    api_base = _validated_api_base(api_base)
     _private_workdir(workdir)
     snapshot = json.loads(inventory_path.read_text(encoding="utf-8"))
     server_status = _json_http(api_base.rstrip("/") + "/api/v1/settlement/testnet-status")
@@ -612,6 +611,9 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
     result["broadcast"] = response
     result["status"] = response.get("status", "BROADCAST_SUBMITTED")
     result["broadcast_requested"] = True
+    if result["status"] == "BROADCAST_TXID_MISMATCH":
+        result["message"] = "The node-reported transaction ID did not match the local extraction report; the FBA epoch was not associated or settled."
+        return result
     if wait_for_confirmation > 0 and result.get("transaction_id"):
         deadline = time.monotonic() + wait_for_confirmation
         while time.monotonic() < deadline:
@@ -737,6 +739,7 @@ def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
         "status": response.get("status"),
         "epoch_id": epoch_id,
         "txid": transaction.get("txid") or reported_txid,
+        "extracted_txid": reported_txid,
         "transaction_status": transaction.get("status"),
         "epoch_settled": response.get("epoch_settled", False),
         "quote_leg_status": response.get("quote_leg_status", "NOT_SETTLED"),
@@ -744,6 +747,9 @@ def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
         "broadcast": True,
         "message": response.get("message", "ZEC broadcast result recorded; confirmation and USDC release remain separate steps."),
     }
+    if result["status"] == "BROADCAST_TXID_MISMATCH":
+        result["message"] = "The node-reported transaction ID did not match the local extraction report; the FBA epoch was not associated or settled."
+        return result
     if wait_for_confirmation > 0:
         deadline = time.monotonic() + wait_for_confirmation
         while time.monotonic() < deadline:
