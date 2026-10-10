@@ -53,6 +53,8 @@ pub struct PcztBuildRequest {
     pub solver_fee_output_zat: u64,
     #[serde(default)]
     pub solver_fee_output_index: Option<usize>,
+    #[serde(default)]
+    pub solver_fee_output_address_raw_hex: String,
     /// Explicit per-owner change outputs are required for multi-participant settlements.
     /// Each change note must return to the FVK that owned the corresponding input note.
     #[serde(default)]
@@ -145,6 +147,7 @@ pub struct PcztBuildReport {
     /// All recipient outputs, including the optional solver-fee output.
     pub recipient_total_zat: u64,
     pub solver_fee_output_zat: u64,
+    pub solver_fee_output_address_raw_hex: String,
     pub fee_zat: u64,
     pub change_zat: u64,
     pub change_output_count: usize,
@@ -346,8 +349,13 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
     zatoshis(output_total, "recipient output total")?;
 
     let solver_fee_output_zat = request.solver_fee_output_zat;
+    let solver_fee_output_address_raw_hex = request.solver_fee_output_address_raw_hex.trim().to_ascii_lowercase();
     match (solver_fee_output_zat, request.solver_fee_output_index) {
-        (0, None) => {}
+        (0, None) => {
+            if !solver_fee_output_address_raw_hex.is_empty() {
+                return Err("solver_fee_output_address_raw_hex must be empty when the solver fee is zero".into());
+            }
+        }
         (0, Some(_)) => return Err("solver_fee_output_index must be absent when solver_fee_output_zat is zero".into()),
         (fee, Some(index)) => {
             zatoshis(fee, "solver fee output")?;
@@ -358,6 +366,15 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
                     "solver fee output at index {index} is {} zat, but solver_fee_output_zat is {fee}",
                     fee_output.value_zat
                 ));
+            }
+            let expected_address = decode_array::<43>(
+                &solver_fee_output_address_raw_hex, "solver_fee_output_address_raw_hex"
+            )?;
+            let actual_address = decode_array::<43>(
+                &request.outputs[index].address_raw_hex, "fee output address"
+            )?;
+            if actual_address != expected_address {
+                return Err("the indexed solver-fee output does not pay solver_fee_output_address_raw_hex".into());
             }
         }
         (_, None) => return Err("solver_fee_output_index is required for a non-zero solver fee".into()),
@@ -514,6 +531,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         buyer_output_total_zat: buyer_output_total,
         recipient_total_zat: output_total,
         solver_fee_output_zat,
+        solver_fee_output_address_raw_hex,
         fee_zat: fee,
         change_zat: change_sum,
         change_output_count: change_values.len(),
@@ -877,6 +895,7 @@ mod tests {
             ],
             solver_fee_output_zat: 5_000,
             solver_fee_output_index: Some(1),
+            solver_fee_output_address_raw_hex: hex::encode(address_raw),
             change_fvk_hex: String::new(),
             change_address_raw_hex: String::new(),
             change_outputs: vec![PcztChangeOutput {
@@ -936,6 +955,7 @@ mod tests {
             }],
             solver_fee_output_zat: 0,
             solver_fee_output_index: None,
+            solver_fee_output_address_raw_hex: String::new(),
             change_fvk_hex: hex::encode(fvk.to_bytes()),
             change_address_raw_hex: hex::encode(address_raw),
             change_outputs: Vec::new(),

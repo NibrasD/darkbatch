@@ -111,6 +111,7 @@ def build_pczt_request(fills: dict[str, Any], wallet_data: dict[str, Any]) -> di
 
     outputs = []
     solver_fee_output_index = None
+    solver_fee_output_address_raw_hex = ""
     for row in buys:
         receiver = buyer_receivers.get(row["intent_id"])
         if isinstance(receiver, str):
@@ -136,8 +137,11 @@ def build_pczt_request(fills: dict[str, Any], wallet_data: dict[str, Any]) -> di
         if not isinstance(memo, str):
             raise ValueError("solver_fee_receiver.memo_hex must be a hex string")
         solver_fee_output_index = len(outputs)
+        solver_fee_output_address_raw_hex = _hex(
+            fee_receiver.get("address_raw_hex"), 43, "solver_fee_receiver.address_raw_hex"
+        )
         outputs.append({
-            "address_raw_hex": _hex(fee_receiver.get("address_raw_hex"), 43, "solver_fee_receiver.address_raw_hex"),
+            "address_raw_hex": solver_fee_output_address_raw_hex,
             "value_zat": fee_zat,
             "memo_hex": memo,
         })
@@ -240,6 +244,7 @@ def build_pczt_request(fills: dict[str, Any], wallet_data: dict[str, Any]) -> di
         "outputs": outputs,
         "solver_fee_output_zat": fee_zat,
         "solver_fee_output_index": solver_fee_output_index,
+        "solver_fee_output_address_raw_hex": solver_fee_output_address_raw_hex,
         "change_fvk_hex": "",
         "change_address_raw_hex": "",
         "change_outputs": change_outputs,

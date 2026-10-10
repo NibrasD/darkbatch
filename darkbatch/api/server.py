@@ -572,6 +572,7 @@ def submit_local_pczt_transaction(
         buyer_output_total = int(build["buyer_output_total_zat"])
         recipient_total = int(build["recipient_total_zat"])
         solver_fee_output_zat = int(build["solver_fee_output_zat"])
+        solver_fee_output_address_raw_hex = str(build["solver_fee_output_address_raw_hex"]).strip().lower()
         fee_zat = int(build["fee_zat"])
         change_zat = int(build["change_zat"])
         seller_fill_total = int(build["seller_fill_total_zat"])
@@ -591,6 +592,18 @@ def submit_local_pczt_transaction(
         )
     except (InvalidOperation, ValueError, TypeError):
         raise HTTPException(status_code=409, detail="FBA plan has an invalid ZEC solver fee")
+
+    configured_fee_receiver = os.getenv("DARKBATCH_SOLVER_FEE_RECEIVER_RAW_HEX", "").strip().lower()
+    if expected_solver_fee_zat > 0:
+        if len(configured_fee_receiver) != 86 or any(ch not in "0123456789abcdef" for ch in configured_fee_receiver):
+            raise HTTPException(
+                status_code=503,
+                detail="DARKBATCH_SOLVER_FEE_RECEIVER_RAW_HEX must be configured to the exact 43-byte fee receiver before non-zero-fee FBA settlement",
+            )
+        if solver_fee_output_address_raw_hex != configured_fee_receiver:
+            raise HTTPException(status_code=422, detail="PCZT solver-fee output address does not match the configured fee receiver")
+    elif solver_fee_output_address_raw_hex:
+        raise HTTPException(status_code=422, detail="zero-fee FBA transaction unexpectedly reports a solver-fee receiver")
 
     if (
         solver_fee_output_zat != expected_solver_fee_zat

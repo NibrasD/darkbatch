@@ -467,6 +467,7 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
         "outputs": outputs,
         "solver_fee_output_zat": solver_fee_zat,
         "solver_fee_output_index": solver_fee_output_index,
+        "solver_fee_output_address_raw_hex": fee_receiver_hex if solver_fee_zat else "",
         "change_outputs": change_outputs,
         "change_fvk_hex": "",
         "change_address_raw_hex": "",
@@ -538,6 +539,8 @@ def _run_full_pczt(binary: Path, workdir: Path, request: Dict[str, Any],
         raise AgentError("PCZT builder report does not match buyer-only output totals")
     if int(build_report.get("solver_fee_output_zat", -1)) != int(request["solver_fee_output_zat"]):
         raise AgentError("PCZT builder report does not match the configured solver fee output")
+    if str(build_report.get("solver_fee_output_address_raw_hex", "")).lower() != str(request["solver_fee_output_address_raw_hex"]).lower():
+        raise AgentError("PCZT builder report does not match the configured solver-fee receiver")
     if int(build_report.get("seller_fill_total_zat", -1)) != sum(int(c["seller_fill_zat"]) for c in request["change_outputs"]):
         raise AgentError("PCZT builder report does not match seller fill totals")
 
