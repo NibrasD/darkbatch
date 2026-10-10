@@ -30,3 +30,11 @@ Desktop.ini
 # Rust
 target/
 **/target/
+
+# Local wallet secrets, scan witnesses, PCZTs and settlement artifacts (never commit)
+/private/
+**/wallet_inventory.json
+**/*spending-key*.hex
+**/*wallet-state*.json
+**/*.pczt
+**/raw-transaction.hex
