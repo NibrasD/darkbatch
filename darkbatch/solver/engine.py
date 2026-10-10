@@ -8,12 +8,38 @@ is actually implemented and verified. Local simulation results are not Zcash tra
 
 from dataclasses import dataclass, field
 import time
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Any
 from darkbatch.core.intent import SwapOrderIntent, OrderDirection
 from darkbatch.engine.batch_solver import BatchAuctionSolver, BatchClearResult
 from darkbatch.settlement.v6_bundle import SettlementBundleBuilder, SettlementBundle
 from darkbatch.node.simulator import ZcashNodeSimulator
 from darkbatch.core.wallet import ShieldedWallet
+
+def _quote_micro_total(total_zat: int, price_usd: float) -> int:
+    """USDC has 6 decimals; convert an exact ZEC fill and uniform price to micro-USDC."""
+    amount = (Decimal(int(total_zat)) * Decimal(str(price_usd)) / Decimal(100))
+    return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _allocate_quote_micro(fills: List[Any], price_usd: float) -> Dict[str, int]:
+    """Largest-remainder allocation so both sides sum to one identical USDC micro-unit total."""
+    total_zat = sum(int(fill.filled_zat) for fill in fills)
+    if total_zat <= 0 or not fills:
+        return {}
+    total_micro = _quote_micro_total(total_zat, price_usd)
+    parts = []
+    assigned = 0
+    for index, fill in enumerate(fills):
+        base, remainder = divmod(total_micro * int(fill.filled_zat), total_zat)
+        parts.append({"index": index, "intent_id": fill.intent_id, "base": base, "remainder": remainder})
+        assigned += base
+    left = total_micro - assigned
+    parts.sort(key=lambda part: (-part["remainder"], part["intent_id"], part["index"]))
+    for part in parts[:left]:
+        part["base"] += 1
+    return {part["intent_id"]: part["base"] for part in parts}
+
 
 @dataclass
 class SolverStats:
@@ -75,12 +101,21 @@ class AutonomousSolverDaemon:
         # The public API never sends mock IVKs or the legacy transaction-shaped bundle to Zebra.
         # It publishes only a summary and keeps the participant-level fill plan behind a local token.
         if self.settlement_adapter is not None:
+            intent_by_id = {intent.intent_id: intent for intent in intents}
+            buy_quote_micro = _allocate_quote_micro(clear_result.buy_fills, clear_result.clearing_price_usd)
+            sell_quote_micro = _allocate_quote_micro(clear_result.sell_fills, clear_result.clearing_price_usd)
             plan = {
                 "schema": "darkbatch.fba-local-pczt-plan.v1",
                 "epoch_id": epoch_id,
                 "clearing_price_usd": clear_result.clearing_price_usd,
                 "total_cleared_zec": clear_result.total_cleared_zec,
                 "total_cleared_usd": clear_result.total_cleared_usd,
+                "quote_asset": "USDC",
+                "quote_decimals": 6,
+                "quote_total_micro": _quote_micro_total(
+                    sum(int(fill.filled_zat) for fill in clear_result.buy_fills),
+                    clear_result.clearing_price_usd,
+                ),
                 "solver_fee_zec": clear_result.solver_fee_zec,
                 "buy_fills": [
                     {
@@ -93,6 +128,8 @@ class AutonomousSolverDaemon:
                         "shielded_address": f.shielded_address,
                         "fill_percentage": f.fill_percentage,
                         "is_marginal": f.is_marginal,
+                        "quote_address": intent_by_id[f.intent_id].quote_address,
+                        "quote_amount_micro": buy_quote_micro.get(f.intent_id, 0),
                     }
                     for f in clear_result.buy_fills
                 ],
@@ -107,6 +144,8 @@ class AutonomousSolverDaemon:
                         "shielded_address": f.shielded_address,
                         "fill_percentage": f.fill_percentage,
                         "is_marginal": f.is_marginal,
+                        "quote_address": intent_by_id[f.intent_id].quote_address,
+                        "quote_amount_micro": sell_quote_micro.get(f.intent_id, 0),
                     }
                     for f in clear_result.sell_fills
                 ],
