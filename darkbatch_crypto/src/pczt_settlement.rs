@@ -145,6 +145,17 @@ pub struct PcztBuildReport {
     pub warning: String,
 }
 
+fn write_private_file(path: &str, bytes: &[u8]) -> Result<(), String> {
+    fs::write(path, bytes).map_err(|e| format!("could not write private file {path}: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("could not restrict permissions on private file {path}: {e}"))?;
+    }
+    Ok(())
+}
+
 fn decode_array<const N: usize>(value: &str, field: &str) -> Result<[u8; N], String> {
     let bytes = hex::decode(value.trim()).map_err(|e| format!("{field} is not valid hex: {e}"))?;
     bytes.try_into().map_err(|v: Vec<u8>| format!("{field} must be exactly {N} bytes; got {}", v.len()))
@@ -488,10 +499,10 @@ pub fn build_pczt_from_files(input_json_path: &str, pczt_output_path: &str, repo
     let source = fs::read_to_string(input_json_path).map_err(|e| format!("could not read local build JSON: {e}"))?;
     let request: PcztBuildRequest = serde_json::from_str(&source).map_err(|e| format!("invalid PCZT build JSON: {e}"))?;
     let (pczt, report) = build_pczt(&request)?;
-    fs::write(pczt_output_path, pczt.serialize().map_err(|e| format!("PCZT serialization failed: {e:?}"))?)
-        .map_err(|e| format!("could not write PCZT: {e}"))?;
-    fs::write(report_output_path, serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?)
-        .map_err(|e| format!("could not write PCZT report: {e}"))?;
+    let pczt_bytes = pczt.serialize().map_err(|e| format!("PCZT serialization failed: {e:?}"))?;
+    write_private_file(pczt_output_path, &pczt_bytes)?;
+    let report_bytes = serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?;
+    write_private_file(report_output_path, &report_bytes)?;
     Ok(report)
 }
 
@@ -507,10 +518,10 @@ pub fn build_fba_pczt_from_files(input_json_path: &str, pczt_output_path: &str, 
     let (pczt, mut report) = build_pczt(&request)?;
     report.status = "FBA_PCZT_READY_FOR_LOCAL_PARTICIPANT_SIGNATURES".into();
     report.warning = "Built from supplied FBA buyer outputs and per-owner seller fills. Input notes/witnesses must be real/current; transaction is not broadcast or confirmed. USDC/quote-leg settlement is not implemented. PCZT data is sensitive and must remain local.".into();
-    fs::write(pczt_output_path, pczt.serialize().map_err(|e| format!("PCZT serialization failed: {e:?}"))?)
-        .map_err(|e| format!("could not write FBA PCZT: {e}"))?;
-    fs::write(report_output_path, serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?)
-        .map_err(|e| format!("could not write FBA PCZT report: {e}"))?;
+    let pczt_bytes = pczt.serialize().map_err(|e| format!("PCZT serialization failed: {e:?}"))?;
+    write_private_file(pczt_output_path, &pczt_bytes)?;
+    let report_bytes = serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?;
+    write_private_file(report_output_path, &report_bytes)?;
     Ok(report)
 }
 
@@ -536,8 +547,8 @@ pub fn sign_pczt_from_local_key_file(pczt_input_path: &str, spending_key_file_pa
     let bytes = fs::read(pczt_input_path).map_err(|e| format!("could not read PCZT: {e}"))?;
     let pczt = Pczt::parse(&bytes).map_err(|e| format!("input is not a valid PCZT: {e:?}"))?;
     let signed = sign_pczt_value(pczt, action_index, &key)?;
-    fs::write(pczt_output_path, signed.serialize().map_err(|e| format!("signed PCZT serialization failed: {e:?}"))?)
-        .map_err(|e| format!("could not write signed PCZT: {e}"))?;
+    let signed_bytes = signed.serialize().map_err(|e| format!("signed PCZT serialization failed: {e:?}"))?;
+    write_private_file(pczt_output_path, &signed_bytes)?;
     Ok(())
 }
 pub fn combine_pczt_files(input_paths: &[String], output_path: &str) -> Result<(), String> {
@@ -553,8 +564,8 @@ pub fn combine_pczt_files(input_paths: &[String], output_path: &str) -> Result<(
     let combined = Combiner::new(pczts)
         .combine()
         .map_err(|e| format!("official PCZT Combiner rejected the contributions: {e:?}"))?;
-    fs::write(output_path, combined.serialize().map_err(|e| format!("combined PCZT serialization failed: {e:?}"))?)
-        .map_err(|e| format!("could not write combined PCZT: {e}"))?;
+    let combined_bytes = combined.serialize().map_err(|e| format!("combined PCZT serialization failed: {e:?}"))?;
+    write_private_file(output_path, &combined_bytes)?;
     Ok(())
 }
 
@@ -585,7 +596,8 @@ pub fn prove_extract_pczt_to_hex_file(pczt_input_path: &str, tx_hex_output_path:
     let bytes = fs::read(pczt_input_path).map_err(|e| format!("could not read signed PCZT: {e}"))?;
     let pczt = Pczt::parse(&bytes).map_err(|e| format!("input is not a valid PCZT: {e:?}"))?;
     let (raw, txid, branch_id) = prove_and_extract(pczt)?;
-    fs::write(tx_hex_output_path, hex::encode(&raw)).map_err(|e| format!("could not write raw transaction hex: {e}"))?;
+    let raw_hex = hex::encode(&raw);
+    write_private_file(tx_hex_output_path, raw_hex.as_bytes())?;
     let report = serde_json::json!({
         "status": "PROOF_GENERATED_AND_TRANSACTION_EXTRACTED",
         "network": "Zcash Testnet",
@@ -597,8 +609,8 @@ pub fn prove_extract_pczt_to_hex_file(pczt_input_path: &str, tx_hex_output_path:
         "network_confirmed": false,
         "warning": "This V6 transaction was extracted by official Zcash Rust libraries after proof/signature validation. This tool has not proved the notes remain unspent or that Zebra accepts the transaction. Broadcast to activated Testnet Zebra and verify its txid and block confirmation before recording an FBA epoch."
     });
-    fs::write(report_output_path, serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?)
-        .map_err(|e| format!("could not write transaction report: {e}"))?;
+    let report_bytes = serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?;
+    write_private_file(report_output_path, &report_bytes)?;
     Ok(())
 }
 
