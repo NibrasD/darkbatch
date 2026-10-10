@@ -74,8 +74,8 @@ def _zcash_rpc(method: str, params: list[Any]) -> Any:
 
 def verify_zebra_confirmation(txid: str, minimum_confirmations: int) -> dict[str, Any]:
     normalized_txid = _hash32(txid, "ZEC TXID")
-    if minimum_confirmations < 1:
-        raise OracleError("minimum ZEC confirmations must be at least one")
+    if minimum_confirmations < 2:
+        raise OracleError("minimum ZEC confirmations must be at least two before USDC release")
 
     chain = _zcash_rpc("getblockchaininfo", [])
     network = _zcash_rpc("getnetworkinfo", [])
