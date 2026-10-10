@@ -425,6 +425,87 @@ def test_solver_api_path_does_not_mine_on_live_rpc_failure():
     assert node.height == initial_height
     assert solver.stats.total_settlement_txs_mined == 0
 
+
+
+def test_restored_transaction_is_pending_live_not_simulated():
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+
+    adapter = TestnetSettlementAdapter(rpc_url="http://127.0.0.1:18232", allow_simulation=False)
+    record = adapter.track_existing_raw_transaction("ab" * 32, {
+        "epoch_id": 12,
+        "quote_batch_id": "cd" * 32,
+        "quote_plan_hash": "ef" * 32,
+        "quote_escrow_data_hash": "12" * 32,
+        "quote_total_micro": 125_000,
+        "quote_chain_id": 8453,
+        "target_height": 4_500_100,
+        "consensus_branch_id": "0x77190ad9",
+    })
+
+    assert record["txid"] == "ab" * 32
+    assert record["status"] == "BROADCAST_PENDING_CONFIRMATION"
+    assert record["confirmations"] == 0
+    assert record["block_hash"] is None
+    assert record["simulation_only"] is False
+    assert record["live_node"] is True
+    assert record["quote_escrow_data_hash"] == "12" * 32
+    assert adapter.track_existing_raw_transaction("ab" * 32) is record
+
+
+def test_persisted_epoch_lookup_recovers_quote_metadata_after_restart(monkeypatch, tmp_path):
+    from darkbatch.core import db, repo
+
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "settlement-recovery.db"))
+    db.init_db()
+
+    txid = "ab" * 32
+    block_hash = "cd" * 32
+    repo.record_epoch_zec_pending(
+        epoch_id=42,
+        clearing_price_usd=1.25,
+        total_cleared_zec=0.001,
+        total_cleared_usd=0.00125,
+        tx_id=txid,
+        intent_ids=["intent-b", "intent-a"],
+        quote_batch_id="12" * 32,
+        quote_plan_hash="34" * 32,
+        quote_total_micro=1250,
+        quote_escrow_data_hash="56" * 32,
+        quote_chain_id=8453,
+        target_height=4_500_100,
+        consensus_branch_id="0x77190ad9",
+    )
+
+    recovered = repo.get_epoch_by_txid(txid.upper())
+    assert recovered is not None
+    assert recovered["status"] == "ZEC_LEG_PENDING"
+    assert recovered["intent_ids"] == ["intent-a", "intent-b"]
+    assert recovered["quote_escrow_data_hash"] == "56" * 32
+    assert recovered["quote_chain_id"] == 8453
+    assert recovered["target_height"] == 4_500_100
+    assert recovered["consensus_branch_id"] == "0x77190ad9"
+
+    repo.record_epoch_zec_confirmed(42, txid, block_hash)
+    confirmed = repo.get_epoch_by_txid(txid)
+    assert confirmed["status"] == "ZEC_CONFIRMED_QUOTE_PENDING"
+    assert confirmed["block_hash"] == block_hash
+    assert confirmed["quote_escrow_data_hash"] == "56" * 32
+
+    repo.record_epoch_quote_settled(
+        epoch_id=42,
+        zec_tx_id=txid,
+        zec_block_hash=block_hash,
+        quote_batch_id="12" * 32,
+        quote_plan_hash="34" * 32,
+        quote_total_micro=1250,
+        quote_tx_id="ef" * 32,
+    )
+    settled = repo.get_epoch_by_txid(txid)
+    assert settled["status"] == "CLEARED"
+    assert settled["quote_tx_id"] == "ef" * 32
+    assert settled["quote_escrow_data_hash"] == "56" * 32
+
+
 def test_nu6_3_consensus_and_crypto_integrity():
     """
     Checks local prototype constants and byte-shape invariants only.
