@@ -8,6 +8,7 @@ from darkbatch.settlement.local_pczt_agent import (
     _allocate_pro_rata,
     _build_request,
     _run_full_pczt,
+    _settle_usdc_after_zec_confirmation,
     _solver_fee_zat,
 )
 
@@ -155,4 +156,99 @@ def test_local_pczt_funding_retry_is_iterative_and_rebuilds_signing_indexes(tmp_
     assert len(request["inputs"]) == 2
     assert len(reports["build_report"]["ironwood_spend_action_indexes"]) == 2
     assert raw_tx_hex == "abcd"
+
+
+def test_opt_in_usdc_release_runs_oracle_then_finalizes_epoch(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    plan_path = tmp_path / "fba-plan.json"
+    plan_path.write_text(json.dumps({"schema": "darkbatch.fba-local-pczt-plan.v1", "epoch_id": 7}), encoding="utf-8")
+    batch_id = "0x" + "11" * 32
+    zec_txid = "22" * 32
+    release_txid = "0x" + "33" * 32
+    monkeypatch.setenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "configured-locally")
+    seen = {}
+
+    def fake_subprocess_run(command, *, cwd, env, check, capture_output, text, timeout):
+        seen["command"] = command
+        seen["env_token"] = env.get("DARKBATCH_SETTLEMENT_TOKEN")
+        seen["cwd"] = cwd
+        assert "--submit" in command and "--release-usdc" in command
+        assert str(plan_path) == command[command.index("--plan-json") + 1]
+        assert command[command.index("--minimum-zec-confirmations") + 1] == "2"
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "status": "USDC_RELEASED",
+                "release_transaction": {
+                    "status": "EVM_TRANSACTION_CONFIRMED",
+                    "transaction_hash": release_txid,
+                },
+            }),
+            stderr="",
+        )
+
+    api_calls = []
+    def fake_json_http(url, *, method="GET", token=None, body=None, timeout=15.0):
+        api_calls.append((url, method, token, body))
+        return {"status": "CLEARED", "epoch_settled": True, "quote_txid": release_txid}
+
+    monkeypatch.setattr("darkbatch.settlement.local_pczt_agent.subprocess.run", fake_subprocess_run)
+    monkeypatch.setattr("darkbatch.settlement.local_pczt_agent._json_http", fake_json_http)
+
+    result = _settle_usdc_after_zec_confirmation(
+        "https://coordinator.example",
+        7,
+        batch_id,
+        zec_txid,
+        plan_path,
+        "local-settlement-token",
+        minimum_zec_confirmations=2,
+        evm_wait_seconds=30,
+    )
+
+    assert result["status"] == "CLEARED"
+    assert result["epoch_settled"] is True
+    assert result["quote_txid"] == release_txid
+    assert seen["env_token"] == "local-settlement-token"
+    assert len(api_calls) == 1
+    url, method, token, body = api_calls[0]
+    assert url.endswith("/api/v1/settlement/quote-finalize")
+    assert method == "POST"
+    assert token == "local-settlement-token"
+    assert body == {
+        "epoch_id": 7,
+        "quote_batch_id": batch_id,
+        "zec_txid": zec_txid,
+        "quote_release_txid": release_txid,
+    }
+
+
+def test_usdc_release_pending_does_not_finalize_epoch(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    plan_path = tmp_path / "fba-plan.json"
+    plan_path.write_text(json.dumps({"schema": "darkbatch.fba-local-pczt-plan.v1", "epoch_id": 8}), encoding="utf-8")
+    monkeypatch.setenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "configured-locally")
+    monkeypatch.setattr(
+        "darkbatch.settlement.local_pczt_agent.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"status": "ZEC_CONFIRMED_USDC_RELEASE_PENDING"}),
+            stderr="",
+        ),
+    )
+    api_calls = []
+    monkeypatch.setattr(
+        "darkbatch.settlement.local_pczt_agent._json_http",
+        lambda *args, **kwargs: api_calls.append(args) or {},
+    )
+
+    result = _settle_usdc_after_zec_confirmation(
+        "https://coordinator.example", 8, "0x" + "44" * 32, "55" * 32,
+        plan_path, "token", minimum_zec_confirmations=2, evm_wait_seconds=30,
+    )
+    assert result["epoch_settled"] is False
+    assert result["status"] == "ZEC_CONFIRMED_USDC_RELEASE_PENDING"
+    assert api_calls == []
 
