@@ -21,6 +21,7 @@ use pczt::{
         creator::Creator,
         io_finalizer::IoFinalizer,
         prover::Prover,
+        redactor::Redactor,
         signer::Signer,
         tx_extractor::TransactionExtractor,
     },
@@ -531,16 +532,134 @@ fn parse_spending_key_file(path: &str) -> Result<SpendingKey, String> {
     SpendingKey::from_bytes(bytes).into_option()
         .ok_or_else(|| "spending key file does not contain a valid Zcash Orchard spending key".into())
 }
+/// Produces a signer-specific PCZT. The target spend retains only the note opening
+/// material its owner needs to check and sign it; every other spend's opening metadata and
+/// every output's wallet metadata are removed. All witnesses are removed from the contribution.
+/// The complete original PCZT must remain private with the coordinator and be included when
+/// contributions are combined, so the Prover can recover the witnesses and note openings.
+fn redact_pczt_for_participant_value(pczt: Pczt, action_index: usize) -> Result<Pczt, String> {
+    let actions = pczt.ironwood().actions();
+    let count = actions.len();
+    let target = actions.get(action_index)
+        .ok_or_else(|| format!("Ironwood action index {action_index} is out of range"))?;
+
+    if target.spend().spend_auth_sig().is_some() {
+        return Err("target action already has a spend authorization signature; sign an unsigned PCZT".into());
+    }
+    if target.spend().fvk().is_none()
+        || target.spend().recipient().is_none()
+        || target.spend().value().is_none()
+        || target.spend().rho().is_none()
+        || target.spend().rseed().is_none()
+        || target.spend().alpha().is_none()
+    {
+        return Err("target action lacks the note metadata required for safe local signing".into());
+    }
+
+    let redacted = Redactor::new(pczt)
+        .redact_ironwood_with(|mut bundle| {
+            for index in 0..count {
+                bundle.redact_action(index, |mut action| {
+                    // A Merkle witness is never required to sign the transaction effects.
+                    action.clear_spend_witness();
+
+                    // Output ciphertexts stay intact so the same transaction effects are signed;
+                    // output recipient/value/opening metadata is not shared with signers.
+                    action.clear_output_recipient();
+                    action.clear_output_value();
+                    action.clear_output_rseed();
+                    action.clear_output_ock();
+                    action.clear_output_zip32_derivation();
+                    action.clear_output_user_address();
+                    action.clear_output_proprietary();
+                    action.clear_rcv();
+
+                    if index != action_index {
+                        // A participant must not receive another owner's note opening or FVK.
+                        // Preserve public action effects and any already-finalized padding signature.
+                        action.clear_spend_recipient();
+                        action.clear_spend_value();
+                        action.clear_spend_rho();
+                        action.clear_spend_rseed();
+                        action.clear_spend_fvk();
+                        action.clear_spend_alpha();
+                        action.clear_spend_zip32_derivation();
+                        action.clear_spend_proprietary();
+                    }
+                });
+            }
+        })
+        .finish();
+
+    Ok(redacted)
+}
+
+/// Removes all note openings from a signed contribution before it leaves the participant's
+/// machine. The original private PCZT is needed to restore these fields for proof generation.
+fn redact_signed_contribution(pczt: Pczt) -> Result<Pczt, String> {
+    let count = pczt.ironwood().actions().len();
+    let redacted = Redactor::new(pczt)
+        .redact_ironwood_with(|mut bundle| {
+            for index in 0..count {
+                bundle.redact_action(index, |mut action| {
+                    action.clear_spend_recipient();
+                    action.clear_spend_value();
+                    action.clear_spend_rho();
+                    action.clear_spend_rseed();
+                    action.clear_spend_fvk();
+                    action.clear_spend_witness();
+                    action.clear_spend_alpha();
+                    action.clear_spend_zip32_derivation();
+                    action.clear_spend_dummy_sk();
+                    action.clear_spend_proprietary();
+
+                    action.clear_output_recipient();
+                    action.clear_output_value();
+                    action.clear_output_rseed();
+                    action.clear_output_ock();
+                    action.clear_output_zip32_derivation();
+                    action.clear_output_user_address();
+                    action.clear_output_proprietary();
+                    action.clear_rcv();
+                });
+            }
+        })
+        .finish();
+    Ok(redacted)
+}
+
+/// Writes a signer-specific PCZT that can be safely handed to one participant.
+pub fn redact_pczt_for_participant_file(
+    pczt_input_path: &str,
+    action_index: usize,
+    pczt_output_path: &str,
+) -> Result<(), String> {
+    if std::path::Path::new(pczt_output_path).exists() {
+        return Err(format!("refusing to overwrite existing PCZT contribution: {pczt_output_path}"));
+    }
+    let bytes = fs::read(pczt_input_path).map_err(|e| format!("could not read source PCZT: {e}"))?;
+    let pczt = Pczt::parse(&bytes).map_err(|e| format!("input is not a valid PCZT: {e:?}"))?;
+    let redacted = redact_pczt_for_participant_value(pczt, action_index)?;
+    let output = redacted.serialize().map_err(|e| format!("redacted PCZT serialization failed: {e:?}"))?;
+    write_private_file(pczt_output_path, &output)
+}
+
 fn sign_pczt_value(pczt: Pczt, action_index: usize, key: &SpendingKey) -> Result<Pczt, String> {
     if pczt.ironwood().actions().get(action_index).is_none() {
         return Err(format!("Ironwood action index {action_index} is out of range"));
+    }
+    let expected_fvk = FullViewingKey::from(key).to_bytes();
+    let actual_fvk = pczt.ironwood().actions()[action_index].spend().fvk()
+        .ok_or_else(|| "target spend FullViewingKey was redacted before local signing".to_string())?;
+    if *actual_fvk != expected_fvk {
+        return Err("the supplied local spending key does not own this PCZT action".into());
     }
     let ask = SpendAuthorizingKey::from(key);
     let mut rng = rand::rng();
     let mut signer = Signer::new(pczt).map_err(|e| format!("PCZT Signer rejected input: {e:?}"))?;
     signer.sign_ironwood(&mut rng, action_index, &ask)
         .map_err(|e| format!("local Ironwood signature failed: {e:?}"))?;
-    Ok(signer.finish())
+    redact_signed_contribution(signer.finish())
 }
 pub fn sign_pczt_from_local_key_file(pczt_input_path: &str, spending_key_file_path: &str, action_index: usize, pczt_output_path: &str) -> Result<(), String> {
     let key = parse_spending_key_file(spending_key_file_path)?;
