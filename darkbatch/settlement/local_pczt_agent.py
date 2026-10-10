@@ -896,13 +896,22 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
 
 def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
                    quote_batch_id: str | None, wait_for_confirmation: int = 0,
-                   poll_interval: float = 3.0) -> Dict[str, Any]:
+                   poll_interval: float = 3.0, settle_usdc: bool = False,
+                   minimum_zec_confirmations: int = 2,
+                   evm_wait_seconds: int = 120) -> Dict[str, Any]:
     """Submit a previously proven local V6 transaction without rebuilding/re-signing it."""
     if not quote_batch_id:
         raise AgentError("--submit-existing requires --quote-batch-id for the fully funded USDC batch")
     api_base = _validated_api_base(api_base)
     if wait_for_confirmation < 0 or poll_interval <= 0:
         raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
+    if settle_usdc:
+        if wait_for_confirmation <= 0:
+            raise AgentError("--settle-usdc requires --wait-for-confirmation > 0")
+        if minimum_zec_confirmations < 1 or evm_wait_seconds < 1:
+            raise AgentError("minimum ZEC confirmations and EVM wait timeout must be positive")
+        if not os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip():
+            raise AgentError("--settle-usdc requires DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY in the local environment")
 
     plan_path = workdir / "fba-plan.json"
     build_path = workdir / "build-report.json"
@@ -1008,28 +1017,61 @@ def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
         result["message"] = "The node-reported transaction ID did not match the local extraction report; the FBA epoch was not associated or settled."
         return result
     if wait_for_confirmation > 0:
+        required_confirmations = minimum_zec_confirmations if settle_usdc else 1
         deadline = time.monotonic() + wait_for_confirmation
+        last_seen: Dict[str, Any] | None = None
         while time.monotonic() < deadline:
             latest = _json_http(
                 api_base.rstrip("/") + f"/api/v1/settlement/tx/{result['txid']}",
                 token=token,
                 timeout=5.0,
             )
-            if latest.get("status") == "CONFIRMED" and int(latest.get("confirmations", 0)) >= 1:
-                result["status"] = "ZEC_CONFIRMED_QUOTE_RELEASE_PENDING"
+            last_seen = latest
+            if latest.get("status") == "CONFIRMED" and int(latest.get("confirmations", 0)) >= required_confirmations:
                 result["transaction_status"] = "CONFIRMED"
                 result["confirmations"] = latest.get("confirmations")
                 result["block_hash"] = latest.get("block_hash")
                 result["epoch_settled"] = False
                 result["quote_leg_status"] = latest.get("quote_leg_status", "NOT_SETTLED")
-                result["message"] = (
-                    "ZEC is confirmed on Testnet. USDC payout/release is still pending and the FBA epoch is not fully settled."
-                )
+                if settle_usdc:
+                    try:
+                        usdc = _settle_usdc_after_zec_confirmation(
+                            api_base, epoch_id, str(quote_batch_id), str(result["txid"]),
+                            plan_path, token, minimum_zec_confirmations, evm_wait_seconds,
+                        )
+                    except AgentError as exc:
+                        usdc = {
+                            "status": "USDC_RELEASE_PENDING",
+                            "epoch_settled": False,
+                            "error": str(exc),
+                            "message": "ZEC is confirmed; USDC release/finalization needs recovery. Inspect on-chain state before retrying.",
+                        }
+                    result["usdc_settlement"] = usdc
+                    if usdc.get("epoch_settled") is True and usdc.get("status") == "CLEARED":
+                        result["status"] = "CLEARED"
+                        result["epoch_settled"] = True
+                        result["quote_leg_status"] = "SETTLED"
+                        result["quote_txid"] = usdc.get("quote_txid")
+                        result["message"] = "ZEC confirmation, USDC release, and coordinator epoch finalization were all verified."
+                    else:
+                        result["status"] = "ZEC_CONFIRMED_USDC_RELEASE_PENDING"
+                        result["epoch_settled"] = False
+                        result["quote_leg_status"] = "RELEASE_PENDING"
+                        result["message"] = str(usdc.get("message") or "ZEC is confirmed; USDC release and epoch finalization remain pending.")
+                else:
+                    result["status"] = "ZEC_CONFIRMED_QUOTE_RELEASE_PENDING"
+                    result["message"] = (
+                        "ZEC is confirmed on Testnet. USDC payout/release is still pending and the FBA epoch is not fully settled."
+                    )
                 break
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
         else:
             result["status"] = "BROADCAST_PENDING_CONFIRMATION"
-            result["message"] = "No block confirmation was observed before timeout; the FBA epoch remains unsettled."
+            if last_seen and last_seen.get("status") == "CONFIRMED":
+                result["confirmations"] = last_seen.get("confirmations")
+                result["message"] = f"ZEC has some confirmations, but {required_confirmations} were required before proceeding."
+            else:
+                result["message"] = "No required block confirmation was observed before timeout; the FBA epoch remains unsettled."
     return result
 
 
@@ -1057,6 +1099,12 @@ def main() -> int:
                         help="Submit the newly proven raw V6 transaction only after API verifies funded USDC escrow")
     parser.add_argument("--wait-for-confirmation", type=int, default=0,
                         help="When broadcasting/submitting existing, poll real Testnet status for this many seconds")
+    parser.add_argument("--settle-usdc", action="store_true",
+                        help="After the required real ZEC confirmations, explicitly submit the EVM oracle attestation and USDC release, then finalize the epoch API state")
+    parser.add_argument("--minimum-zec-confirmations", type=int, default=2,
+                        help="Minimum Zebra confirmations required before --settle-usdc can submit EVM transactions")
+    parser.add_argument("--evm-wait-seconds", type=int, default=120,
+                        help="Wait limit for each EVM attestation/release receipt when --settle-usdc is enabled")
     parser.add_argument("--poll-interval", type=float, default=3.0)
     args = parser.parse_args()
     token = os.getenv(args.token_env, "").strip()
@@ -1071,6 +1119,7 @@ def main() -> int:
             result = submit_existing(
                 api_base, args.epoch_id, args.workdir.resolve(), token,
                 args.quote_batch_id, args.wait_for_confirmation, args.poll_interval,
+                args.settle_usdc, args.minimum_zec_confirmations, args.evm_wait_seconds,
             )
         else:
             if args.wallet_inventory is None:
@@ -1079,6 +1128,7 @@ def main() -> int:
                 api_base, args.epoch_id, args.wallet_inventory, args.rust_binary.resolve(),
                 args.workdir.resolve(), token, args.max_inventory_age, args.max_tip_lag, args.broadcast,
                 args.quote_batch_id, args.wait_for_confirmation, args.poll_interval,
+                args.settle_usdc, args.minimum_zec_confirmations, args.evm_wait_seconds,
             )
         print(json.dumps(result, indent=2))
         return 0
