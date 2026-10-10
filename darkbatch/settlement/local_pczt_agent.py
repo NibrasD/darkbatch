@@ -626,8 +626,8 @@ def _settle_usdc_after_zec_confirmation(
     """Explicitly attest confirmed ZEC, release the funded USDC escrow, then finalize the API epoch."""
     if not os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip():
         raise AgentError("--settle-usdc requires DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY in the local environment")
-    if minimum_zec_confirmations < 1 or evm_wait_seconds < 1:
-        raise AgentError("USDC release requires at least one ZEC confirmation and a positive EVM wait timeout")
+    if minimum_zec_confirmations < 2 or evm_wait_seconds < 1:
+        raise AgentError("USDC release requires at least two ZEC confirmations and a positive EVM wait timeout")
     if not plan_path.is_file():
         raise AgentError(f"private FBA plan is missing for USDC release: {plan_path}")
 
@@ -777,8 +777,8 @@ def finalize_usdc_existing(
     api_base = _validated_api_base(api_base)
     if not quote_batch_id:
         raise AgentError("--finalize-usdc-existing requires --quote-batch-id")
-    if minimum_zec_confirmations < 1 or evm_wait_seconds < 1:
-        raise AgentError("minimum ZEC confirmations and EVM wait timeout must be positive")
+    if minimum_zec_confirmations < 2 or evm_wait_seconds < 1:
+        raise AgentError("USDC settlement requires at least two ZEC confirmations and a positive EVM wait timeout")
     if not os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip():
         raise AgentError("--finalize-usdc-existing requires DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY in the local environment")
 
@@ -843,8 +843,8 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
             raise AgentError("--settle-usdc requires a fully funded --quote-batch-id")
         if wait_for_confirmation <= 0:
             raise AgentError("--settle-usdc requires --wait-for-confirmation > 0")
-        if minimum_zec_confirmations < 1 or evm_wait_seconds < 1:
-            raise AgentError("minimum ZEC confirmations and EVM wait timeout must be positive")
+        if minimum_zec_confirmations < 2 or evm_wait_seconds < 1:
+            raise AgentError("USDC settlement requires at least two ZEC confirmations and a positive EVM wait timeout")
         if not os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip():
             raise AgentError("--settle-usdc requires DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY in the local environment")
     _private_workdir(workdir)
@@ -1004,8 +1004,8 @@ def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
     if settle_usdc:
         if wait_for_confirmation <= 0:
             raise AgentError("--settle-usdc requires --wait-for-confirmation > 0")
-        if minimum_zec_confirmations < 1 or evm_wait_seconds < 1:
-            raise AgentError("minimum ZEC confirmations and EVM wait timeout must be positive")
+        if minimum_zec_confirmations < 2 or evm_wait_seconds < 1:
+            raise AgentError("USDC settlement requires at least two ZEC confirmations and a positive EVM wait timeout")
         if not os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip():
             raise AgentError("--settle-usdc requires DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY in the local environment")
 
