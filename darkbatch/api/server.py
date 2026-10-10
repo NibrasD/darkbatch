@@ -668,7 +668,7 @@ def submit_local_pczt_transaction(
         "transaction": record,
         "epoch_settled": False,
         "quote_leg_status": "NOT_SETTLED",
-        "message": "ZEC leg broadcast. Await a real Testnet block confirmation; USDC/quote settlement is still not implemented.",
+        "message": "ZEC leg broadcast. Await a real Testnet block confirmation; the USDC escrow is checked, but this API does not submit the EVM release transaction.",
     }
 
 
