@@ -80,7 +80,11 @@ pub struct PcztChangeOutput {
     /// FullViewingKey belonging to the input owner receiving this change.
     pub fvk_hex: String,
     pub address_raw_hex: String,
-    pub value_zat: u64,
+    /// Explicit change value for generic PCZT builds. Use null for FBA auto-allocation.
+    pub value_zat: Option<u64>,
+    /// Amount of the owner's input ZEC committed to buyer fills in an FBA build.
+    #[serde(default)]
+    pub seller_fill_zat: u64,
 }
 #[derive(Clone)]
 struct PreparedSpend {
@@ -100,6 +104,7 @@ struct PreparedChange {
     fvk: FullViewingKey,
     address: Address,
     value_zat: Option<u64>,
+    seller_fill_zat: u64,
 }
 fn ensure_fvk_owns_address(fvk: &FullViewingKey, raw_address: &[u8; 43], field: &str) -> Result<(), String> {
     let diversifier_bytes: [u8; 11] = raw_address[..11].try_into()
@@ -194,6 +199,37 @@ fn prepare_output(output: &PcztRecipient, index: usize) -> Result<PreparedOutput
     Ok(PreparedOutput { address, value_zat: output.value_zat, memo })
 }
 
+fn allocate_pro_rata(total: u64, weights: &[u64]) -> Result<Vec<u64>, String> {
+    if weights.is_empty() {
+        return Err("cannot allocate fee without change owners".into());
+    }
+    let weight_total = weights.iter().try_fold(0u128, |sum, weight| sum.checked_add(*weight as u128)
+        .ok_or_else(|| "allocation weight sum overflowed".to_string()))?;
+    if weight_total == 0 {
+        return Err("cannot allocate fee across zero residual value".into());
+    }
+    let mut shares = Vec::with_capacity(weights.len());
+    let mut remainders = Vec::with_capacity(weights.len());
+    let mut assigned = 0u64;
+    for (index, weight) in weights.iter().enumerate() {
+        let numerator = (total as u128).checked_mul(*weight as u128)
+            .ok_or_else(|| "fee allocation multiplication overflowed".to_string())?;
+        let base = (numerator / weight_total) as u64;
+        shares.push(base);
+        remainders.push((index, numerator % weight_total));
+        assigned = assigned.checked_add(base).ok_or_else(|| "fee allocation sum overflowed".to_string())?;
+    }
+    let remaining = total.checked_sub(assigned).ok_or_else(|| "fee allocation rounding error".to_string())? as usize;
+    remainders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if remaining > remainders.len() {
+        return Err("fee allocation remainder exceeded owner count".into());
+    }
+    for (index, _) in remainders.into_iter().take(remaining) {
+        shares[index] += 1;
+    }
+    Ok(shares)
+}
+
 fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), String> {
     if request.target_height < TESTNET_NU6_3_HEIGHT {
         return Err(format!("target_height must be >= Testnet NU6.3 activation height {TESTNET_NU6_3_HEIGHT}"));
@@ -219,8 +255,12 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
             let address = Address::from_raw_address_bytes(&address_bytes).into_option()
                 .ok_or_else(|| format!("change_outputs[{index}] has an invalid Ironwood address"))?;
             ensure_fvk_owns_address(&fvk, &address_bytes, &format!("change_outputs[{index}].address_raw_hex"))?;
-            zatoshis(change.value_zat, &format!("change_outputs[{index}].value_zat"))?;
-            change_templates.push(PreparedChange { fvk, address, value_zat: Some(change.value_zat) });
+            if let Some(value) = change.value_zat {
+                zatoshis(value, &format!("change_outputs[{index}].value_zat"))?;
+            }
+            change_templates.push(PreparedChange {
+                fvk, address, value_zat: change.value_zat, seller_fill_zat: change.seller_fill_zat,
+            });
         }
     } else {
         // A shared change output is only safe for a single distinct input owner.
@@ -240,7 +280,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         let address = Address::from_raw_address_bytes(&address_bytes).into_option()
             .ok_or_else(|| "change_address_raw_hex is not a valid Ironwood address".to_string())?;
         ensure_fvk_owns_address(&fvk, &address_bytes, "change_address_raw_hex")?;
-        change_templates.push(PreparedChange { fvk, address, value_zat: None });
+        change_templates.push(PreparedChange { fvk, address, value_zat: None, seller_fill_zat: 0 });
     }
     let input_total = spends.iter().try_fold(0u64, |sum, input| sum.checked_add(input.value_zat).ok_or_else(|| "input sum overflowed".to_string()))?;
     let output_total = outputs.iter().try_fold(0u64, |sum, output| sum.checked_add(output.value_zat).ok_or_else(|| "output sum overflowed".to_string()))?;
@@ -290,7 +330,62 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         .ok_or_else(|| format!("insufficient input: {input_total} zat in, {output_total} zat to recipients, ZIP 317 fee {fee} zat"))?;
     if change_total == 0 { return Err("change output would be zero; adjust inputs or recipient values".into()); }
 
-    let change_values: Vec<u64> = if change_templates.iter().all(|change| change.value_zat.is_none()) {
+    let fba_auto_change = !request.change_outputs.is_empty()
+        && change_templates.iter().all(|change| change.value_zat.is_none());
+
+    let change_values: Vec<u64> = if fba_auto_change {
+        // This mode is used for FBA fills: each buyer output is funded by an explicit amount
+        // sold by input owners. Fee shares are then allocated over each owner's residual value,
+        // and the remaining change returns to that same owner.
+        let mut owner_inputs: std::collections::BTreeMap<[u8; 96], u64> = std::collections::BTreeMap::new();
+        for spend in &spends {
+            let owner = spend.fvk.to_bytes();
+            let next = owner_inputs.get(&owner).copied().unwrap_or(0u64)
+                .checked_add(spend.value_zat).ok_or_else(|| "per-owner input sum overflowed".to_string())?;
+            owner_inputs.insert(owner, next);
+        }
+        let mut seen_change_owners = std::collections::BTreeSet::new();
+        let mut weights = Vec::with_capacity(change_templates.len());
+        let mut seller_fill_total = 0u64;
+        for change in &change_templates {
+            let owner = change.fvk.to_bytes();
+            if !seen_change_owners.insert(owner) {
+                return Err("FBA PCZT requires exactly one change allocation per input owner".into());
+            }
+            let owner_input = owner_inputs.get(&owner).copied()
+                .ok_or_else(|| "change owner has no corresponding spend input".to_string())?;
+            seller_fill_total = seller_fill_total.checked_add(change.seller_fill_zat)
+                .ok_or_else(|| "sum of seller fills overflowed".to_string())?;
+            if change.seller_fill_zat > owner_input {
+                return Err("an owner's seller fills exceed that owner's supplied inputs".into());
+            }
+            weights.push(owner_input - change.seller_fill_zat);
+        }
+        if seen_change_owners.len() != owner_inputs.len() {
+            return Err("FBA PCZT needs a change allocation for every input owner".into());
+        }
+        if seller_fill_total != output_total {
+            return Err(format!(
+                "FBA buy outputs total {output_total} zat but seller fills total {seller_fill_total} zat; refusing unbalanced batch"
+            ));
+        }
+        let weights_total = weights.iter().try_fold(0u64, |total, value| total.checked_add(*value)
+            .ok_or_else(|| "per-owner residual sum overflowed".to_string()))?;
+        if weights_total != input_total - output_total {
+            return Err("per-owner residual allocation does not match input minus recipient outputs".into());
+        }
+        let fee_shares = allocate_pro_rata(fee, &weights)?;
+        let mut values = Vec::with_capacity(weights.len());
+        for (i, (weight, fee_share)) in weights.iter().zip(fee_shares.iter()).enumerate() {
+            let value = weight.checked_sub(*fee_share)
+                .ok_or_else(|| format!("owner {i} cannot cover their allocated network fee"))?;
+            if value == 0 {
+                return Err(format!("owner {i} has no positive change after seller fill and ZIP 317 fee; use different input notes"));
+            }
+            values.push(value);
+        }
+        values
+    } else if change_templates.iter().all(|change| change.value_zat.is_none()) {
         if change_templates.len() != 1 {
             return Err("automatic change calculation is supported only for a single-owner transaction".into());
         }
@@ -355,6 +450,25 @@ pub fn build_pczt_from_files(input_json_path: &str, pczt_output_path: &str, repo
         .map_err(|e| format!("could not write PCZT: {e}"))?;
     fs::write(report_output_path, serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?)
         .map_err(|e| format!("could not write PCZT report: {e}"))?;
+    Ok(report)
+}
+
+pub fn build_fba_pczt_from_files(input_json_path: &str, pczt_output_path: &str, report_output_path: &str) -> Result<PcztBuildReport, String> {
+    let source = fs::read_to_string(input_json_path).map_err(|e| format!("could not read local FBA settlement JSON: {e}"))?;
+    let request: PcztBuildRequest = serde_json::from_str(&source).map_err(|e| format!("invalid FBA settlement JSON: {e}"))?;
+    if request.change_outputs.is_empty() {
+        return Err("FBA PCZT requires explicit change_outputs with seller fills per owner".into());
+    }
+    if request.change_outputs.iter().any(|change| change.value_zat.is_some()) {
+        return Err("FBA PCZT expects null change_outputs[].value_zat so it can allocate residuals after the ZIP 317 fee".into());
+    }
+    let (pczt, mut report) = build_pczt(&request)?;
+    report.status = "FBA_PCZT_READY_FOR_LOCAL_PARTICIPANT_SIGNATURES".into();
+    report.warning = "Built from supplied FBA buyer outputs and per-owner seller fills. Input notes/witnesses must be real/current; transaction is not broadcast or confirmed. USDC/quote-leg settlement is not implemented. PCZT data is sensitive and must remain local.".into();
+    fs::write(pczt_output_path, pczt.serialize().map_err(|e| format!("PCZT serialization failed: {e:?}"))?)
+        .map_err(|e| format!("could not write FBA PCZT: {e}"))?;
+    fs::write(report_output_path, serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?)
+        .map_err(|e| format!("could not write FBA PCZT report: {e}"))?;
     Ok(report)
 }
 
