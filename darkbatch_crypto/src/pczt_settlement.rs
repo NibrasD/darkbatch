@@ -17,6 +17,7 @@ use orchard::{
 use pczt::{
     Pczt,
     roles::{
+        combiner::Combiner,
         creator::Creator,
         io_finalizer::IoFinalizer,
         prover::Prover,
@@ -383,6 +384,24 @@ pub fn sign_pczt_from_local_key_file(pczt_input_path: &str, spending_key_file_pa
         .map_err(|e| format!("could not write signed PCZT: {e}"))?;
     Ok(())
 }
+pub fn combine_pczt_files(input_paths: &[String], output_path: &str) -> Result<(), String> {
+    if input_paths.len() < 2 {
+        return Err("provide at least two PCZT files to combine independent signature contributions".into());
+    }
+    let mut pczts = Vec::with_capacity(input_paths.len());
+    for path in input_paths {
+        let bytes = fs::read(path).map_err(|e| format!("could not read PCZT file {path}: {e}"))?;
+        let pczt = Pczt::parse(&bytes).map_err(|e| format!("file {path} is not a valid PCZT: {e:?}"))?;
+        pczts.push(pczt);
+    }
+    let combined = Combiner::new(pczts)
+        .combine()
+        .map_err(|e| format!("official PCZT Combiner rejected the contributions: {e:?}"))?;
+    fs::write(output_path, combined.serialize().map_err(|e| format!("combined PCZT serialization failed: {e:?}"))?)
+        .map_err(|e| format!("could not write combined PCZT: {e}"))?;
+    Ok(())
+}
+
 fn prove_and_extract(pczt: Pczt) -> Result<Vec<u8>, String> {
     let proving_key = orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::PostNu6_3);
     let mut rng = rand::rng();
@@ -480,7 +499,10 @@ mod tests {
         assert_eq!(encoded, decoded.serialize().expect("reserialize PCZT"));
         let signed = sign_pczt_value(pczt, report.ironwood_spend_action_indexes[0], &sk)
             .expect("sign local spend");
-        let raw = prove_and_extract(signed).expect("prove and extract real v6 transaction");
+        // A participant returns only their signed PCZT. The official Combiner merges it
+        // with the unsigned transaction skeleton without pretending the signature is a proof.
+        let combined = Combiner::new(vec![decoded, signed]).combine().expect("combine signed PCZT contribution");
+        let raw = prove_and_extract(combined).expect("prove and extract real v6 transaction");
         assert!(raw.len() > 1_000);
         assert_eq!(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), 0x8000_0006);
     }

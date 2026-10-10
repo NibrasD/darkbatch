@@ -11,7 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | sign-pczt-local | prove-extract-pczt-local]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local]");
         return;
     }
 
@@ -475,6 +475,18 @@ fn main() {
             match darkbatch_crypto::pczt_settlement::sign_pczt_from_local_key_file(pczt_input, spending_key_file, action_index, pczt_output) {
                 Ok(()) => println!("{}", serde_json::json!({"status":"PARTICIPANT_SIGNATURE_ADDED_LOCALLY","ironwood_action_index":action_index})),
                 Err(e) => { eprintln!("PCZT signing failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "combine-pczts-local" => {
+            let output = args.get(2).map(String::as_str).unwrap_or("");
+            let inputs: Vec<String> = args.iter().skip(3).cloned().collect();
+            if output.is_empty() || inputs.len() < 2 {
+                eprintln!("Usage: darkbatch_crypto combine-pczts-local <combined.pczt> <signed-a.pczt> <signed-b.pczt> [more signed PCZTs...]");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::combine_pczt_files(&inputs, output) {
+                Ok(()) => println!("{}", serde_json::json!({"status":"PCZT_CONTRIBUTIONS_COMBINED","contributions":inputs.len(),"output":output})),
+                Err(e) => { eprintln!("PCZT combination failed: {e}"); std::process::exit(1); }
             }
         }
         "prove-extract-pczt-local" => {
