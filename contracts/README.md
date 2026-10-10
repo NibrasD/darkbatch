@@ -12,6 +12,17 @@ An unconfirmed batch can become `REFUNDABLE` only after its deadline and only th
 
 The contract exposes eleven static ABI words via `getBatchStatus(bytes32)`. Word 11 is `escrowDataHash = keccak256(abi.encode(buyerAddresses, buyerAmounts, sellerAddresses, sellerAmounts))`. The coordinator compares it with the exact plan's payout arrays as well as comparing the plan hash and totals. When finalizing, the coordinator also requires the confirmed escrow batch to reference the exact ZEC TXID and block hash stored for the epoch, and verifies an EVM receipt containing the matching `BatchReleased(batchId, zecTxid)` event plus the configured minimum number of EVM confirmations.
 
+## Prepare the operator's openBatch call
+
+The helper produces and checks the exact, sorted deposit/payout arrays plus the ABI calldata; it does not sign or broadcast anything.
+
+```powershell
+$deadline = [DateTimeOffset]::UtcNow.AddMinutes(30).ToUnixTimeSeconds()
+python -m darkbatch.settlement.prepare_quote_escrow_batch --plan-json .\private\quote-plan.json --batch-id 0x<64-hex-batch-id> --deadline $deadline --output .\private\escrow-open.json
+```
+
+Review the complete manifest, especially every buyer/seller EVM address, amount, token, contract address and deadline, before using `calldata_hex` with a secure wallet/signer to call `openBatch`. This helper has no private key and cannot submit an EVM transaction.
+
 ## Build and test
 
 Install Foundry, then from the repository root run:
