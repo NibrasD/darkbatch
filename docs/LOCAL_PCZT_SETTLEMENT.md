@@ -104,25 +104,39 @@ python -m darkbatch.settlement.prepare_fba_pczt --fills-json local-fba-fills.jso
 target/release/darkbatch_crypto build-fba-pczt-local private-fba-settlement.json unsigned-fba.pczt fba-pczt-report.json
 ~~~
 
-This creates the ZEC side from a supplied FBA fill plan only. It does not automatically invoke the FBA engine or create the fill plan itself, and it does not pay USDC to sellers or collect USDC from buyers. The Rust PCZT builder includes the configured solver fee as a ZEC output when the fill result reports a non-zero fee. This fee is charged on the ZEC leg; it does not settle or replace the buyer/seller USDC quote leg. The output PCZT contains transaction-wide Note metadata for all inputs; until a redaction step is implemented and tested, do **not** distribute these PCZT files to a public coordinator or other participants. The official Combiner merges contributions, but that alone does not make their contents private.
+This creates the ZEC side from a supplied FBA fill plan only. It does not automatically invoke the FBA engine or create the fill plan itself, and it does not pay USDC to sellers or collect USDC from buyers. The Rust PCZT builder includes the configured solver fee as a ZEC output when the fill result reports a non-zero fee. This fee is charged on the ZEC leg; it does not settle or replace the buyer/seller USDC quote leg.
 
-## Create, sign, prove, extract
+The PCZT contribution flow now has a **local redaction step**. Keep the complete original unsigned PCZT and its private build JSON on the trusted local wallet/settlement machine. Never distribute that full PCZT: it contains transaction-wide note-opening metadata and Merkle witnesses.
+
+## Create, redact, sign, combine, prove, extract
 
 ~~~bash
-# Create the PCZT locally. The report remains not broadcast-ready.
-target/release/darkbatch_crypto build-pczt-local private-build.json unsigned.pczt pczt-build-report.json
+# 1. Build the full PCZT on the trusted local machine.
+target/release/darkbatch_crypto build-fba-pczt-local private-fba-settlement.json private-original-unsigned.pczt fba-pczt-report.json
 
-# Sign one Ironwood spend action locally using that participant's secret key.
-# Repeat for each spend action with the matching local key and action index.
-target/release/darkbatch_crypto sign-pczt-local unsigned.pczt seller-a-spending-key.hex 0 signed-0.pczt
+# 2. For each participant, prepare a separate redacted copy from the private original.
+# Use the Ironwood action index reported by the builder. Distribute only this file to that owner.
+target/release/darkbatch_crypto redact-pczt-local private-original-unsigned.pczt 0 participant-a-redacted.pczt
 
-# After every spend action is signed and PCZT contributions have been safely combined:
-target/release/darkbatch_crypto prove-extract-pczt-local signed-all.pczt raw-transaction.hex extraction-report.json
+# 3. The participant signs only their redacted copy with their local spending key.
+# The CLI strips note openings from the signed contribution before writing it.
+target/release/darkbatch_crypto sign-pczt-local participant-a-redacted.pczt participant-a-spending-key.hex 0 participant-a-signed-redacted.pczt
+
+# 4. Return signed-redacted contributions. Combine them with the private original as the FIRST input.
+# One signer is sufficient for a single-spender batch; add one signed-redacted file per real spender.
+target/release/darkbatch_crypto combine-pczts-local combined.pczt private-original-unsigned.pczt participant-a-signed-redacted.pczt participant-b-signed-redacted.pczt
+
+# 5. Generate the official Ironwood proof and extract the fully authorized V6 transaction.
+target/release/darkbatch_crypto prove-extract-pczt-local combined.pczt raw-transaction.hex extraction-report.json
 ~~~
 
-Each signing invocation outputs a new PCZT; do not overwrite the unsigned file. Combine signed contributions with the official Combiner, for example: target/release/darkbatch_crypto combine-pczts-local combined.pczt signed-a.pczt signed-b.pczt. Important: the current PCZTs have not had other participants' Note metadata redacted. Keep all files private on one trusted machine; this is not yet a privacy-preserving multi-party protocol.
+The redaction step removes the anchor and all Merkle witnesses from participant copies. It retains the selected owner's note data only until that owner signs; the signed contribution then strips the note opening/FVK, witnesses, output wallet metadata, and value-commitment randomness. Public transaction effects, encrypted output ciphertexts, and spend signatures remain so the official Combiner can merge each contribution into the private original. The original unsigned PCZT restores the anchor, witnesses, and proving metadata only on the trusted local machine.
 
-Successful local proof/extraction does not prove the note remains unspent at broadcast time or that Zebra accepts the transaction.
+Do not send the private original, build JSON, wallet data, spending keys, or raw witnesses to a public coordinator. Keep participant contributions local/private too; they expose public transaction effects and must be associated with the exact same PCZT/action indexes. The local redaction stage is not a replacement for an external security audit of the protocol.
+
+Each output file is new; do not overwrite the original unsigned PCZT. The combiner requires the private original as its first input and at least one signed-redacted participant contribution. Successful local proof/extraction does not prove the note remains unspent at broadcast time or that Zebra accepts the transaction.
+
+
 
 ## Optional live Testnet submission
 
