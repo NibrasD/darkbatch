@@ -581,7 +581,7 @@ def submit_local_pczt_transaction(
         recipient_total != total_buys
         or seller_fill_total != total_sells
         or recipient_count != len(buy_fills)
-        or input_count < len({str(fill.get("shielded_address", "")) for fill in sell_fills})
+        or input_count < change_count
         or change_count <= 0
         or fee_zat <= 0
         or change_zat <= 0
