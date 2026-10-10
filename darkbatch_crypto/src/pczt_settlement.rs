@@ -423,6 +423,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn input_note_address_must_belong_to_supplied_fvk() {
+        let sk_a = SpendingKey::from_bytes([1u8; 32]).into_option().expect("valid key A");
+        let sk_b = SpendingKey::from_bytes([2u8; 32]).into_option().expect("valid key B");
+        let fvk_a = FullViewingKey::from(&sk_a);
+        let fvk_b = FullViewingKey::from(&sk_b);
+        let address_a = fvk_a.address_at(0u32, Scope::External).to_raw_address_bytes();
+        assert!(ensure_fvk_owns_address(&fvk_a, &address_a, "fixture A").is_ok());
+        assert!(ensure_fvk_owns_address(&fvk_b, &address_a, "fixture A").is_err());
+    }
+
+    #[test]
     fn official_ironwood_pczt_sign_prove_extract_round_trip() {
         let sk_bytes = [1u8; 32];
         let sk = SpendingKey::from_bytes(sk_bytes).into_option().expect("valid fixture key");

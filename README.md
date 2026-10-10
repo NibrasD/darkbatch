@@ -141,6 +141,8 @@ The Python unit and end-to-end tests exercise local simulation. They are not liv
 
 ## 5. Local Demo (not a live Testnet settlement)
 
+The official-library PCZT builder/signing/proving path and the local raw-V6 Testnet submitter are documented in [docs/LOCAL_PCZT_SETTLEMENT.md](docs/LOCAL_PCZT_SETTLEMENT.md). The workflow still requires real spendable notes and current Merkle witnesses supplied by a trusted local wallet/scanner; it does not auto-discover notes or settle the USDC leg. The legacy FBA API remains blocked from live settlement.
+
 ### 1. Start Coordinator API
 ```bash
 python -m uvicorn darkbatch.api.server:app --host 127.0.0.1 --port 8000

@@ -196,6 +196,44 @@ def test_testnet_settlement_adapter_broadcast():
     assert receipt["simulation_only"] is True
 
 
+def test_broadcast_raw_transaction_requires_v6_and_never_simulates(monkeypatch):
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+
+    adapter = TestnetSettlementAdapter(rpc_url="http://test-zebra", allow_simulation=False)
+    monkeypatch.setattr(adapter, "is_live_rpc_available", lambda: True)
+    calls = []
+
+    def fake_rpc(method, params=None, timeout=3.0):
+        calls.append((method, params))
+        if method == "sendrawtransaction":
+            return "ab" * 32
+        raise AssertionError(f"Unexpected RPC method {method}")
+
+    adapter._rpc_call = fake_rpc
+    not_v6 = "02000000" + ("00" * 1200)
+    with pytest.raises(ValueError, match="Transaction V6"):
+        adapter.broadcast_raw_transaction(not_v6)
+    assert calls == []
+
+    v6_hex = "06000080" + ("00" * 1200)
+    record = adapter.broadcast_raw_transaction(v6_hex)
+    assert record["status"] == "BROADCAST_PENDING_CONFIRMATION"
+    assert record["txid"] == "ab" * 32
+    assert record["confirmations"] == 0
+    assert record["epoch_settled"] is False
+    assert record["simulation_only"] is False
+    assert calls[0][0] == "sendrawtransaction"
+
+
+def test_broadcast_raw_transaction_fails_when_testnet_rpc_is_unavailable():
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+
+    adapter = TestnetSettlementAdapter(rpc_url="", allow_simulation=False)
+    with pytest.raises(RuntimeError, match="Activated Zebra Testnet RPC is unavailable"):
+        adapter.broadcast_raw_transaction("06000080" + ("00" * 1200))
+    assert adapter.broadcast_history == {}
+
+
 def test_zebra_probe_uses_networkinfo_and_requires_activated_testnet():
     from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
 

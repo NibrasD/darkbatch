@@ -224,6 +224,52 @@ class TestnetSettlementAdapter:
         self.broadcast_history[live_txid.lower()] = record
         return record
 
+    def broadcast_raw_transaction(self, raw_tx_hex: str) -> Dict[str, Any]:
+        """
+        Submit a locally extracted V6 transaction to a real activated Zebra Testnet node.
+
+        Separate from the FBA bundle adapter: this does not associate an epoch, update balances,
+        or claim a cross-asset swap has settled. The node must accept the complete transaction.
+        """
+        if not self.is_live_rpc_available():
+            raise RuntimeError(
+                "Activated Zebra Testnet RPC is unavailable; refusing to broadcast a raw transaction."
+            )
+
+        normalized = "".join(raw_tx_hex.split()).lower()
+        if not normalized or len(normalized) % 2 or not re.fullmatch(r"[0-9a-f]+", normalized):
+            raise ValueError("raw transaction must be a non-empty even-length hexadecimal string")
+        raw = bytes.fromhex(normalized)
+        if len(raw) < 1000:
+            raise ValueError(
+                f"raw transaction is too short to be a complete shielded V6 transaction: {len(raw)} bytes"
+            )
+        if int.from_bytes(raw[:4], "little") != 0x80000006:
+            raise ValueError("raw transaction header is not Zcash Transaction V6 (0x80000006)")
+
+        txid = self._rpc_call("sendrawtransaction", [normalized], timeout=15.0)
+        if not isinstance(txid, str) or not _TXID_RE.fullmatch(txid):
+            raise RuntimeError("Zebra did not return a valid 32-byte transaction ID; broadcast status is unknown")
+
+        record = {
+            "txid": txid.lower(),
+            "status": "BROADCAST_PENDING_CONFIRMATION",
+            "network": "Zcash Testnet",
+            "source": "local official-PCZT extraction",
+            "transaction_version": 6,
+            "raw_tx_len": len(raw),
+            "confirmations": 0,
+            "block_hash": None,
+            "block_height": None,
+            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{txid.lower()}",
+            "live_node": True,
+            "simulation_only": False,
+            "epoch_settled": False,
+            "note": "Broadcast accepted by RPC only; wait for and verify block confirmation. This is not FBA/USDC settlement.",
+        }
+        self.broadcast_history[txid.lower()] = record
+        return record
+
     def get_transaction(self, txid: str) -> Optional[Dict[str, Any]]:
         """Return cached state, refreshing live transaction confirmations when possible."""
         record = self.broadcast_history.get(txid)
