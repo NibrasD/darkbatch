@@ -660,18 +660,77 @@ pub fn sign_pczt_from_local_key_file(pczt_input_path: &str, spending_key_file_pa
     Ok(())
 }
 pub fn combine_pczt_files(input_paths: &[String], output_path: &str) -> Result<(), String> {
-    if input_paths.len() < 2 {
-        return Err("provide at least two PCZT files to combine independent signature contributions".into());
+    if std::path::Path::new(output_path).exists() {
+        return Err(format!("refusing to overwrite existing combined PCZT: {output_path}"));
     }
+    if input_paths.len() < 3 {
+        return Err(
+            "provide the private original unsigned PCZT first, then at least two redacted participant contributions".into()
+        );
+    }
+
     let mut pczts = Vec::with_capacity(input_paths.len());
     for path in input_paths {
         let bytes = fs::read(path).map_err(|e| format!("could not read PCZT file {path}: {e}"))?;
         let pczt = Pczt::parse(&bytes).map_err(|e| format!("file {path} is not a valid PCZT: {e:?}"))?;
         pczts.push(pczt);
     }
+
+    // The first file must be the private, full coordinator copy. It is never distributed to
+    // participants; it restores the real note openings and Merkle witnesses omitted from each
+    // redacted signed contribution.
+    let base = &pczts[0];
+    if base.ironwood().anchor().is_none()
+        || !base.ironwood().actions().iter().any(|action| {
+            action.spend().witness().is_some() && action.spend().spend_auth_sig().is_none()
+        })
+    {
+        return Err(
+            "first PCZT is not a complete private unsigned base (expected an Ironwood anchor and at least one witnessed unsigned spend)".into()
+        );
+    }
+
+    for (offset, contribution) in pczts.iter().enumerate().skip(1) {
+        if contribution.ironwood().actions().len() != base.ironwood().actions().len() {
+            return Err(format!("participant contribution {} has a different Ironwood action count", input_paths[offset]));
+        }
+        if contribution.ironwood().anchor().is_some()
+            || contribution.ironwood().actions().iter().any(|action| action.spend().witness().is_some())
+        {
+            return Err(format!(
+                "participant contribution {} contains anchor/witness data; distribute only redacted PCZTs created by redact-pczt-local",
+                input_paths[offset]
+            ));
+        }
+
+        // Require that the contribution really adds a signature absent from the base. This
+        // also prevents accidentally treating an unsigned PCZT copy as a participant response.
+        let has_new_signature = base.ironwood().actions().iter()
+            .zip(contribution.ironwood().actions().iter())
+            .any(|(base_action, participant_action)| {
+                base_action.spend().spend_auth_sig().is_none()
+                    && participant_action.spend().spend_auth_sig().is_some()
+            });
+        if !has_new_signature {
+            return Err(format!(
+                "participant contribution {} adds no spend authorization signature",
+                input_paths[offset]
+            ));
+        }
+    }
+
     let combined = Combiner::new(pczts)
         .combine()
         .map_err(|e| format!("official PCZT Combiner rejected the contributions: {e:?}"))?;
+
+    // The combined object must again contain the private inputs and witnesses needed by the
+    // official proof generator; if the original base was omitted or redacted, fail here.
+    if combined.ironwood().anchor().is_none()
+        || !combined.ironwood().actions().iter().any(|action| action.spend().witness().is_some())
+    {
+        return Err("combined PCZT is missing its original anchor/witnesses; no output was written".into());
+    }
+
     let combined_bytes = combined.serialize().map_err(|e| format!("combined PCZT serialization failed: {e:?}"))?;
     write_private_file(output_path, &combined_bytes)?;
     Ok(())
