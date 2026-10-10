@@ -485,6 +485,12 @@ def test_persisted_epoch_lookup_recovers_quote_metadata_after_restart(monkeypatc
     assert recovered["target_height"] == 4_500_100
     assert recovered["consensus_branch_id"] == "0x77190ad9"
 
+    with pytest.raises(RuntimeError, match="exact broadcast TXID"):
+        repo.record_epoch_zec_confirmed(42, "99" * 32, block_hash)
+    still_pending = repo.get_epoch_by_txid(txid)
+    assert still_pending["status"] == "ZEC_LEG_PENDING"
+    assert still_pending["block_hash"] is None
+
     repo.record_epoch_zec_confirmed(42, txid, block_hash)
     confirmed = repo.get_epoch_by_txid(txid)
     assert confirmed["status"] == "ZEC_CONFIRMED_QUOTE_PENDING"
