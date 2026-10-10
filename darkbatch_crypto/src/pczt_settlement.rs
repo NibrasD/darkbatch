@@ -580,6 +580,7 @@ fn redact_pczt_for_participant_value(pczt: Pczt, action_index: usize) -> Result<
                         action.clear_spend_fvk();
                         action.clear_spend_alpha();
                         action.clear_spend_zip32_derivation();
+                        action.clear_spend_dummy_sk();
                         action.clear_spend_proprietary();
                     }
                 });
