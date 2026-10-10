@@ -187,6 +187,8 @@ def _validated_candidates(wallet: Dict[str, Any], label: str) -> List[Dict[str, 
         if note.get("unspent") is not True or note.get("locked") is True or note.get("spent") is True:
             continue
         try:
+            if str(note.get("pool", "")).lower() != "ironwood":
+                continue
             if int(note.get("confirmations", 0)) < 1:
                 continue
             amount = int(note["value_zat"])
@@ -351,6 +353,11 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
                 "merkle_position": note["_position"],
                 "merkle_path_hex": note["_path"],
             })
+    # One nullifier/outpoint must never be proposed twice, even if inventory entries were
+    # duplicated across diversified receiver addresses.
+    outpoints = [note["_id"] for owner in owners for note in owner["selected"]]
+    if len(outpoints) != len(set(outpoints)):
+        raise AgentError("selected Notes contain duplicate transaction outpoints across seller wallets")
     request = {
         "target_height": target_height,
         "ironwood_anchor_hex": anchor_hex,
@@ -471,7 +478,7 @@ def _retry_with_more_notes(binary: Path, workdir: Path, request: Dict[str, Any],
 
 def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
               workdir: Path, token: str, max_age: int, max_tip_lag: int,
-              broadcast: bool) -> Dict[str, Any]:
+              broadcast: bool, quote_batch_id: str | None = None) -> Dict[str, Any]:
     _private_workdir(workdir)
     snapshot = json.loads(inventory_path.read_text(encoding="utf-8"))
     server_status = _json_http(api_base.rstrip("/") + "/api/v1/settlement/testnet-status")
@@ -484,6 +491,14 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
         raise AgentError("API did not return the expected private FBA PCZT plan")
     if plan.get("status") != "LOCAL_PCZT_REQUIRED":
         raise AgentError(f"epoch is not ready for local PCZT: {plan.get('status')}")
+    # Keep the canonical plan as a private artifact for the escrow registrar. Never publish
+    # it publicly: it includes participant addresses, fills, and individual quote amounts.
+    plan_artifact = workdir / "fba-plan.json"
+    _write_private_json(plan_artifact, plan)
+    if broadcast and not quote_batch_id:
+        raise AgentError("--broadcast requires --quote-batch-id for a pre-funded USDC escrow batch")
+    if broadcast and plan.get("quote_escrow_ready") is not True:
+        raise AgentError("the signed quote plan is incomplete; cannot broadcast ZEC without exact USDC obligations")
 
     request, signing_rows = _build_request(plan, wallets, anchor_hex, target_height)
     reports, raw_tx_hex = _run_full_pczt(binary, workdir, request, signing_rows)
@@ -518,6 +533,7 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
         return result
     submit_body = {
         "epoch_id": epoch_id,
+        "quote_batch_id": quote_batch_id,
         "txid": proof_report["txid"],
         "raw_tx_hex": raw_tx_hex,
         "build_report": build_report,
@@ -552,8 +568,10 @@ def main() -> int:
                         help="Environment variable holding the coordinator's local settlement token")
     parser.add_argument("--max-inventory-age", type=int, default=300)
     parser.add_argument("--max-tip-lag", type=int, default=12)
+    parser.add_argument("--quote-batch-id", default=os.getenv("DARKBATCH_USDC_BATCH_ID"),
+                        help="Pre-funded on-chain USDC escrow batch ID (bytes32 hex)")
     parser.add_argument("--broadcast", action="store_true",
-                        help="Submit the proven raw V6 transaction to Testnet; never settles the USDC leg")
+                        help="Submit the proven raw V6 transaction only after API verifies fully funded USDC escrow")
     args = parser.parse_args()
     token = os.getenv(args.token_env, "").strip()
     if not token:
@@ -563,6 +581,7 @@ def main() -> int:
         result = run_agent(
             args.api_base, args.epoch_id, args.wallet_inventory, args.rust_binary.resolve(),
             args.workdir.resolve(), token, args.max_inventory_age, args.max_tip_lag, args.broadcast,
+            args.quote_batch_id,
         )
         print(json.dumps(result, indent=2))
         return 0
