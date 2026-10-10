@@ -21,7 +21,7 @@
 
 ## 1. Executive Summary & Design Philosophy
 
-**DarkBatch** is an experimental FBA matching prototype exploring private order matching and shielded Zcash settlement. It explores uniform-price batch matching for shielded Zcash. Real ZEC settlement is not implemented end-to-end and live transaction broadcasting is deliberately disabled.
+**DarkBatch** is an experimental FBA matching prototype exploring private order matching and shielded Zcash settlement. It explores uniform-price batch matching for shielded Zcash. Automated FBA settlement is not implemented end-to-end and the FBA API is blocked from broadcasting its legacy assembler output. A separate trusted-local CLI can submit a manually extracted V6 transaction to Zebra Testnet.
 
 ### Intended Architecture (not end-to-end complete)
 The following describes the intended design; it is not a claim of production or consensus correctness:
@@ -33,7 +33,7 @@ The following describes the intended design; it is not a claim of production or 
 
 ## 2. Experimental Cryptographic Work (not a consensus implementation)
 
-### A. Authentic Pallas Curve Cryptography (`darkbatch_crypto`)
+### A. Rust Pallas and Zcash Cryptographic Components
 * Implemented in Rust using `pasta_curves = "0.6"` ($y^2 = x^3 + 5$ over $\mathbb{F}_p$) and official Zcash crates (`orchard = "0.16.0"`, `reddsa = "0.6"`, `blake2b_simd = "1.0"`).
 * **Protocol-Compliant Generator Derivation (Zcash Specification § 5.4.9.4):**
   $$\mathcal{V}^{\text{Orchard}} = \mathrm{GroupHash}^{\mathbb{P}}(\texttt{"z.cash:Orchard-cv"}, \texttt{"v"})$$
@@ -49,7 +49,7 @@ The following describes the intended design; it is not a claim of production or 
 * $rk$ is embedded at offset 64..96 of each 820-byte `OrchardAction`.
 * The spend authorization signature in `vSpendAuthSigsIronwood` is signed by $rsk$ over the canonical SIGHASH digest and verifies mathematically against $rk$ ($rk.\mathrm{verify}(sighash, sig) == \mathrm{Ok(())}$).
 
-### C. Authentic Zcash Orchard Note Encryption (§ 5.4.3.4 & § 5.4.3.5)
+### C. Orchard Note-Encryption Components (§ 5.4.3.4 & § 5.4.3.5)
 * **Key Agreement on Pallas:**
   - $g_d = \mathrm{DiversifyHash}(d)$
   - $epk = [esk] \cdot g_d$
@@ -118,7 +118,7 @@ cargo test --manifest-path darkbatch_crypto/Cargo.toml --release
 The Rust tests cover components of the repository; they do not establish that an assembled transaction is accepted by Zebra or spends real ZEC. The new official PCZT build/sign/combiner/prove/extract test has not yet been observed running in CI because GitHub did not assign a runner to recent jobs.
 * `test_zip229_consensus_constants`: Verifies `VERSION_GROUP_ID_V6 == 0xD884B698` and branch `0x37A5165B`.
 * `test_orchard_action_exact_820_bytes`: Verifies exact 820-byte serialization per § 7.5.
-* `test_authentic_zcash_note_encryption_roundtrip`: Verifies RFC 8439 580-byte note encryption and IVK decryption.
+* `test_authentic_zcash_note_encryption_roundtrip`: Exercises the local note-encryption round trip; this component test does not validate a spendable on-chain transaction.
 * `test_authentic_randomized_spend_auth`: Verifies RedPallas $rsk \to rk$ verification.
 * `test_zip244_hierarchical_txid`: Verifies ZIP 229 § 7.1 tree of digests.
 * `test_orchard_circuit_keys`: Verifies `OrchardCircuitVersion::PostNu6_3` Halo 2 parameter generation.

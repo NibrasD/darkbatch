@@ -374,7 +374,8 @@ def get_testnet_status():
         "testnet_activation_height": 4134000,
         "live_rpc_connected": live_rpc,
         "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else None,
-        "live_broadcast_enabled": bool(live_rpc and bundle_builder_is_live_safe),
+        "fba_live_broadcast_enabled": bool(live_rpc and bundle_builder_is_live_safe),
+        "local_raw_v6_submission_available": True,
         "live_broadcast_block_reason": None if bundle_builder_is_live_safe else (
             "Legacy assembler is not certified for live broadcast; valid participant spend inputs, "
             "cooperative PCZT authorization, and matching Halo 2 proofs are not implemented."

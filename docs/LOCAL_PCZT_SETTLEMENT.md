@@ -72,7 +72,7 @@ If the FBA matching engine has already produced buyer fills and seller fills, a 
 - `fvk_hex`: the FVK for that seller's real spend input notes.
 - `address_raw_hex`: that seller's own change receiver.
 - `value_zat`: `null`, so the builder can calculate change after the ZIP 317 fee.
-- `seller_fill_zat`: the sum of that owner's matched sell fills, in zatoshis.
+- `seller_fill_zat`: the sum of that owner's matched sell fills plus any solver-fee share allocated to them, in zatoshis. When the solver fee is zero, this equals the matched sell-fill total.
 
 Example of a single seller's allocation:
 
@@ -89,7 +89,7 @@ Example of a single seller's allocation:
 
 The builder rejects the plan unless total buyer ZEC outputs equal total seller fill ZEC, each seller fill is covered by that owner's input notes, every input owner has a change allocation, the ownership/address check passes, each witness resolves to the shared anchor, and the final outputs plus network fee balance the input value. The ZIP 317 network fee is allocated deterministically over sellers' residual value; if an owner cannot cover their share or would receive zero change, use different input notes rather than silently shifting their change to another wallet. If the local FBA result has a non-zero solver fee, the preparer converts that fee to zatoshis, adds a separate output to the configured solver receiver, and allocates that amount across the seller owners. Seller change allocations in the generated request therefore include both each seller's matched ZEC fill and that seller's fee share.
 
-Before invoking the command, buyer receiver addresses must be resolved to actual 43-byte Ironwood receiver encodings and the seller input notes and witnesses must be taken from a trusted local wallet/scanner. The local preparer solves the pending orders in the local SQLite epoch when no fill JSON is supplied, maps buyer intent IDs to the raw receivers supplied in the private wallet file, groups seller fills by FVK, and allocates the configured solver fee to its explicit receiver. It requires the wallet file to supply real spendable notes and current witnesses. The Rust builder then verifies that buyer outputs plus solver-fee output equal seller fills plus the solver fee and enforces input/change/network-fee conservation.
+Before invoking the command, buyer receiver addresses must be resolved to actual 43-byte Ironwood receiver encodings and the seller input notes and witnesses must be taken from a trusted local wallet/scanner. The local preparer solves the pending orders in the local SQLite epoch when no fill JSON is supplied, maps buyer intent IDs to the raw receivers supplied in the private wallet file, groups seller fills by FVK, and allocates the configured solver fee to its explicit receiver. If the local solver fee is non-zero, this workflow charges it as an additional ZEC output from seller inputs; it is not the USDC quote-asset fee. It requires the wallet file to supply real spendable notes and current witnesses. The Rust builder then verifies that buyer outputs plus solver-fee output equal seller fills plus the solver fee and enforces input/change/network-fee conservation.
 
 Run it with:
 
