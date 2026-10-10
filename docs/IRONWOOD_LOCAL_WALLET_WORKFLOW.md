@@ -77,6 +77,15 @@ After reviewing the returned build/proof reports and ensuring the exact USDC pla
 python -m darkbatch.settlement.local_pczt_agent --epoch-id <epoch-id> --wallet-inventory private/wallet_inventory.json --workdir private/pczt-<epoch-id> --broadcast --quote-batch-id <bytes32-batch-id> --wait-for-confirmation 120
 ```
 
-The coordinator verifies the PCZT build/proof report, matching transaction ID, current Testnet consensus branch, and funded USDC escrow before submitting raw V6 bytes to Zebra. Broadcast acceptance is not confirmation. The USDC leg remains unsettled until the separate local oracle verifies the confirmed ZEC transaction and the corresponding on-chain USDC release. Do not report the epoch as settled until the API verifies both legs and persists the resulting state.
+To explicitly request the complete Testnet flow — wait for at least two ZEC confirmations, submit the configured EVM oracle attestation, release USDC, and ask the coordinator to verify and finalize the epoch — set the configured oracle private key only in the local environment and add `--settle-usdc`:
+
+```bash
+# Explicitly signs and submits EVM transactions. The key must belong to the oracle configured in the escrow.
+python -m darkbatch.settlement.local_pczt_agent --epoch-id <epoch-id> --wallet-inventory private/wallet_inventory.json --workdir private/pczt-<epoch-id> --broadcast --quote-batch-id <bytes32-batch-id> --wait-for-confirmation 300 --minimum-zec-confirmations 2 --settle-usdc
+```
+
+This option requires `DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY`, `DARKBATCH_SETTLEMENT_TOKEN`, and the existing Zebra/EVM RPC and escrow configuration. It is opt-in and does not run in the default build/prove or broadcast path. If either the EVM receipt or coordinator finalization is pending, the command reports a pending state and does **not** label the epoch `CLEARED`; inspect the on-chain escrow and API state before retrying.
+
+The coordinator verifies the PCZT build/proof report, matching transaction ID, current Testnet consensus branch, and funded USDC escrow before submitting raw V6 bytes to Zebra. Broadcast acceptance is not confirmation. Even with `--settle-usdc`, the epoch is reported settled only after Zebra confirms ZEC, the configured oracle verifies and releases the exact USDC escrow, and the coordinator's quote-finalize route verifies the release receipt and persists the resulting state.
 
 This workflow is a local integration path, not a substitute for a security audit. Do not use mainnet funds without independent review of the Rust build, participant authorization flow, coordinator, Zebra integration, and escrow/oracle contracts.
