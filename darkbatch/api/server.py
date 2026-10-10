@@ -506,6 +506,7 @@ def preflight_quote_batch(
         "epoch_id": req.epoch_id,
         "quote_batch_id": req.quote_batch_id,
         "quote_plan_hash": quote_plan_hash(plan),
+        "quote_escrow_data_hash": quote_lock["escrow_data_hash"],
         "quote_total_micro": int(plan["quote_total_micro"]),
         "chain_id": int(quote_lock["chain_id"]),
         "deadline": int(quote_lock["deadline"]),
@@ -634,6 +635,7 @@ def submit_local_pczt_transaction(
             "consensus_branch_id": expected_branch,
             "quote_batch_id": req.quote_batch_id,
             "quote_plan_hash": quote_plan_hash(plan),
+            "quote_escrow_data_hash": quote_lock["escrow_data_hash"],
             "quote_total_micro": int(plan["quote_total_micro"]),
             "quote_chain_id": int(quote_lock["chain_id"]),
         })
@@ -657,6 +659,7 @@ def submit_local_pczt_transaction(
         "intent_ids": plan["intent_ids"],
         "quote_batch_id": req.quote_batch_id,
         "quote_plan_hash": quote_plan_hash(plan),
+        "quote_escrow_data_hash": quote_lock["escrow_data_hash"],
         "quote_total_micro": int(plan["quote_total_micro"]),
         "quote_chain_id": int(quote_lock["chain_id"]),
         "build_report_input_total_zat": input_total,
@@ -730,6 +733,7 @@ def finalize_quote_leg(
             plan_hash,
             quote_total,
             req.quote_release_txid,
+            str(record.get("quote_escrow_data_hash", "")),
         )
     except QuoteEscrowError as exc:
         raise HTTPException(status_code=409, detail=f"USDC payout is not verified; epoch remains pending: {exc}")

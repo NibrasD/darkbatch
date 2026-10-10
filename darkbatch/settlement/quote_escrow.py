@@ -108,6 +108,68 @@ def quote_plan_hash(plan: Dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def quote_escrow_batch_arrays(plan: Dict[str, Any]) -> Dict[str, list[Any]]:
+    """Canonical payout arrays used by DarkBatchQuoteEscrow.openBatch."""
+    data = quote_plan_commitment_data(plan)
+
+    def rows(key: str) -> list[dict[str, Any]]:
+        return sorted(
+            data[key],
+            key=lambda row: (row["quote_address"].lower(), int(row["quote_amount_micro"])),
+        )
+
+    buyers = rows("buy_fills")
+    sellers = rows("sell_fills")
+    return {
+        "buyer_addresses": [row["quote_address"] for row in buyers],
+        "buyer_amounts_micro": [int(row["quote_amount_micro"]) for row in buyers],
+        "seller_addresses": [row["quote_address"] for row in sellers],
+        "seller_amounts_micro": [int(row["quote_amount_micro"]) for row in sellers],
+    }
+
+
+def _abi_word_uint(value: int) -> bytes:
+    if isinstance(value, bool) or int(value) < 0 or int(value) >= 2**256:
+        raise QuoteEscrowError("ABI uint256 value is outside its valid range")
+    return int(value).to_bytes(32, "big")
+
+
+def _abi_word_address(value: str) -> bytes:
+    if not _ADDRESS_RE.fullmatch(value):
+        raise QuoteEscrowError("ABI address array contains an invalid EVM address")
+    return bytes.fromhex(value[2:]).rjust(32, bytes([0]))
+
+
+def _abi_array(values: list[Any], encoder) -> bytes:
+    return _abi_word_uint(len(values)) + b"".join(encoder(value) for value in values)
+
+
+def quote_escrow_data_hash(plan: Dict[str, Any]) -> str:
+    """Keccak-256 of abi.encode(buyers, buyerAmounts, sellers, sellerAmounts)."""
+    arrays = quote_escrow_batch_arrays(plan)
+    tails = [
+        _abi_array(arrays["buyer_addresses"], _abi_word_address),
+        _abi_array(arrays["buyer_amounts_micro"], _abi_word_uint),
+        _abi_array(arrays["seller_addresses"], _abi_word_address),
+        _abi_array(arrays["seller_amounts_micro"], _abi_word_uint),
+    ]
+    offset = 32 * len(tails)
+    offsets = []
+    for tail in tails:
+        offsets.append(_abi_word_uint(offset))
+        offset += len(tail)
+    encoded = b"".join(offsets) + b"".join(tails)
+    try:
+        from Crypto.Hash import keccak
+    except ImportError as exc:
+        raise QuoteEscrowError(
+            "EVM escrow verification requires pycryptodome; install requirements.txt"
+        ) from exc
+    digest = keccak.new(digest_bits=256)
+    digest.update(encoded)
+    return digest.hexdigest()
+
+
 def _rpc(url: str, method: str, params: list[Any]) -> Any:
     request = urllib.request.Request(
         url,
@@ -211,6 +273,10 @@ def _read_batch(batch_id: str) -> Dict[str, Any]:
     }, "latest"])
     if not isinstance(result, str) or not result.startswith("0x"):
         raise QuoteEscrowError("USDC escrow contract returned no ABI status")
+    if len(result.removeprefix("0x")) < 11 * 64:
+        raise QuoteEscrowError(
+            "escrow does not expose the 11th getBatchStatus word (escrowDataHash); deploy the updated contract"
+        )
     return {
         "status_code": _uint_word(result, 0),
         "plan_hash": _bytes32_word(result, 1),
@@ -222,6 +288,7 @@ def _read_batch(batch_id: str) -> Dict[str, Any]:
         "token_address": _address_word(result, 7),
         "zec_txid": _bytes32_word(result, 8),
         "zec_block_hash": _bytes32_word(result, 9),
+        "escrow_data_hash": _bytes32_word(result, 10),
         "batch_id": "0x" + batch_hex,
         "chain_id": actual_chain,
         "escrow_address": cfg["escrow_address"],
@@ -232,12 +299,15 @@ def _read_batch(batch_id: str) -> Dict[str, Any]:
 def verify_funded_quote_batch(batch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     """Refuse ZEC broadcast unless every USDC buyer has locked the exact committed amount."""
     expected_hash = quote_plan_hash(plan)
+    expected_data_hash = quote_escrow_data_hash(plan)
     expected_total = int(plan["quote_total_micro"])
     batch = _read_batch(batch_id)
     if batch["status_code"] != STATUS_FUNDED:
         raise QuoteEscrowError(f"USDC escrow batch is not fully funded (status={batch['status_code']})")
     if batch["plan_hash"] != expected_hash:
         raise QuoteEscrowError("USDC escrow plan hash does not match the current signed FBA fill plan")
+    if batch["escrow_data_hash"] != expected_data_hash:
+        raise QuoteEscrowError("USDC escrow's committed buyer/seller addresses or amounts do not match the FBA plan")
     if (
         batch["buyer_total_micro"] != expected_total
         or batch["seller_total_micro"] != expected_total
@@ -254,6 +324,7 @@ def verify_funded_quote_batch(batch_id: str, plan: Dict[str, Any]) -> Dict[str, 
         **batch,
         "plan_hash": expected_hash,
         "quote_total_micro": expected_total,
+        "escrow_data_hash": expected_data_hash,
     }
 
 
@@ -262,6 +333,7 @@ def verify_released_quote_batch_by_hash(
     expected_plan_hash: str,
     expected_total_micro: int,
     release_txid: str,
+    expected_escrow_data_hash: str,
 ) -> Dict[str, Any]:
     """Verify an EVM batch is RELEASED for the plan attached to a confirmed ZEC transaction."""
     normalized_hash = str(expected_plan_hash).lower().removeprefix("0x")
@@ -270,6 +342,9 @@ def verify_released_quote_batch_by_hash(
     batch = _read_batch(batch_id)
     if batch["status_code"] != STATUS_RELEASED:
         raise QuoteEscrowError(f"USDC escrow has not released payouts (status={batch['status_code']})")
+    normalized_data_hash = str(expected_escrow_data_hash).lower().removeprefix("0x")
+    if not _BYTES32_RE.fullmatch(normalized_data_hash) or batch["escrow_data_hash"] != normalized_data_hash:
+        raise QuoteEscrowError("released USDC buyer/seller amounts differ from the batch verified before ZEC broadcast")
     if batch["plan_hash"] != normalized_hash:
         raise QuoteEscrowError("released USDC batch belongs to a different FBA quote plan")
     if batch["buyer_total_micro"] != int(expected_total_micro) or batch["seller_total_micro"] != int(expected_total_micro):
@@ -294,11 +369,14 @@ def verify_released_quote_batch(batch_id: str, plan: Dict[str, Any],
                                 release_txid: str) -> Dict[str, Any]:
     """Verify the escrow is RELEASED and the associated EVM release transaction succeeded."""
     expected_hash = quote_plan_hash(plan)
+    expected_data_hash = quote_escrow_data_hash(plan)
     batch = _read_batch(batch_id)
     if batch["status_code"] != STATUS_RELEASED:
         raise QuoteEscrowError(f"USDC escrow has not released payouts (status={batch['status_code']})")
     if batch["plan_hash"] != expected_hash:
         raise QuoteEscrowError("released USDC batch belongs to a different FBA quote plan")
+    if batch["escrow_data_hash"] != expected_data_hash:
+        raise QuoteEscrowError("released USDC buyer/seller addresses or amounts do not match the FBA plan")
     if batch["buyer_total_micro"] != int(plan["quote_total_micro"]) or batch["seller_total_micro"] != int(plan["quote_total_micro"]):
         raise QuoteEscrowError("released USDC totals do not match the FBA quote")
     if batch["token_address"] != batch["expected_token_address"]:
