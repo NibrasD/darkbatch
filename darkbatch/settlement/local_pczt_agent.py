@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -36,6 +37,17 @@ PLAN_SCHEMA = "darkbatch.fba-local-pczt-plan.v1"
 
 class AgentError(RuntimeError):
     pass
+
+
+def _validated_api_base(value: str) -> str:
+    normalized = value.rstrip("/")
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise AgentError("API base must be a valid HTTP(S) URL")
+    if parsed.scheme != "https" and host not in {"127.0.0.1", "localhost", "::1"}:
+        raise AgentError("settlement token cannot be sent over remote plain HTTP; use HTTPS")
+    return normalized
 
 
 def _json_http(url: str, *, method: str = "GET", token: str | None = None,
@@ -513,6 +525,7 @@ def _retry_with_more_notes(binary: Path, workdir: Path, request: Dict[str, Any],
 def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
               workdir: Path, token: str, max_age: int, max_tip_lag: int,
               broadcast: bool, quote_batch_id: str | None = None) -> Dict[str, Any]:
+    api_base = _validated_api_base(api_base)
     _private_workdir(workdir)
     snapshot = json.loads(inventory_path.read_text(encoding="utf-8"))
     server_status = _json_http(api_base.rstrip("/") + "/api/v1/settlement/testnet-status")
@@ -604,6 +617,7 @@ def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
     """Submit a previously proven local V6 transaction without rebuilding/re-signing it."""
     if not quote_batch_id:
         raise AgentError("--submit-existing requires --quote-batch-id for the fully funded USDC batch")
+    api_base = _validated_api_base(api_base)
     if wait_for_confirmation < 0 or poll_interval <= 0:
         raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
 
