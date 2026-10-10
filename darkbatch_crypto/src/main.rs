@@ -513,8 +513,8 @@ fn main() {
         "combine-pczts-local" => {
             let output = args.get(2).map(String::as_str).unwrap_or("");
             let inputs: Vec<String> = args.iter().skip(3).cloned().collect();
-            if output.is_empty() || inputs.len() < 3 {
-                eprintln!("Usage: darkbatch_crypto combine-pczts-local <combined.pczt> <private-original-unsigned.pczt> <signed-redacted-a.pczt> <signed-redacted-b.pczt> [more signed-redacted PCZTs...]");
+            if output.is_empty() || inputs.len() < 2 {
+                eprintln!("Usage: darkbatch_crypto combine-pczts-local <combined.pczt> <private-original-unsigned.pczt> <signed-redacted-a.pczt> [more signed-redacted PCZTs...]");
                 std::process::exit(2);
             }
             match darkbatch_crypto::pczt_settlement::combine_pczt_files(&inputs, output) {
