@@ -675,6 +675,10 @@ def _settle_usdc_after_zec_confirmation(
     if not isinstance(oracle, dict):
         raise AgentError("USDC oracle returned a non-object response; inspect escrow state before retrying")
 
+    # Keep the non-secret oracle receipts locally so a later finalization-only recovery can
+    # reuse the exact release transaction hash instead of submitting a second release.
+    oracle_artifact = plan_path.parent / "usdc-oracle-result.json"
+    _write_private_json(oracle_artifact, oracle)
     result: Dict[str, Any] = {"oracle": oracle, "epoch_settled": False}
     if oracle.get("status") != "USDC_RELEASED":
         result["status"] = str(oracle.get("status") or "USDC_RELEASE_PENDING")
@@ -686,9 +690,27 @@ def _settle_usdc_after_zec_confirmation(
 
     release = oracle.get("release_transaction")
     release_txid = str(release.get("transaction_hash", "")).strip() if isinstance(release, dict) else ""
+    if not release_txid and oracle_artifact.is_file():
+        try:
+            saved_oracle = json.loads(oracle_artifact.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            saved_oracle = {}
+        saved_zec = saved_oracle.get("zec") if isinstance(saved_oracle, dict) else None
+        saved_batch = str(saved_oracle.get("batch_id", "")).lower().removeprefix("0x") if isinstance(saved_oracle, dict) else ""
+        saved_epoch = saved_oracle.get("epoch_id") if isinstance(saved_oracle, dict) else None
+        saved_txid = str(saved_zec.get("txid", "")).lower() if isinstance(saved_zec, dict) else ""
+        saved_release = saved_oracle.get("release_transaction") if isinstance(saved_oracle, dict) else None
+        if (
+            saved_oracle.get("status") == "USDC_RELEASED"
+            and saved_epoch == epoch_id
+            and saved_batch == quote_batch_id.lower().removeprefix("0x")
+            and saved_txid == txid.lower().removeprefix("0x")
+            and isinstance(saved_release, dict)
+        ):
+            release_txid = str(saved_release.get("transaction_hash", "")).strip()
     if not release_txid:
         result["status"] = "USDC_RELEASED_FINALIZATION_PENDING"
-        result["message"] = "Oracle reports USDC released but did not return the EVM release transaction hash."
+        result["message"] = "Oracle reports USDC released but no matching local EVM release transaction hash is available."
         return result
 
     try:
