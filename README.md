@@ -1,27 +1,37 @@
 # DarkBatch 🛡️⚖️
-### Confidential Intent-Based Frequent Batch Auction (FBA) & RFQ Protocol with ZIP-229 Settlement for Shielded Zcash (Ironwood Era)
+### Experimental FBA / PCZT Settlement Prototype — Live Settlement Disabled
 
 [![Zcash Protocol](https://img.shields.io/badge/Zcash-NU6.3%20Ironwood-blue.svg)](https://z.cash)
 [![Specification](https://img.shields.io/badge/Spec-ZIP--229%20v6%20(0xD884B698)-amber.svg)](https://zips.z.cash/zip-0229)
 [![Rust Engine](https://img.shields.io/badge/Rust-pasta__curves%20Pallas-orange.svg)](https://crates.io/crates/pasta_curves)
-[![MEV Protection](https://img.shields.io/badge/MEV%20Protection-100%25%20FBA-emerald.svg)]()
+[![Stage](https://img.shields.io/badge/stage-experimental--prototype-amber.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)]()
 
 ---
 
+> **Current implementation status — not production-ready for real ZEC settlement**
+>
+> The FBA matching engine and cryptographic experiments are a prototype. The built-in wallets, balances, notes, anchors and mined blocks are local simulation data; the local simulator is **not Zebra** and does not verify Zcash consensus.
+>
+> The current settlement builder does not yet construct a complete cooperative PCZT transaction from participants' real unspent notes, Merkle witnesses, spend-authorizing keys/signatures, and a matching multi-action Halo 2 proof. Its output is therefore explicitly marked unsafe for live broadcast. The API now fails closed: it will not silently substitute local simulation for Testnet, does not assign fake confirmations, and will not mark an epoch as settled when the transaction is only simulated or merely broadcast.
+>
+> Passing unit tests demonstrates the tested local logic only; it is not evidence that a transaction is accepted by Zebra or can spend real ZEC. Do not use this prototype for real funds.
+>
+> The on-chain settlement flow remains blocked until real-note selection, participant-side PCZT construction/authorization, official transaction validation, and confirmation tracking are implemented and tested against an activated Zebra Testnet node.
+
 ## 1. Executive Summary & Design Philosophy
 
-**DarkBatch** is an institutional-grade, MEV-free decentralized exchange primitive engineered for the **Zcash Ironwood shielded ecosystem**. Inspired by the venture success of **Archer Exchange** (4th Place DeFi, Colosseum Cypherpunk) and the mathematical foundations of **Frequent Batch Auctions (FBA)**, DarkBatch solves the single greatest barrier facing shielded ZEC adoption: **private, zero-slippage, front-running-immune liquidity**.
+**DarkBatch** is an experimental FBA matching prototype exploring private order matching and shielded Zcash settlement. It explores uniform-price batch matching for shielded Zcash. Real ZEC settlement is not implemented end-to-end and live transaction broadcasting is deliberately disabled.
 
-### Architectural Positioning & Scope
-To maintain complete cryptographic and protocol integrity:
+### Intended Architecture (not end-to-end complete)
+The following describes the intended design; it is not a claim of production or consensus correctness:
 1. **The Off-Chain Matching Layer (FBA / RFQ):** Market participants commit off-chain sealed limit intents. In discrete epochs, an autonomous solver aggregates supply and demand curves to calculate a single **Uniform Clearing Price ($P^*$)**. All inframarginal orders are filled 100%, and pro-rata rationing is applied strictly to marginal orders at $P^*$.
-2. **The Settlement Layer (ZIP 229 / Ironwood Adapter):** Fills are compiled into **ZIP-229 Transaction v6** consensus payloads (`0xD884B698`), encoding authentic 820-byte `OrchardAction` descriptors (§ 7.5) with 580-byte encrypted note ciphertexts (`0x03` Ironwood format).
-3. **Execution Transparency:** Fully distinguishes between `BROADCAST_TESTNET_LIVE` (active Zebra JSON-RPC `sendrawtransaction`) and `VERIFIED_LOCAL_CONSENSUS` (local Zebra NU6.3 consensus validator engine).
+2. **Settlement prototype:** The legacy assembler creates experimental transaction-shaped bytes but does not yet build a valid cooperative PCZT spend transaction from real participant notes, witnesses, authorizations, and matching proofs. Live broadcasting is blocked.
+3. **Execution Transparency:** Distinguishes local simulation from live RPC status. The current transaction builder is blocked from live broadcast until cooperative PCZT transaction construction and authorization are implemented.
 
 ---
 
-## 2. Protocol Correctness & Cryptographic Specifications
+## 2. Experimental Cryptographic Work (not a consensus implementation)
 
 ### A. Authentic Pallas Curve Cryptography (`darkbatch_crypto`)
 * Implemented in Rust using `pasta_curves = "0.6"` ($y^2 = x^3 + 5$ over $\mathbb{F}_p$) and official Zcash crates (`orchard = "0.16.0"`, `reddsa = "0.6"`, `blake2b_simd = "1.0"`).
@@ -103,7 +113,7 @@ Trader C (Whale)  ─── Sealed Limit Intent ────┘                 
 ```bash
 cargo test --manifest-path darkbatch_crypto/Cargo.toml --release
 ```
-All 11 Rust tests pass:
+The Rust tests cover components of the repository; they do not establish that an assembled transaction is accepted by Zebra or spends real ZEC.
 * `test_zip229_consensus_constants`: Verifies `VERSION_GROUP_ID_V6 == 0xD884B698` and branch `0x37A5165B`.
 * `test_orchard_action_exact_820_bytes`: Verifies exact 820-byte serialization per § 7.5.
 * `test_authentic_zcash_note_encryption_roundtrip`: Verifies RFC 8439 580-byte note encryption and IVK decryption.
@@ -116,20 +126,20 @@ All 11 Rust tests pass:
 ```bash
 python -m pytest darkbatch/tests/ -v
 ```
-All 9 unit and end-to-end integration tests pass 100%:
+The Python unit and end-to-end tests exercise local simulation. They are not live Testnet transaction tests.
 * `test_pedersen_commitment` (Pallas engine with `z.cash:Orchard-cv` derivation)
 * `test_strictly_512_byte_encrypted_memo` (strict 512-byte buffer)
 * `test_intent_creation_and_signature`
 * `test_fba_inframarginal_priority_and_marginal_rationing`
 * `test_mev_resistance_and_order_invariance`
 * `test_zip228_action_groups_and_v6_bundle` (ZIP 229 v6 bundle with 0xD884B698, 580B ciphertext, and IVK note decryption)
-* `test_testnet_settlement_adapter_broadcast` (Local Zebra NU6.3 verification & transparent receipt)
+* `test_testnet_settlement_adapter_broadcast` (explicitly enabled local simulation receipt)
 * `test_nu6_3_consensus_and_crypto_integrity` (NU6.3 consensus constants & RedPallas signatures)
-* `test_full_system_lifecycle` (E2E lifecycle with consensus engine)
+* `test_full_system_lifecycle` (local simulator lifecycle; not real node consensus)
 
 ---
 
-## 5. Live Demo & Interaction
+## 5. Local Demo (not a live Testnet settlement)
 
 ### 1. Start Coordinator API
 ```bash

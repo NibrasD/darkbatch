@@ -1,7 +1,9 @@
 """
-DarkBatch Autonomous Solver Daemon
-Executes continuous Frequent Batch Auction (FBA) clearing, settles on Ironwood node simulator,
-and distributes strictly 512-byte encrypted receipts directly to each participant's viewing key.
+DarkBatch FBA matching engine.
+
+Without a settlement adapter, this class supports legacy deterministic local tests only.
+The API injects a strict adapter that refuses live broadcast until cooperative PCZT settlement
+is actually implemented and verified. Local simulation results are not Zcash transactions.
 """
 
 from dataclasses import dataclass, field
@@ -26,8 +28,14 @@ class AutonomousSolverDaemon:
     """
     Autonomous Solver responsible for batch matching and on-chain bundle submission.
     """
-    def __init__(self, node: ZcashNodeSimulator, solver_fee_bps: int = 10):
+    def __init__(
+        self,
+        node: ZcashNodeSimulator,
+        solver_fee_bps: int = 10,
+        settlement_adapter: Optional[Any] = None,
+    ):
         self.node = node
+        self.settlement_adapter = settlement_adapter
         self.solver_fee_bps = solver_fee_bps
         self.matching_engine = BatchAuctionSolver(solver_fee_bps=solver_fee_bps)
         self.bundle_builder = SettlementBundleBuilder(ironwood_anchor=node.current_anchor())
@@ -66,45 +74,87 @@ class AutonomousSolverDaemon:
         intents_map = {i.intent_id: i for i in intents}
         bundle = self.bundle_builder.build_bundle(clear_result, intents_map, wallets_ivk_map=wallets_ivk_map)
 
-        # 3. Format bundle for Node consensus verification
-        bundle_dict = {
-            "tx_id": bundle.tx_id,
-            "version": bundle.tx_version,
-            "version_group_id": bundle.version_group_id,
-            "epoch_id": bundle.epoch_id,
-            "clearing_price_usd": bundle.clearing_price_usd,
-            "total_volume_zec": bundle.total_volume_zec,
-            "aggregated_binding_pubkey": bundle.aggregated_binding_pubkey_hex,
-            "raw_tx_hex": bundle.raw_tx_hex,
-            "action_groups": [
-                {
-                    "group_id": ag.group_id,
-                    "intent_id": ag.intent_id,
-                    "direction": ag.direction,
-                    "anchor": ag.anchor_hex,
-                    "actions": [
-                        {
-                            "type": "SWAP",
-                            "cv_net": ag.swap_action.cv_net_hex,
-                            "nullifier": ag.swap_action.nullifier_hex,
-                            "rk": ag.swap_action.rk_hex,
-                            "cm_point": ag.swap_action.cm_star_hex,
-                            "encrypted_memo": ag.swap_action.encrypted_memo_hex
-                        },
-                        {
-                            "type": "FEE",
-                            "cv_fee": ag.fee_action.cv_fee_hex,
-                            "matcher_fee_zat": ag.fee_action.matcher_fee_zat,
-                            "miner_fee_zat": ag.fee_action.miner_fee_zat
-                        }
-                    ]
-                } for ag in bundle.action_groups
-            ]
-        }
-        
-        success, block_hash = self.node.submit_settlement_bundle(bundle_dict)
-        if not success:
-            raise RuntimeError(f"Node rejected settlement bundle: {block_hash}")
+        # 3. Production/API path must use the strict settlement adapter.
+        # Legacy direct simulator remains available only to deterministic local tests.
+        if self.settlement_adapter is not None:
+            try:
+                receipt = self.settlement_adapter.broadcast(bundle)
+            except Exception as exc:
+                return {
+                    "epoch_id": epoch_id,
+                    "status": "SETTLEMENT_BLOCKED",
+                    "reason": str(exc),
+                    "proposed_clearing_price_usd": clear_result.clearing_price_usd,
+                    "proposed_volume_zec": clear_result.total_cleared_zec,
+                    "proposed_volume_usd": clear_result.total_cleared_usd,
+                    "tx_id": None,
+                    "block_hash": None,
+                    "simulation_only": False,
+                }
+
+            receipt_status = receipt.get("status")
+            if receipt_status != "CONFIRMED":
+                # Broadcast/mempool is not settlement. Do not change participant balances,
+                # mark intents filled, or increment "mined" metrics until confirmation.
+                return {
+                    "epoch_id": epoch_id,
+                    "status": receipt_status or "BROADCAST_PENDING_CONFIRMATION",
+                    "settlement": receipt,
+                    "proposed_clearing_price_usd": clear_result.clearing_price_usd,
+                    "proposed_volume_zec": clear_result.total_cleared_zec,
+                    "proposed_volume_usd": clear_result.total_cleared_usd,
+                    "tx_id": receipt.get("txid"),
+                    "block_hash": receipt.get("block_hash"),
+                    "simulation_only": bool(receipt.get("simulation_only", False)),
+                }
+
+            block_hash = receipt.get("block_hash")
+            confirmed_height = receipt.get("block_height")
+            confirmed_tx_id = receipt.get("txid") or bundle.tx_id
+            if not block_hash or not confirmed_height or int(receipt.get("confirmations", 0)) < 1:
+                raise RuntimeError("Adapter reported CONFIRMED without a block hash, height, and confirmation")
+
+        else:
+            # Explicit local test/demo compatibility path. This is not a live Zcash transaction.
+            bundle_dict = {
+                "tx_id": bundle.tx_id,
+                "version": bundle.tx_version,
+                "version_group_id": bundle.version_group_id,
+                "consensus_branch_id": bundle.consensus_branch_id,
+                "epoch_id": bundle.epoch_id,
+                "clearing_price_usd": bundle.clearing_price_usd,
+                "total_volume_zec": bundle.total_volume_zec,
+                "aggregated_binding_pubkey": bundle.aggregated_binding_pubkey_hex,
+                "raw_tx_hex": bundle.raw_tx_hex,
+                "action_groups": [
+                    {
+                        "group_id": ag.group_id,
+                        "intent_id": ag.intent_id,
+                        "direction": ag.direction,
+                        "anchor": ag.anchor_hex,
+                        "actions": [
+                            {
+                                "type": "SWAP",
+                                "cv_net": ag.swap_action.cv_net_hex,
+                                "nullifier": ag.swap_action.nullifier_hex,
+                                "rk": ag.swap_action.rk_hex,
+                                "cm_point": ag.swap_action.cm_star_hex,
+                                "encrypted_memo": ag.swap_action.encrypted_memo_hex
+                            },
+                            {
+                                "type": "FEE",
+                                "cv_fee": ag.fee_action.cv_fee_hex,
+                                "matcher_fee_zat": ag.fee_action.matcher_fee_zat,
+                                "miner_fee_zat": ag.fee_action.miner_fee_zat
+                            }
+                        ]
+                    } for ag in bundle.action_groups
+                ]
+            }
+            success, block_hash = self.node.submit_settlement_bundle(bundle_dict)
+            if not success:
+                raise RuntimeError(f"Local simulation rejected settlement bundle: {block_hash}")
+            confirmed_tx_id = bundle.tx_id
 
         # 4. Update Wallets & Balances
         if wallets_map:
@@ -129,13 +179,13 @@ class AutonomousSolverDaemon:
 
         summary = {
             "epoch_id": epoch_id,
-            "status": "SETTLED_AND_MINED",
+            "status": "SETTLED_AND_MINED" if self.settlement_adapter is None else "CONFIRMED",
             "clearing_price_usd": clear_result.clearing_price_usd,
             "cleared_zec": clear_result.total_cleared_zec,
             "cleared_usd": clear_result.total_cleared_usd,
-            "tx_id": bundle.tx_id,
+            "tx_id": confirmed_tx_id,
             "block_hash": block_hash,
-            "block_height": self.node.height,
+            "block_height": self.node.height if self.settlement_adapter is None else int(confirmed_height),
             "buy_fills_count": len(clear_result.buy_fills),
             "sell_fills_count": len(clear_result.sell_fills),
             "solver_fee_zec": clear_result.solver_fee_zec,

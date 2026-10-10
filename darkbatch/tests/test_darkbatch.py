@@ -117,8 +117,8 @@ def test_mev_resistance_and_order_invariance():
 
 def test_zip228_action_groups_and_v6_bundle():
     """
-    Tests building authentic ZIP 228 Action Groups containing [SwapAction, FeeAction]
-    and Transaction v6 binary serialization.
+    Tests the legacy local-only bundle shape.
+    These assertions do not prove authentic PCZT construction, spend validity, or note decryptability.
     """
     alice = ShieldedWallet("alice")
     bob = ShieldedWallet("bob")
@@ -152,19 +152,15 @@ def test_zip228_action_groups_and_v6_bundle():
     assert len(bundle.raw_tx_hex) > 0
     assert bundle.raw_tx_bytes_len > 1000
 
-    # Verify Bob can decrypt his confidential memo using his IVK per § 5.4.3.4
-    bob_action = bundle.action_groups[0].swap_action
-    bob_enc_bytes = bytes.fromhex(bob_action.enc_ciphertext_hex)
-    bob_epk_bytes = bytes.fromhex(bob_action.epk_hex)
-    dec_val, bob_memo_bytes = decrypt_orchard_note(bob_enc_bytes, bob.ivk, bob_epk_bytes)
-    decrypted_json = json.loads(bob_memo_bytes.rstrip(b"\x00").decode("utf-8"))
-    assert decrypted_json["protocol"] == "DarkBatch-ZIP228"
-    assert decrypted_json["filled_zec"] == 5.0
+    # The built-in ShieldedWallet is a local mock, not an Orchard SpendingKey/FullViewingKey.
+    # Do not claim this mock key can decrypt an authentic Zcash note. The bundle must be
+    # treated as local-only until real key/address derivation and collaborative PCZT are implemented.
+    assert bundle.live_broadcast_safe is False
+    assert bundle.raw_tx_bytes_len == len(bytes.fromhex(bundle.raw_tx_hex))
 
 def test_testnet_settlement_adapter_broadcast():
     """
-    Verifies that the Testnet Settlement Adapter verifies consensus,
-    submits to the simulated testnet node, and returns a verified testnet txid receipt.
+    Verifies explicitly enabled local simulation stays labelled as simulation and returns no network txid.
     """
     from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
     from darkbatch.node.simulator import ZcashNodeSimulator
@@ -184,27 +180,134 @@ def test_testnet_settlement_adapter_broadcast():
     bundle = builder.build_bundle(result, intents_map, wallets_ivk_map=ivk_map)
 
     node = ZcashNodeSimulator()
-    adapter = TestnetSettlementAdapter(node_simulator=node)
+    # Simulation must be explicitly enabled and can never look like a network tx.
+    adapter = TestnetSettlementAdapter(node_simulator=node, rpc_url="", allow_simulation=True)
 
     receipt = adapter.broadcast(bundle)
-    assert receipt["status"] == "LOCAL_FBA_SIMULATED_CONSENSUS"
-    assert receipt["network"] == "DarkBatch Local FBA Solver & Settlement Simulator (ZIP 228 / ZIP 229)"
+    assert receipt["status"] == "SIMULATED_ONLY"
+    assert receipt["network"] == "DarkBatch local simulator (not Zcash Testnet)"
     assert receipt["version_group_id"] == "0xd884b698"
     assert receipt["consensus_branch_id"] == "0x37a5165b"
-    assert receipt["block_height"] >= 4134010
-    assert receipt["confirmations"] == 1
-    assert receipt["txid"] == bundle.tx_id
+    assert receipt["simulation_block_height"] >= 4134010
+    assert receipt["confirmations"] == 0
+    assert receipt["txid"] is None
+    assert receipt["simulation_id"] == bundle.tx_id
     assert receipt["live_node"] is False
+    assert receipt["simulation_only"] is True
+
+
+def test_zebra_probe_uses_networkinfo_and_requires_activated_testnet():
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+
+    adapter = TestnetSettlementAdapter(rpc_url="http://fake-zebra", allow_simulation=False)
+    calls = []
+
+    def fake_rpc(method, params=None, timeout=3.0):
+        calls.append(method)
+        if method == "getblockchaininfo":
+            return {"chain": "test", "blocks": 4_134_010}
+        if method == "getnetworkinfo":
+            return {"subversion": "/Zebra:1.0.0/"}
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    adapter._rpc_call = fake_rpc
+    assert adapter.is_live_rpc_available() is True
+    assert calls == ["getblockchaininfo", "getnetworkinfo"]
+
+    calls.clear()
+    def non_zebra_rpc(method, params=None, timeout=3.0):
+        calls.append(method)
+        if method == "getblockchaininfo":
+            return {"chain": "test", "blocks": 4_134_010}
+        return {"subversion": "/zcashd:6.0.0/"}
+    adapter._rpc_call = non_zebra_rpc
+    assert adapter.is_live_rpc_available() is False
+
+
+def test_testnet_adapter_fails_closed_without_rpc():
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+    from darkbatch.node.simulator import ZcashNodeSimulator
+
+    alice = ShieldedWallet("alice_fail_closed")
+    bob = ShieldedWallet("bob_fail_closed")
+    buyer = create_intent(OrderDirection.BUY_ZEC, 1.0, 45.0, bob.unified_address)
+    seller = create_intent(OrderDirection.SELL_ZEC, 1.0, 40.0, alice.unified_address)
+    result = BatchAuctionSolver().solve(303, [buyer, seller])
+    bundle = SettlementBundleBuilder().build_bundle(
+        result,
+        {buyer.intent_id: buyer, seller.intent_id: seller},
+        wallets_ivk_map={bob.unified_address: bob.ivk, alice.unified_address: alice.ivk},
+    )
+
+    node = ZcashNodeSimulator()
+    start_height = node.height
+    adapter = TestnetSettlementAdapter(node_simulator=node, rpc_url="", allow_simulation=False)
+
+    with pytest.raises(RuntimeError, match="refusing to treat local simulation as settlement"):
+        adapter.broadcast(bundle)
+
+    # No local block is mined when production behavior has fail-closed enabled.
+    assert node.height == start_height
+    assert adapter.broadcast_history == {}
+    assert bundle.live_broadcast_safe is False
+
+
+def test_live_broadcast_refuses_uncertified_legacy_bundle(monkeypatch):
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+
+    alice = ShieldedWallet("alice_live_guard")
+    bob = ShieldedWallet("bob_live_guard")
+    buyer = create_intent(OrderDirection.BUY_ZEC, 1.0, 45.0, bob.unified_address)
+    seller = create_intent(OrderDirection.SELL_ZEC, 1.0, 40.0, alice.unified_address)
+    result = BatchAuctionSolver().solve(304, [buyer, seller])
+    bundle = SettlementBundleBuilder().build_bundle(
+        result,
+        {buyer.intent_id: buyer, seller.intent_id: seller},
+        wallets_ivk_map={bob.unified_address: bob.ivk, alice.unified_address: alice.ivk},
+    )
+
+    adapter = TestnetSettlementAdapter(rpc_url="http://127.0.0.1:18232", allow_simulation=False)
+    # Even if the RPC probe succeeds and a caller flips the bundle hint, the feature gate
+    # must still refuse broadcast until real collaborative PCZT settlement is implemented.
+    monkeypatch.setattr(adapter, "is_live_rpc_available", lambda: True)
+    bundle.live_broadcast_safe = True
+
+    with pytest.raises(RuntimeError, match="collaborative PCZT settlement is not implemented"):
+        adapter.broadcast(bundle)
+
+    assert adapter.broadcast_history == {}
+
+
+def test_solver_api_path_does_not_mine_on_live_rpc_failure():
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+    from darkbatch.node.simulator import ZcashNodeSimulator
+    from darkbatch.solver.engine import AutonomousSolverDaemon
+
+    alice = ShieldedWallet("alice_solver_guard")
+    bob = ShieldedWallet("bob_solver_guard")
+    buyer = create_intent(OrderDirection.BUY_ZEC, 1.0, 45.0, bob.unified_address)
+    seller = create_intent(OrderDirection.SELL_ZEC, 1.0, 40.0, alice.unified_address)
+    node = ZcashNodeSimulator()
+    initial_height = node.height
+    adapter = TestnetSettlementAdapter(node_simulator=node, rpc_url="", allow_simulation=False)
+    solver = AutonomousSolverDaemon(node, settlement_adapter=adapter)
+
+    result = solver.run_epoch_settlement(305, [buyer, seller], wallets_ivk_map={
+        alice.unified_address: alice.ivk,
+        bob.unified_address: bob.ivk,
+    })
+
+    assert result["status"] == "SETTLEMENT_BLOCKED"
+    assert result["tx_id"] is None
+    assert result["simulation_only"] is False
+    assert node.height == initial_height
+    assert solver.stats.total_settlement_txs_mined == 0
 
 def test_nu6_3_consensus_and_crypto_integrity():
     """
-    Directly verifies NU6.3 (Ironwood) consensus rules:
-    - Official branch ID 0x37A5165B (ZIP 258)
-    - Version Group ID 0xD884B698 (ZIP 229)
-    - Testnet Activation Height >= 4,134,000 (ZIP 258)
-    - RFC 8439 ChaCha20Poly1305 580-byte note ciphertext with lead byte 0x03 (ZIP 2005)
-    - Authentic RedPallas spend authorization & binding signatures on Pallas curve
-    - Zebra validator consensus rejection of non-conforming blocks/bundles
+    Checks local prototype constants and byte-shape invariants only.
+    This test does not implement or verify Zcash consensus, authenticate a transaction,
+    or test acceptance by Zebra. The node exercised below is only a simulator.
     """
     from darkbatch.core.crypto import encrypt_orchard_note, sign_redpallas_bundle, blake2b_digest
     from darkbatch.node.simulator import ZcashNodeSimulator
@@ -215,7 +318,8 @@ def test_nu6_3_consensus_and_crypto_integrity():
     info = node.get_blockchain_info()
     assert info["consensus"]["branch_id"] == "0x37a5165b"
     assert info["consensus"]["activation_height"] == 4134000
-    assert "Zebra" in info["validator"]
+    assert "Local Simulator" in info["validator"]
+    assert "not Zebra" in info["validator"]
 
     # 2. Rejection of invalid Branch ID
     invalid_bundle = {
@@ -228,7 +332,7 @@ def test_nu6_3_consensus_and_crypto_integrity():
     assert ok is False
     assert "0x37A5165B" in err
 
-    # 3. Authentic 580-byte Orchard / Ironwood Note Encryption (RFC 8439 ChaCha20Poly1305)
+    # 3. Check ciphertext byte lengths produced by the local prototype; this is not a consensus-validity test.
     enc_ct, out_ct, epk = encrypt_orchard_note(
         lead_byte=0x03,
         diversifier=bytes(11),
@@ -245,7 +349,7 @@ def test_nu6_3_consensus_and_crypto_integrity():
     assert len(epk) == 32
     assert enc_ct != bytes(580)
 
-    # 4. Authentic RedPallas Signatures on Pallas curve
+    # 4. Check non-empty signature-shaped outputs; these assertions do not cryptographically verify signatures.
     sighash = blake2b_digest(b"canonical_sighash_data", personalization=b"ZcashTxHashIronw")
     bsk = 12345678901234567890
     spend_sigs, rk_list, binding_sig = sign_redpallas_bundle(sighash, bsk, 2)

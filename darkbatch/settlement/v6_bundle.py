@@ -1,10 +1,10 @@
 """
-DarkBatch Zcash v6 / Ironwood Settlement Bundle Builder
-Implements authentic ZIP 228 and ZIP 229 consensus structures:
-- Each Swap Order Action Group contains at least [SwapAction, FeeAction] per ZIP 228.
-- Memo payload is strictly 512 bytes in total (ZIP 212 / ZIP 302).
-- Key derivation uses the recipient's Viewing Key (ivk) for individual recipient privacy.
-- Emits Transaction v6 raw binary encoding (header 0x80000006, version_group_id 0x26a7270a, branch 0x2f8b66c3).
+DarkBatch experimental ZIP-228/ZIP-229-shaped bundle assembler.
+
+LOCAL TESTS ONLY. This builder does not construct a valid collaborative PCZT spend
+transaction from real unspent notes, Merkle witnesses, participant spend authorization,
+or a matching multi-action proof. The adapter hard-blocks this output from live broadcast.
+Byte lengths and nonzero signature-shaped fields are not evidence of consensus validity.
 """
 
 from dataclasses import dataclass, field
@@ -87,6 +87,8 @@ class SettlementBundle:
     created_at: float
     total_matcher_fee_zat: int
     total_miner_fee_zat: int
+    # False for the legacy assembler; only a verified collaborative PCZT builder may set True.
+    live_broadcast_safe: bool = False
 def encode_compact_size(val: int) -> bytes:
     """Encodes an integer into Bitcoin/Zcash CompactSize bytes."""
     if val < 253:
@@ -100,8 +102,13 @@ def encode_compact_size(val: int) -> bytes:
 
 class SettlementBundleBuilder:
     """
-    Constructs genuine ZIP 228 Swap Bundles & ZIP 229 Transaction v6 payloads.
+    Legacy experimental assembler.
+
+    The current builder does not create a complete cooperative PCZT spend transaction.
+    Its output is suitable for local testing only and MUST NOT be broadcast to a live node.
     """
+    live_broadcast_safe = False
+
     def __init__(self, ironwood_anchor: str = "5cbf3162257b772a43d8b9d517b11b7cd889a53753eb9b62d29031fd757ef52e"):
         self.ironwood_anchor = ironwood_anchor
 

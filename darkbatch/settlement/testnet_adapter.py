@@ -1,70 +1,126 @@
 """
-DarkBatch Zcash Testnet Settlement Adapter
-Bridges cleared FBA batch settlement bundles into Zcash Testnet (Ironwood NU6.3):
-- Constructs authentic Transaction v6 payloads conforming strictly to ZIP 229 (0xD884B698).
-- Broadcasts via live Zcash testnet JSON-RPC (sendrawtransaction) when configured.
-- Seamlessly falls back to local high-fidelity Ironwood consensus node verification.
-- Returns authentic testnet transaction ID (txid), block confirmation status, and anchor roots.
-"""
+DarkBatch settlement adapter.
 
-import os
+Important safety properties:
+- A local simulator is never described as a Zcash Testnet node or confirmation.
+- Simulation fallback is opt-in (DARKBATCH_ALLOW_SIMULATION=true or allow_simulation=True).
+- Live broadcasts are blocked unless the transaction builder explicitly certifies the raw
+  transaction as safe for broadcast. The current legacy bundle builder does not certify it.
+- Successful sendrawtransaction means "broadcast/mempool", not "confirmed".
+"""
+import base64
 import json
 import logging
-import urllib.request
+import os
+import re
 import urllib.error
-from typing import Dict, Any, Optional, Tuple
+import urllib.request
+from typing import Any, Dict, Optional
+
 from darkbatch.settlement.v6_bundle import SettlementBundle
 from darkbatch.node.simulator import ZcashNodeSimulator
 
 logger = logging.getLogger("darkbatch.settlement.adapter")
+TESTNET_NU63_ACTIVATION_HEIGHT = 4_134_000
+# Deliberately hard-disabled until real-note selection, PCZT composition, spend authorization,
+# and a matching multi-action proof are integrated and independently validated.
+LIVE_SETTLEMENT_IMPLEMENTED = False
+_TXID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
 
 class TestnetSettlementAdapter:
-    """
-    Settlement adapter bridging DarkBatch uniform-cleared matches to Zcash Testnet.
-    """
+    """Connects a settlement bundle to Zebra Testnet without upgrading simulations to success."""
+
     def __init__(
         self,
         node_simulator: Optional[ZcashNodeSimulator] = None,
         rpc_url: Optional[str] = None,
         rpc_user: Optional[str] = None,
-        rpc_password: Optional[str] = None
+        rpc_password: Optional[str] = None,
+        allow_simulation: Optional[bool] = None,
     ):
         self.node_simulator = node_simulator or ZcashNodeSimulator()
-        self.rpc_url = rpc_url or os.getenv("ZCASH_TESTNET_RPC_URL", "http://127.0.0.1:18232")
-        self.rpc_user = rpc_user or os.getenv("ZCASH_TESTNET_RPC_USER", "")
-        self.rpc_password = rpc_password or os.getenv("ZCASH_TESTNET_RPC_PASS", "")
+        self.rpc_url = (
+            rpc_url if rpc_url is not None
+            else os.getenv("ZCASH_TESTNET_RPC_URL", "http://127.0.0.1:18232")
+        )
+        self.rpc_user = rpc_user if rpc_user is not None else os.getenv("ZCASH_TESTNET_RPC_USER", "")
+        self.rpc_password = rpc_password if rpc_password is not None else os.getenv("ZCASH_TESTNET_RPC_PASS", "")
+        if allow_simulation is None:
+            allow_simulation = os.getenv("DARKBATCH_ALLOW_SIMULATION", "false").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+        self.allow_simulation = bool(allow_simulation)
         self.broadcast_history: Dict[str, Dict[str, Any]] = {}
 
-    def is_live_rpc_available(self) -> bool:
-        """Checks if a live Zcash testnet node is reachable via JSON-RPC."""
+    def _rpc_call(self, method: str, params: Optional[list] = None, timeout: float = 3.0) -> Any:
         if not self.rpc_url:
-            return False
+            raise RuntimeError("ZCASH_TESTNET_RPC_URL is not configured")
+        payload = {
+            "jsonrpc": "1.0",
+            "id": "darkbatch",
+            "method": method,
+            "params": params or [],
+        }
+        req = urllib.request.Request(
+            self.rpc_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        if self.rpc_user and self.rpc_password:
+            token = base64.b64encode(f"{self.rpc_user}:{self.rpc_password}".encode()).decode()
+            req.add_header("Authorization", f"Basic {token}")
         try:
-            req = urllib.request.Request(
-                self.rpc_url,
-                data=json.dumps({"jsonrpc": "1.0", "id": "probe", "method": "getblockchaininfo", "params": []}).encode(),
-                headers={"Content-Type": "application/json"}
-            )
-            if self.rpc_user and self.rpc_password:
-                import base64
-                auth = base64.b64encode(f"{self.rpc_user}:{self.rpc_password}".encode()).decode()
-                req.add_header("Authorization", f"Basic {auth}")
-            
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                data = json.loads(resp.read().decode())
-                return "result" in data
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Zebra RPC HTTP {exc.code}: {detail}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Zebra RPC call {method} failed: {exc}") from exc
+        if body.get("error") is not None:
+            raise RuntimeError(f"Zebra RPC {method} error: {body['error']}")
+        if "result" not in body:
+            raise RuntimeError(f"Zebra RPC {method} returned no result")
+        return body["result"]
+
+    def get_live_chain_info(self) -> Optional[Dict[str, Any]]:
+        """Return actual node information; return None when RPC cannot be reached."""
+        try:
+            result = self._rpc_call("getblockchaininfo", timeout=1.5)
+            return result if isinstance(result, dict) else None
+        except Exception:
+            return None
+
+    def is_live_rpc_available(self) -> bool:
+        """True only when activated Testnet chain info and a Zebra network agent are confirmed."""
+        info = self.get_live_chain_info()
+        if not info:
+            return False
+        chain = str(info.get("chain", "")).lower()
+        try:
+            height = int(info.get("blocks", -1))
+        except (TypeError, ValueError):
+            return False
+        # Zebra reports its user-agent through getnetworkinfo, not getblockchaininfo.
+        try:
+            network_info = self._rpc_call("getnetworkinfo", timeout=1.5)
         except Exception:
             return False
+        if not isinstance(network_info, dict):
+            return False
+        subversion = str(network_info.get("subversion", "")).lower()
+        return (
+            chain in {"test", "testnet"}
+            and height >= TESTNET_NU63_ACTIVATION_HEIGHT
+            and "zebra" in subversion
+        )
 
-    def broadcast(self, bundle: SettlementBundle) -> Dict[str, Any]:
-        """
-        Broadcasts a ZIP 229 settlement transaction to Zcash Testnet.
-        Tries live RPC first; if unavailable, uses the consensus-verified node simulator.
-        """
-        # Convert bundle dataclass to dictionary representation
+    def _simulate(self, bundle: SettlementBundle) -> Dict[str, Any]:
+        """Run a local demo only, with no real-network success claims."""
         bundle_dict = {
             "tx_id": bundle.tx_id,
-            "tx_version": bundle.tx_version,
+            "version": bundle.tx_version,
             "version_group_id": bundle.version_group_id,
             "consensus_branch_id": bundle.consensus_branch_id,
             "epoch_id": bundle.epoch_id,
@@ -72,98 +128,127 @@ class TestnetSettlementAdapter:
             "total_volume_zec": bundle.total_volume_zec,
             "action_groups": [
                 {
-                    "group_id": ag.group_id,
-                    "intent_id": ag.intent_id,
-                    "direction": ag.direction,
-                    "anchor_hex": ag.anchor_hex,
-                    "net_value_balance_zat": ag.net_value_balance_zat,
+                    "group_id": group.group_id,
+                    "intent_id": group.intent_id,
+                    "direction": group.direction,
+                    "anchor_hex": group.anchor_hex,
+                    "net_value_balance_zat": group.net_value_balance_zat,
                     "actions": [
                         {
                             "type": "SWAP",
-                            "cv_point": ag.swap_action.cv_net_hex,
-                            "nullifier": ag.swap_action.nullifier_hex,
-                            "rk": ag.swap_action.rk_hex,
-                            "cm_point": ag.swap_action.cm_star_hex,
-                            "memo_hex": ag.swap_action.encrypted_memo_hex,
+                            "cv_point": group.swap_action.cv_net_hex,
+                            "nullifier": group.swap_action.nullifier_hex,
+                            "rk": group.swap_action.rk_hex,
+                            "cm_point": group.swap_action.cm_star_hex,
+                            "memo_hex": group.swap_action.encrypted_memo_hex,
                         },
                         {
                             "type": "FEE",
-                            "cv_point": ag.fee_action.cv_fee_hex,
-                            "matcher_fee_zat": ag.fee_action.matcher_fee_zat,
-                            "miner_fee_zat": ag.fee_action.miner_fee_zat,
-                        }
-                    ]
+                            "cv_point": group.fee_action.cv_fee_hex,
+                            "matcher_fee_zat": group.fee_action.matcher_fee_zat,
+                            "miner_fee_zat": group.fee_action.miner_fee_zat,
+                        },
+                    ],
                 }
-                for ag in bundle.action_groups
+                for group in bundle.action_groups
             ],
             "raw_tx_hex": bundle.raw_tx_hex,
             "raw_tx_bytes_len": bundle.raw_tx_bytes_len,
             "created_at": bundle.created_at,
         }
-
-        # 1. Attempt Live RPC broadcast
-        if self.is_live_rpc_available():
-            try:
-                rpc_payload = {
-                    "jsonrpc": "1.0",
-                    "id": "darkbatch_broadcast",
-                    "method": "sendrawtransaction",
-                    "params": [bundle.raw_tx_hex]
-                }
-                req = urllib.request.Request(
-                    self.rpc_url,
-                    data=json.dumps(rpc_payload).encode(),
-                    headers={"Content-Type": "application/json"}
-                )
-                if self.rpc_user and self.rpc_password:
-                    import base64
-                    auth = base64.b64encode(f"{self.rpc_user}:{self.rpc_password}".encode()).decode()
-                    req.add_header("Authorization", f"Basic {auth}")
-
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
-                    res_data = json.loads(resp.read().decode())
-                    live_txid = res_data.get("result", bundle.tx_id)
-                    record = {
-                        "txid": live_txid,
-                        "status": "BROADCAST_TESTNET_LIVE",
-                        "network": "Zcash Testnet (NU6.3 Ironwood)",
-                        "version_group_id": hex(bundle.version_group_id),
-                        "actions_count": len(bundle.action_groups),
-                        "raw_tx_len": bundle.raw_tx_bytes_len,
-                        "confirmations": 1,
-                        "explorer_url": f"https://testnet.zcashexplorer.app/tx/{live_txid}",
-                        "live_node": True,
-                    }
-                    self.broadcast_history[live_txid] = record
-                    return record
-            except Exception as e:
-                logger.warning(f"Live RPC broadcast failed: {e}. Falling back to node simulator.")
-
-        # 2. Consensus Node Verification & Settlement
-        success, result_hash = self.node_simulator.submit_settlement_bundle(bundle_dict)
-        if not success:
-            raise RuntimeError(f"Consensus verification failed: {result_hash}")
-
-        block_height = self.node_simulator.height
+        ok, simulated_hash = self.node_simulator.submit_settlement_bundle(bundle_dict)
+        if not ok:
+            raise RuntimeError(f"Local simulation rejected the bundle: {simulated_hash}")
         record = {
-            "txid": bundle.tx_id,
-            "status": "LOCAL_FBA_SIMULATED_CONSENSUS",
-            "network": "DarkBatch Local FBA Solver & Settlement Simulator (ZIP 228 / ZIP 229)",
+            "txid": None,
+            "simulation_id": bundle.tx_id,
+            "status": "SIMULATED_ONLY",
+            "network": "DarkBatch local simulator (not Zcash Testnet)",
             "version_group_id": hex(bundle.version_group_id),
             "consensus_branch_id": hex(bundle.consensus_branch_id),
-            "block_height": block_height,
-            "block_hash": result_hash,
-            "anchor_root": self.node_simulator.current_anchor(),
+            "simulation_block_height": self.node_simulator.height,
+            "simulation_block_hash": simulated_hash,
+            "simulation_anchor": self.node_simulator.current_anchor(),
             "actions_count": len(bundle.action_groups),
             "raw_tx_len": bundle.raw_tx_bytes_len,
-            "confirmations": 1,
+            "confirmations": 0,
             "explorer_url": None,
             "live_node": False,
-            "note": "Validated locally under ZIP 228 batching rules and ZIP 229 transaction v6 structure. This is DarkBatch's off-chain batch auction solver testbed, not a live Zebra node on testnet. To broadcast to live testnet, configure ZCASH_TESTNET_RPC_URL.",
+            "simulation_only": True,
+            "note": "No transaction was broadcast to Zcash. This result is local simulation only.",
         }
         self.broadcast_history[bundle.tx_id] = record
         return record
 
+    def broadcast(self, bundle: SettlementBundle) -> Dict[str, Any]:
+        """
+        Broadcast only a bundle explicitly certified by a future protocol-valid builder.
+        Current SettlementBundleBuilder deliberately leaves live_broadcast_safe=False.
+        """
+        live_ready = self.is_live_rpc_available()
+        if not live_ready:
+            if self.allow_simulation:
+                return self._simulate(bundle)
+            raise RuntimeError(
+                "Live Zcash Testnet RPC is unavailable or not at NU6.3 activation; "
+                "refusing to treat local simulation as settlement. "
+                "Set DARKBATCH_ALLOW_SIMULATION=true only for local demonstrations."
+            )
+
+        if not LIVE_SETTLEMENT_IMPLEMENTED or not getattr(bundle, "live_broadcast_safe", False):
+            raise RuntimeError(
+                "Refusing live broadcast: collaborative PCZT settlement is not implemented. "
+                "The current assembler does not consume real unspent notes, participant-authorized "
+                "spends, and a matching multi-action Halo 2 proof."
+            )
+
+        # The node's own consensus validator is the final gate; do not silently simulate on failure.
+        live_txid = self._rpc_call("sendrawtransaction", [bundle.raw_tx_hex], timeout=10.0)
+        if not isinstance(live_txid, str) or not _TXID_RE.fullmatch(live_txid):
+            raise RuntimeError("Zebra returned an invalid transaction ID; broadcast status is unknown")
+
+        record = {
+            "txid": live_txid.lower(),
+            "status": "BROADCAST_PENDING_CONFIRMATION",
+            "network": "Zcash Testnet",
+            "version_group_id": hex(bundle.version_group_id),
+            "consensus_branch_id": hex(bundle.consensus_branch_id),
+            "actions_count": len(bundle.action_groups),
+            "raw_tx_len": bundle.raw_tx_bytes_len,
+            "confirmations": 0,
+            "block_hash": None,
+            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{live_txid.lower()}",
+            "live_node": True,
+            "simulation_only": False,
+        }
+        self.broadcast_history[live_txid.lower()] = record
+        return record
+
     def get_transaction(self, txid: str) -> Optional[Dict[str, Any]]:
-        """Returns details of a broadcast testnet transaction."""
-        return self.broadcast_history.get(txid)
+        """Return cached state, refreshing live transaction confirmations when possible."""
+        record = self.broadcast_history.get(txid)
+        if not record:
+            return None
+        if not record.get("live_node"):
+            return record
+        try:
+            result = self._rpc_call("getrawtransaction", [txid, 1], timeout=3.0)
+            if isinstance(result, dict):
+                confirmations = max(0, int(result.get("confirmations", 0) or 0))
+                record["confirmations"] = confirmations
+                record["block_hash"] = result.get("blockhash")
+                record["status"] = "MEMPOOL" if confirmations == 0 else "CONFIRMED"
+                record["simulation_only"] = False
+                if confirmations >= 1:
+                    if not record.get("block_hash"):
+                        record["status"] = "CONFIRMATION_DETAILS_INCOMPLETE"
+                    else:
+                        header = self._rpc_call("getblockheader", [record["block_hash"]], timeout=3.0)
+                        if isinstance(header, dict) and header.get("height") is not None:
+                            record["block_height"] = int(header["height"])
+                        else:
+                            record["status"] = "CONFIRMATION_DETAILS_INCOMPLETE"
+        except Exception as exc:
+            # Keep last known state; a failed lookup is not evidence of confirmation.
+            record["status_check_error"] = str(exc)
+        return record
