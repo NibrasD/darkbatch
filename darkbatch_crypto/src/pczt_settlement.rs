@@ -667,9 +667,9 @@ pub fn combine_pczt_files(input_paths: &[String], output_path: &str) -> Result<(
     if std::path::Path::new(output_path).exists() {
         return Err(format!("refusing to overwrite existing combined PCZT: {output_path}"));
     }
-    if input_paths.len() < 3 {
+    if input_paths.len() < 2 {
         return Err(
-            "provide the private original unsigned PCZT first, then at least two redacted participant contributions".into()
+            "provide the private original unsigned PCZT first, then at least one redacted participant contribution".into()
         );
     }
 
