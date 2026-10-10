@@ -308,6 +308,8 @@ class TestnetSettlementAdapter:
                     "build_report_input_total_zat", "build_report_recipient_total_zat",
                     "build_report_fee_zat", "build_report_change_zat",
                     "build_report_input_count", "build_report_recipient_output_count",
+                    "target_height", "consensus_branch_id", "quote_batch_id",
+                    "quote_plan_hash", "quote_total_micro", "quote_chain_id",
                 }
             })
         self.broadcast_history[txid.lower()] = record
