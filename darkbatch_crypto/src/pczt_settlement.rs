@@ -551,6 +551,9 @@ fn redact_pczt_for_participant_value(pczt: Pczt, action_index: usize) -> Result<
 
     let redacted = Redactor::new(pczt)
         .redact_ironwood_with(|mut bundle| {
+            // V6 signatures do not commit to the anchor (ZIP 374), so omit it from the signer
+            // copy together with every witness. The private base PCZT restores them before proving.
+            bundle.clear_anchor();
             for index in 0..count {
                 bundle.redact_action(index, |mut action| {
                     // A Merkle witness is never required to sign the transaction effects.
@@ -593,6 +596,7 @@ fn redact_signed_contribution(pczt: Pczt) -> Result<Pczt, String> {
     let count = pczt.ironwood().actions().len();
     let redacted = Redactor::new(pczt)
         .redact_ironwood_with(|mut bundle| {
+            bundle.clear_anchor();
             for index in 0..count {
                 bundle.redact_action(index, |mut action| {
                     action.clear_spend_recipient();
