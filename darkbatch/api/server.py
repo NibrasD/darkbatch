@@ -25,6 +25,7 @@ from darkbatch.core.repo import (
     record_epoch_clear,
     record_epoch_zec_pending,
     record_epoch_zec_confirmed,
+    record_epoch_quote_settled,
     get_epoch_history,
     update_wallet_balance
 )
@@ -33,6 +34,12 @@ from darkbatch.core.intent import SwapOrderIntent, OrderDirection, create_intent
 from darkbatch.node.simulator import ZcashNodeSimulator
 from darkbatch.solver.engine import AutonomousSolverDaemon
 from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter, LIVE_SETTLEMENT_IMPLEMENTED
+from darkbatch.settlement.quote_escrow import (
+    QuoteEscrowError,
+    quote_plan_hash,
+    verify_funded_quote_batch,
+    verify_released_quote_batch_by_hash,
+)
 
 NODE = ZcashNodeSimulator()
 TESTNET_ADAPTER = TestnetSettlementAdapter(NODE)
@@ -49,10 +56,18 @@ class IntentSubmitRequest(BaseModel):
 
 class RawV6SettlementRequest(BaseModel):
     epoch_id: int
+    quote_batch_id: str
     txid: str
     raw_tx_hex: str
     build_report: Dict[str, Any]
     proof_report: Dict[str, Any]
+
+
+class QuoteFinalizeRequest(BaseModel):
+    epoch_id: int
+    zec_txid: str
+    quote_batch_id: str
+    quote_release_txid: str
 
 class ConnectionManager:
     def __init__(self):
@@ -397,7 +412,12 @@ def get_testnet_status():
         "testnet_nu7_consensus_branch_id": "0x77190AD9",
         "local_pczt_agent_required": True,
         "local_raw_v6_submission_available": True,
-        "quote_leg_settlement_implemented": False,
+        "quote_escrow_supported": True,
+        "quote_escrow_configured": all(os.getenv(name, "").strip() for name in (
+            "DARKBATCH_QUOTE_RPC_URL", "DARKBATCH_QUOTE_CHAIN_ID",
+            "DARKBATCH_USDC_TOKEN_ADDRESS", "DARKBATCH_USDC_ESCROW_ADDRESS",
+        )),
+        "quote_leg_settlement_implemented": True,
         "live_broadcast_block_reason": None if bundle_builder_is_live_safe else (
             "Legacy assembler is not certified for live broadcast; valid participant spend inputs, "
             "cooperative PCZT authorization, and matching Halo 2 proofs are not implemented."
@@ -439,8 +459,19 @@ def get_local_pczt_plan(
         raise HTTPException(status_code=503, detail="Local FBA plan was not retained")
     if plan.get("status") != "LOCAL_PCZT_REQUIRED":
         raise HTTPException(status_code=409, detail="Epoch plan is not awaiting local PCZT")
+    # Quote addresses are part of each order signature. Hash only the canonical, non-secret quote
+    # plan. If a participant has no EVM address, the plan may be previewed but cannot broadcast.
+    response = dict(plan)
+    try:
+        response["quote_plan_hash"] = quote_plan_hash(plan)
+        response["quote_escrow_ready"] = True
+        response["quote_escrow_reason"] = None
+    except QuoteEscrowError as exc:
+        response["quote_plan_hash"] = None
+        response["quote_escrow_ready"] = False
+        response["quote_escrow_reason"] = str(exc)
     # Do not log or broadcast this response: it contains participant addresses and trade amounts.
-    return plan
+    return response
 
 
 @app.post("/api/v1/settlement/raw-v6")
@@ -519,12 +550,23 @@ def submit_local_pczt_transaction(
         or input_total != recipient_total + fee_zat + change_zat
     ):
         raise HTTPException(status_code=422, detail="Build report does not balance against the FBA fill plan")
+    # USDC must be fully escrowed before we submit any ZEC transaction. If the quote leg is
+    # unavailable, incorrectly funded, or belongs to a different fill plan, nothing is broadcast.
+    try:
+        quote_lock = verify_funded_quote_batch(req.quote_batch_id, plan)
+    except QuoteEscrowError as exc:
+        raise HTTPException(status_code=409, detail=f"USDC escrow verification failed; ZEC was not broadcast: {exc}")
+
     # Broadcast only raw transaction bytes plus non-secret target/branch metadata. Never send
     # PCZT data, note openings or keys to Zebra.
     try:
         record = TESTNET_ADAPTER.broadcast_raw_transaction(raw_hex, metadata={
             "target_height": target_height,
             "consensus_branch_id": expected_branch,
+            "quote_batch_id": req.quote_batch_id,
+            "quote_plan_hash": quote_plan_hash(plan),
+            "quote_total_micro": int(plan["quote_total_micro"]),
+            "quote_chain_id": int(quote_lock["chain_id"]),
         })
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Zebra Testnet rejected or could not accept the transaction: {exc}")
@@ -544,6 +586,10 @@ def submit_local_pczt_transaction(
         "total_cleared_zec": plan["total_cleared_zec"],
         "total_cleared_usd": plan["total_cleared_usd"],
         "intent_ids": plan["intent_ids"],
+        "quote_batch_id": req.quote_batch_id,
+        "quote_plan_hash": quote_plan_hash(plan),
+        "quote_total_micro": int(plan["quote_total_micro"]),
+        "quote_chain_id": int(quote_lock["chain_id"]),
         "build_report_input_total_zat": input_total,
         "build_report_recipient_total_zat": recipient_total,
         "build_report_fee_zat": fee_zat,
@@ -563,6 +609,9 @@ def submit_local_pczt_transaction(
             total_cleared_usd=float(plan["total_cleared_usd"]),
             tx_id=actual_txid,
             intent_ids=list(plan["intent_ids"]),
+            quote_batch_id=req.quote_batch_id,
+            quote_plan_hash=quote_plan_hash(plan),
+            quote_total_micro=int(plan["quote_total_micro"]),
         )
     except Exception as exc:
         # The network broadcast already happened; keep its TXID tracked and return an explicit
@@ -582,6 +631,64 @@ def submit_local_pczt_transaction(
         "epoch_settled": False,
         "quote_leg_status": "NOT_SETTLED",
         "message": "ZEC leg broadcast. Await a real Testnet block confirmation; USDC/quote settlement is still not implemented.",
+    }
+
+
+@app.post("/api/v1/settlement/quote-finalize")
+def finalize_quote_leg(
+    req: QuoteFinalizeRequest,
+    x_darkbatch_settlement_token: Optional[str] = Header(default=None),
+):
+    """Finalize FILLED status only after confirmed ZEC and successful on-chain USDC release."""
+    _require_local_settlement_token(x_darkbatch_settlement_token)
+    zec_txid = req.zec_txid.strip().lower()
+    record = TESTNET_ADAPTER.get_transaction(zec_txid)
+    if not record:
+        raise HTTPException(status_code=404, detail="ZEC transaction is not tracked by the settlement adapter")
+    if record.get("status") != "CONFIRMED" or int(record.get("confirmations", 0)) < 1:
+        raise HTTPException(status_code=409, detail="ZEC leg is not confirmed in a real Testnet block")
+    if int(record.get("epoch_id", -1)) != req.epoch_id:
+        raise HTTPException(status_code=409, detail="ZEC transaction does not belong to the requested FBA epoch")
+    if str(record.get("quote_batch_id", "")).lower() != req.quote_batch_id.strip().lower():
+        raise HTTPException(status_code=409, detail="USDC batch ID does not match the funded ZEC settlement")
+    plan_hash = str(record.get("quote_plan_hash", "")).lower()
+    quote_total = int(record.get("quote_total_micro", 0))
+    if not plan_hash or quote_total <= 0:
+        raise HTTPException(status_code=409, detail="ZEC settlement record is missing its quote commitment")
+    try:
+        released = verify_released_quote_batch_by_hash(
+            req.quote_batch_id,
+            plan_hash,
+            quote_total,
+            req.quote_release_txid,
+        )
+    except QuoteEscrowError as exc:
+        raise HTTPException(status_code=409, detail=f"USDC payout is not verified; epoch remains pending: {exc}")
+    try:
+        record_epoch_quote_settled(
+            epoch_id=req.epoch_id,
+            zec_tx_id=zec_txid,
+            zec_block_hash=str(record["block_hash"]),
+            quote_batch_id=req.quote_batch_id,
+            quote_plan_hash=plan_hash,
+            quote_total_micro=quote_total,
+            quote_tx_id=str(released["release_txid"]),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Quote release verified but epoch database reconciliation failed: {exc}")
+    record["quote_leg_status"] = "SETTLED"
+    record["quote_txid"] = released["release_txid"]
+    record["epoch_settled"] = True
+    record["epoch_status"] = "CLEARED"
+    record["quote_escrow_status"] = "USDC_RELEASED"
+    return {
+        "status": "CLEARED",
+        "epoch_id": req.epoch_id,
+        "zec_txid": zec_txid,
+        "quote_txid": released["release_txid"],
+        "quote_total_micro": quote_total,
+        "quote_asset": "USDC",
+        "epoch_settled": True,
     }
 
 
