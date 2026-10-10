@@ -11,3 +11,6 @@ pub use zip228::*;
 pub use v6_tx::*;
 pub use orchard_compat::*;
 pub use pczt_settlement::*;
+
+pub mod ironwood_wallet_scan;
+pub use ironwood_wallet_scan::{derive_ironwood_address_json, export_ironwood_fvk_json, ironwood_tree_root_json, scan_ironwood_block_json};
