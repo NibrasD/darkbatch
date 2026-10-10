@@ -224,7 +224,11 @@ class TestnetSettlementAdapter:
         self.broadcast_history[live_txid.lower()] = record
         return record
 
-    def broadcast_raw_transaction(self, raw_tx_hex: str) -> Dict[str, Any]:
+    def broadcast_raw_transaction(
+        self,
+        raw_tx_hex: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Submit a locally extracted V6 transaction to a real activated Zebra Testnet node.
 
@@ -246,6 +250,12 @@ class TestnetSettlementAdapter:
             )
         if int.from_bytes(raw[:4], "little") != 0x80000006:
             raise ValueError("raw transaction header is not Zcash Transaction V6 (0x80000006)")
+        branch_id = int.from_bytes(raw[4:8], "little")
+        if branch_id != 0x37A5165B:
+            raise ValueError(
+                f"raw transaction consensus branch ID is 0x{branch_id:08x}; "
+                "expected NU6.3 Testnet branch 0x37a5165b"
+            )
 
         txid = self._rpc_call("sendrawtransaction", [normalized], timeout=15.0)
         if not isinstance(txid, str) or not _TXID_RE.fullmatch(txid):
@@ -265,8 +275,22 @@ class TestnetSettlementAdapter:
             "live_node": True,
             "simulation_only": False,
             "epoch_settled": False,
+            "quote_leg_status": "NOT_SETTLED",
             "note": "Broadcast accepted by RPC only; wait for and verify block confirmation. This is not FBA/USDC settlement.",
         }
+        if metadata:
+            # Metadata is limited to non-secret settlement accounting data. Never attach PCZT,
+            # note openings, viewing keys, or spending keys to transaction history.
+            record.update({
+                key: value for key, value in metadata.items()
+                if key in {
+                    "epoch_id", "clearing_price_usd", "total_cleared_zec",
+                    "total_cleared_usd", "intent_ids", "proof_report_txid",
+                    "build_report_input_total_zat", "build_report_recipient_total_zat",
+                    "build_report_fee_zat", "build_report_change_zat",
+                    "build_report_input_count", "build_report_recipient_output_count",
+                }
+            })
         self.broadcast_history[txid.lower()] = record
         return record
 
