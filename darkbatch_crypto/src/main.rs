@@ -11,7 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | build-fba-pczt-local | redact-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | build-fba-pczt-local | redact-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local | scan-ironwood-block-stdin | ironwood-tree-root-stdin | derive-ironwood-address-stdin | export-ironwood-fvk-stdin]");
         return;
     }
 
