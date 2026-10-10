@@ -149,7 +149,7 @@ fn prepare_spend(input: &PcztSpendInput, anchor: Anchor) -> Result<PreparedSpend
     }
     zatoshis(input.value_zat, "input value_zat")?;
     let fvk_bytes = decode_array::<96>(&input.fvk_hex, "input.fvk_hex")?;
-    let fvk = FullViewingKey::from_bytes(&fvk_bytes).into_option()
+    let fvk = FullViewingKey::from_bytes(&fvk_bytes)
         .ok_or_else(|| "input.fvk_hex is not a valid Zcash FullViewingKey".to_string())?;
     let address_bytes = decode_array::<43>(&input.raw_address_hex, "input.raw_address_hex")?;
     let address = Address::from_raw_address_bytes(&address_bytes).into_option()
@@ -209,7 +209,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
     if !request.change_outputs.is_empty() {
         for (index, change) in request.change_outputs.iter().enumerate() {
             let fvk_bytes = decode_array::<96>(&change.fvk_hex, &format!("change_outputs[{index}].fvk_hex"))?;
-            let fvk = FullViewingKey::from_bytes(&fvk_bytes).into_option()
+            let fvk = FullViewingKey::from_bytes(&fvk_bytes)
                 .ok_or_else(|| format!("change_outputs[{index}].fvk_hex is not a valid FullViewingKey"))?;
             if !spends.iter().any(|spend| spend.fvk.to_bytes() == fvk.to_bytes()) {
                 return Err(format!("change_outputs[{index}] belongs to no owner of an input note"));
@@ -230,7 +230,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
             return Err("multi-owner settlement requires change_outputs with one change output per owner; refusing to send seller change to a shared wallet".into());
         }
         let fvk_bytes = decode_array::<96>(&request.change_fvk_hex, "change_fvk_hex")?;
-        let fvk = FullViewingKey::from_bytes(&fvk_bytes).into_option()
+        let fvk = FullViewingKey::from_bytes(&fvk_bytes)
             .ok_or_else(|| "change_fvk_hex is not a valid FullViewingKey".to_string())?;
         if fvk.to_bytes() != owners[0] {
             return Err("single-owner change_fvk_hex must match the owner of the input note".into());
