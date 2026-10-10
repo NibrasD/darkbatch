@@ -6,6 +6,7 @@ SQLite/WebSocket order handling is not independently privacy-audited; real settl
 import asyncio
 from contextlib import asynccontextmanager
 import os
+import re
 import secrets
 import time
 from typing import Dict, List, Optional, Any
@@ -43,6 +44,8 @@ class IntentSubmitRequest(BaseModel):
     zec_amount: float
     limit_price_usd: float
     shielded_address: str
+    # Required to complete a real USDC quote leg; optional for matching-only demos.
+    quote_address: Optional[str] = None
 
 class RawV6SettlementRequest(BaseModel):
     epoch_id: int
@@ -163,11 +166,15 @@ def get_all_wallets():
 
 @app.post("/api/v1/intent")
 async def submit_intent(req: IntentSubmitRequest):
+    quote_address = (req.quote_address or "").strip()
+    if quote_address and not re.fullmatch(r"0x[0-9a-fA-F]{40}", quote_address):
+        raise HTTPException(status_code=422, detail="quote_address must be a valid 20-byte EVM address (0x + 40 hex characters)")
     intent = create_intent(
         direction=req.direction,
         zec_amount=req.zec_amount,
         limit_price_usd=req.limit_price_usd,
-        shielded_address=req.shielded_address
+        shielded_address=req.shielded_address,
+        quote_address=quote_address or None,
     )
     epoch_id = get_active_epoch_id()
     save_intent(intent, epoch_id)
