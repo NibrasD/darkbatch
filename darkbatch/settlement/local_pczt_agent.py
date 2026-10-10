@@ -598,14 +598,150 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
     return result
 
 
+def submit_existing(api_base: str, epoch_id: int, workdir: Path, token: str,
+                   quote_batch_id: str | None, wait_for_confirmation: int = 0,
+                   poll_interval: float = 3.0) -> Dict[str, Any]:
+    """Submit a previously proven local V6 transaction without rebuilding/re-signing it."""
+    if not quote_batch_id:
+        raise AgentError("--submit-existing requires --quote-batch-id for the fully funded USDC batch")
+    if wait_for_confirmation < 0 or poll_interval <= 0:
+        raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
+
+    plan_path = workdir / "fba-plan.json"
+    build_path = workdir / "build-report.json"
+    proof_path = workdir / "proof-report.json"
+    raw_path = workdir / "raw-transaction.hex"
+    for path in (plan_path, build_path, proof_path, raw_path):
+        if not path.is_file():
+            raise AgentError(f"cannot submit existing transaction; required private artifact is missing: {path}")
+
+    original_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    build_report = json.loads(build_path.read_text(encoding="utf-8"))
+    proof_report = json.loads(proof_path.read_text(encoding="utf-8"))
+    raw_tx_hex = "".join(raw_path.read_text(encoding="ascii").split()).lower()
+    if original_plan.get("schema") != PLAN_SCHEMA or int(original_plan.get("epoch_id", -1)) != epoch_id:
+        raise AgentError("private FBA plan does not match the requested epoch")
+    if proof_report.get("status") != "PROOF_GENERATED_AND_TRANSACTION_EXTRACTED":
+        raise AgentError("private proof report does not confirm official PCZT proof/extraction")
+    if proof_report.get("network") != "Zcash Testnet" or proof_report.get("transaction_version") != 6:
+        raise AgentError("extracted transaction report is not for Testnet V6")
+    if not raw_tx_hex or len(raw_tx_hex) % 2 or any(c not in "0123456789abcdef" for c in raw_tx_hex):
+        raise AgentError("saved raw transaction is not valid even-length hex")
+    if len(raw_tx_hex) // 2 != int(proof_report.get("raw_transaction_bytes", -1)):
+        raise AgentError("saved raw transaction length does not match the official extraction report")
+    reported_txid = str(proof_report.get("txid", "")).strip().lower()
+    if not reported_txid:
+        raise AgentError("official proof report does not contain a transaction ID")
+
+    # Refresh the canonical plan and ensure the batch has not changed after the transaction was
+    # constructed. This prevents an old local raw transaction being attached to a newer FBA epoch.
+    current_plan = _json_http(
+        api_base.rstrip("/") + f"/api/v1/settlement/local-plan/{epoch_id}",
+        token=token,
+    )
+    if current_plan.get("status") != "LOCAL_PCZT_REQUIRED":
+        raise AgentError("coordinator no longer has an active local PCZT plan for this epoch")
+    if str(current_plan.get("quote_plan_hash", "")).lower() != str(original_plan.get("quote_plan_hash", "")).lower():
+        raise AgentError("current FBA quote commitment differs from the saved private plan")
+    if original_plan.get("quote_escrow_ready") is not True:
+        raise AgentError("saved FBA plan was not ready for a complete quote commitment")
+
+    preflight = _json_http(
+        api_base.rstrip("/") + "/api/v1/settlement/quote-preflight",
+        method="POST",
+        token=token,
+        body={"epoch_id": epoch_id, "quote_batch_id": quote_batch_id},
+    )
+    if preflight.get("status") != "USDC_LOCKED":
+        raise AgentError("USDC escrow is not fully funded; raw transaction was not submitted")
+    if str(preflight.get("quote_plan_hash", "")).lower() != str(original_plan["quote_plan_hash"]).lower():
+        raise AgentError("on-chain USDC escrow is committed to a different FBA plan")
+
+    try:
+        target_height = int(build_report["target_height"])
+        expiry_height = int(build_report["expiry_height"])
+        current_status = _json_http(api_base.rstrip("/") + "/api/v1/settlement/testnet-status")
+        if current_status.get("live_rpc_connected") is not True:
+            raise AgentError("coordinator cannot verify live Zebra Testnet; raw transaction was not submitted")
+        chain_info = current_status.get("remote_chain_info")
+        if not isinstance(chain_info, dict):
+            raise AgentError("live Zebra status omitted chain info")
+        current_height = int(chain_info["blocks"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AgentError(f"could not validate live Testnet height or transaction expiry: {exc}") from exc
+
+    expected_branch = NU7_BRANCH if target_height >= NU7_HEIGHT else NU6_3_BRANCH
+    if str(build_report.get("consensus_branch_id", "")).lower() != expected_branch:
+        raise AgentError(f"saved PCZT build branch does not match target height; expected {expected_branch}")
+    if str(proof_report.get("consensus_branch_id", "")).lower() != expected_branch:
+        raise AgentError(f"saved transaction branch does not match target height; expected {expected_branch}")
+    if current_height >= expiry_height:
+        raise AgentError(
+            f"transaction expiry height {expiry_height} has passed at live tip {current_height}; rebuild from fresh notes/witnesses"
+        )
+
+    response = _json_http(
+        api_base.rstrip("/") + "/api/v1/settlement/raw-v6",
+        method="POST",
+        token=token,
+        body={
+            "epoch_id": epoch_id,
+            "quote_batch_id": quote_batch_id,
+            "txid": reported_txid,
+            "raw_tx_hex": raw_tx_hex,
+            "build_report": build_report,
+            "proof_report": proof_report,
+        },
+        timeout=30.0,
+    )
+    transaction = response.get("transaction") if isinstance(response.get("transaction"), dict) else {}
+    result: Dict[str, Any] = {
+        "status": response.get("status"),
+        "epoch_id": epoch_id,
+        "txid": transaction.get("txid") or reported_txid,
+        "transaction_status": transaction.get("status"),
+        "epoch_settled": response.get("epoch_settled", False),
+        "quote_leg_status": response.get("quote_leg_status", "NOT_SETTLED"),
+        "workdir": str(workdir),
+        "broadcast": True,
+        "message": response.get("message", "ZEC broadcast result recorded; confirmation and USDC release remain separate steps."),
+    }
+    if wait_for_confirmation > 0:
+        deadline = time.monotonic() + wait_for_confirmation
+        while time.monotonic() < deadline:
+            latest = _json_http(
+                api_base.rstrip("/") + f"/api/v1/settlement/tx/{result['txid']}",
+                token=token,
+                timeout=5.0,
+            )
+            if latest.get("status") == "CONFIRMED" and int(latest.get("confirmations", 0)) >= 1:
+                result["status"] = "ZEC_CONFIRMED_QUOTE_RELEASE_PENDING"
+                result["transaction_status"] = "CONFIRMED"
+                result["confirmations"] = latest.get("confirmations")
+                result["block_hash"] = latest.get("block_hash")
+                result["epoch_settled"] = False
+                result["quote_leg_status"] = latest.get("quote_leg_status", "NOT_SETTLED")
+                result["message"] = (
+                    "ZEC is confirmed on Testnet. USDC payout/release is still pending and the FBA epoch is not fully settled."
+                )
+                break
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        else:
+            result["status"] = "BROADCAST_PENDING_CONFIRMATION"
+            result["message"] = "No block confirmation was observed before timeout; the FBA epoch remains unsettled."
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build/sign/prove a real V6 Ironwood PCZT locally from a synchronized wallet inventory."
     )
     parser.add_argument("--api-base", default=os.getenv("DARKBATCH_API_BASE", "http://127.0.0.1:8000"))
     parser.add_argument("--epoch-id", required=True, type=int)
-    parser.add_argument("--wallet-inventory", required=True, type=Path,
-                        help="Private JSON inventory from a real synced Zcash Testnet wallet/provider")
+    parser.add_argument("--wallet-inventory", type=Path,
+                        help="Private JSON inventory from a real synced Zcash Testnet wallet/provider; required unless --submit-existing")
+    parser.add_argument("--submit-existing", action="store_true",
+                        help="Submit the already-proven raw transaction in --workdir without rescanning/rebuilding")
     parser.add_argument("--rust-binary", type=Path,
                         default=Path(os.getenv("DARKBATCH_CRYPTO_BIN", "darkbatch_crypto/target/release/darkbatch_crypto")))
     parser.add_argument("--workdir", required=True, type=Path,
@@ -617,18 +753,32 @@ def main() -> int:
     parser.add_argument("--quote-batch-id", default=os.getenv("DARKBATCH_USDC_BATCH_ID"),
                         help="Pre-funded on-chain USDC escrow batch ID (bytes32 hex)")
     parser.add_argument("--broadcast", action="store_true",
-                        help="Submit the proven raw V6 transaction only after API verifies fully funded USDC escrow")
+                        help="Submit the newly proven raw V6 transaction only after API verifies funded USDC escrow")
+    parser.add_argument("--wait-for-confirmation", type=int, default=0,
+                        help="When broadcasting/submitting existing, poll real Testnet status for this many seconds")
+    parser.add_argument("--poll-interval", type=float, default=3.0)
     args = parser.parse_args()
     token = os.getenv(args.token_env, "").strip()
     if not token:
         print(f"ERROR: environment variable {args.token_env} is empty", file=sys.stderr)
         return 2
     try:
-        result = run_agent(
-            args.api_base, args.epoch_id, args.wallet_inventory, args.rust_binary.resolve(),
-            args.workdir.resolve(), token, args.max_inventory_age, args.max_tip_lag, args.broadcast,
-            args.quote_batch_id,
-        )
+        if args.wait_for_confirmation < 0 or args.poll_interval <= 0:
+            raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
+        api_base = args.api_base.rstrip("/")
+        if args.submit_existing:
+            result = submit_existing(
+                api_base, args.epoch_id, args.workdir.resolve(), token,
+                args.quote_batch_id, args.wait_for_confirmation, args.poll_interval,
+            )
+        else:
+            if args.wallet_inventory is None:
+                raise AgentError("--wallet-inventory is required unless --submit-existing is used")
+            result = run_agent(
+                api_base, args.epoch_id, args.wallet_inventory, args.rust_binary.resolve(),
+                args.workdir.resolve(), token, args.max_inventory_age, args.max_tip_lag, args.broadcast,
+                args.quote_batch_id,
+            )
         print(json.dumps(result, indent=2))
         return 0
     except (AgentError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
