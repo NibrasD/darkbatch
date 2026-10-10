@@ -6,6 +6,7 @@ use group::GroupEncoding;
 use pasta_curves::pallas::Scalar;
 use ff::PrimeField;
 use std::env;
+use std::io::Read;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -16,6 +17,21 @@ fn main() {
     }
 
     match args[1].as_str() {
+        "scan-ironwood-block-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| {
+                darkbatch_crypto::scan_ironwood_block_json(&input)
+                    .and_then(|value| serde_json::to_value(value).map_err(|e| format!("Could not serialize scan result: {e}")))
+            })
+        ),
+        "ironwood-tree-root-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| darkbatch_crypto::ironwood_tree_root_json(&input))
+        ),
+        "derive-ironwood-address-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| darkbatch_crypto::derive_ironwood_address_json(&input))
+        ),
+        "export-ironwood-fvk-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| darkbatch_crypto::export_ironwood_fvk_json(&input))
+        ),
         "commit" => {
             let val: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);
             let r = if let Some(r_hex) = args.get(3) {
@@ -571,6 +587,27 @@ fn main() {
         }
         _ => {
             eprintln!("Unknown command");
+        }
+    }
+}
+
+fn read_stdin_json_string() -> Result<String, String> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| format!("Could not read request from stdin: {e}"))?;
+    if input.trim().is_empty() {
+        return Err("Request body is empty.".to_owned());
+    }
+    Ok(input)
+}
+
+fn emit_json_result(result: Result<serde_json::Value, String>) {
+    match result {
+        Ok(value) => println!("{}", value),
+        Err(error) => {
+            eprintln!("Ironwood wallet operation failed closed: {error}");
+            std::process::exit(2);
         }
     }
 }
