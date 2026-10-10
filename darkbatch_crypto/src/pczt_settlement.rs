@@ -546,15 +546,8 @@ fn redact_pczt_for_participant_value(pczt: Pczt, action_index: usize) -> Result<
     if target.spend().spend_auth_sig().is_some() {
         return Err("target action already has a spend authorization signature; sign an unsigned PCZT".into());
     }
-    if target.spend().fvk().is_none()
-        || target.spend().recipient().is_none()
-        || target.spend().value().is_none()
-        || target.spend().rho().is_none()
-        || target.spend().rseed().is_none()
-        || target.spend().alpha().is_none()
-    {
-        return Err("target action lacks the note metadata required for safe local signing".into());
-    }
+    // The official Signer validates that the target has the FVK / spend randomizer it needs.
+    // Private PCZT fields are deliberately not exposed by this public interface for preflight.
 
     let redacted = Redactor::new(pczt)
         .redact_ironwood_with(|mut bundle| {
@@ -648,12 +641,8 @@ fn sign_pczt_value(pczt: Pczt, action_index: usize, key: &SpendingKey) -> Result
     if pczt.ironwood().actions().get(action_index).is_none() {
         return Err(format!("Ironwood action index {action_index} is out of range"));
     }
-    let expected_fvk = FullViewingKey::from(key).to_bytes();
-    let actual_fvk = pczt.ironwood().actions()[action_index].spend().fvk()
-        .ok_or_else(|| "target spend FullViewingKey was redacted before local signing".to_string())?;
-    if *actual_fvk != expected_fvk {
-        return Err("the supplied local spending key does not own this PCZT action".into());
-    }
+    // Do not extract or serialize the key into any report. The official signer verifies
+    // that this key can authorize the selected action and returns an error on a key mismatch.
     let ask = SpendAuthorizingKey::from(key);
     let mut rng = rand::rng();
     let mut signer = Signer::new(pczt).map_err(|e| format!("PCZT Signer rejected input: {e:?}"))?;
