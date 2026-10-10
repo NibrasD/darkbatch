@@ -478,6 +478,37 @@ def _run_rust_json(command: str, request: Mapping[str, Any], binary_path: str | 
     return result
 
 
+def get_testnet_transaction_status(txid: str, *, rpc: ZebraRpc | None = None) -> dict[str, Any]:
+    """Query Zebra for a transaction's actual mempool/mined state; never infer confirmation from broadcast."""
+    normalized = str(txid).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise RuntimeError("txid must be exactly 32 bytes encoded as 64 hexadecimal characters.")
+    rpc = rpc or ZebraRpc()
+    result = rpc.call("getrawtransaction", [normalized, True])
+    if not isinstance(result, dict):
+        raise RuntimeError("getrawtransaction returned a non-object result.")
+    actual_txid = str(result.get("txid", "")).lower()
+    if actual_txid != normalized:
+        raise RuntimeError("Zebra returned details for a different transaction ID.")
+    try:
+        confirmations = max(0, int(result.get("confirmations", 0)))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Zebra returned an invalid confirmation count.") from exc
+    return {
+        "txid": normalized,
+        "status": "MINED_CONFIRMED" if confirmations > 0 else "BROADCAST_PENDING",
+        "confirmations": confirmations,
+        "confirmed": confirmations > 0,
+        "blockhash": result.get("blockhash"),
+        "blocktime": result.get("blocktime"),
+        "height": result.get("height"),
+        "network": "testnet",
+        "source": "live-zebra-rpc",
+    }
+
+
+
+
 def create_wallet_inventory(
     wallet_configs: Sequence[Mapping[str, Any]],
     *,
@@ -660,6 +691,8 @@ def _cli() -> int:
             if not isinstance(configs, list):
                 raise RuntimeError("--wallet-configs must contain a JSON array.")
             fee_receiver = {"address_raw_hex": args.solver_fee_receiver_hex} if args.solver_fee_receiver_hex else None
+            if Path(args.out).expanduser().exists():
+                raise RuntimeError(f"Refusing to overwrite existing inventory file: {args.out}")
             result = create_wallet_inventory(configs, solver_fee_receiver=fee_receiver)
             _atomic_save(args.out, result)
             print(json.dumps({
