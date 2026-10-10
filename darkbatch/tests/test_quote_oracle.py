@@ -209,3 +209,35 @@ def test_resume_pending_usdc_release_polls_same_tx_without_rebroadcast(monkeypat
     assert result["status"] == "ZEC_ATTESTED_USDC_RELEASE_PENDING"
     assert result["release_transaction"]["transaction_hash"] == old_hash
     assert waited == [(old_hash, 20)]
+
+
+def test_released_escrow_recovery_preserves_original_release_hash(monkeypatch):
+    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
+        monkeypatch, batch_status=quote_oracle.STATUS_RELEASED
+    )
+    release_hash = "0x" + "aa" * 32
+    attestation_hash = "0x" + "bb" * 32
+    resume.update({
+        "status": "USDC_RELEASED",
+        "attestation_transaction": {
+            "status": "EVM_TRANSACTION_CONFIRMED",
+            "transaction_hash": attestation_hash,
+        },
+        "release_transaction": {
+            "status": "EVM_TRANSACTION_CONFIRMED",
+            "transaction_hash": release_hash,
+        },
+    })
+    monkeypatch.setattr(
+        quote_oracle, "_send_evm_transaction",
+        lambda *_args, **_kwargs: pytest.fail("an already released batch must not broadcast again"),
+    )
+
+    result = quote_oracle.run(
+        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
+        resume_result=resume,
+    )
+
+    assert result["status"] == "USDC_RELEASED"
+    assert result["release_transaction"]["transaction_hash"] == release_hash
+    assert result["attestation_transaction"]["transaction_hash"] == attestation_hash
