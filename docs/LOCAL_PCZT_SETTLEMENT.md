@@ -138,6 +138,29 @@ Each output file is new; do not overwrite the original unsigned PCZT. The combin
 
 
 
+## Trusted-local FBA agent (automated PCZT handoff)
+
+The repository includes `darkbatch.settlement.local_pczt_agent`. It takes a **private, fresh, synchronized Testnet wallet inventory** from a real wallet/scanner provider, fetches the current FBA plan through the token-protected API, selects spendable Ironwood notes for sellers, verifies the funded USDC escrow before proving when broadcasting is requested, and calls the official Rust builder.
+
+The inventory schema is `darkbatch.ironwood-wallet-inventory.v1`; it includes the current Testnet tip/anchor, each wallet's real spendable Ironwood notes and 32-level witnesses, raw receiver addresses, FVKs, and paths to local spending-key files. The agent rejects demo/mock inventory. It never uploads that inventory or keys to the API. This mode is a **trusted-local key agent**: the same local process can access every configured seller key file. For separate participant-controlled signing, use the redacted-PCI/CLI workflow above instead of providing all owners' key files to one agent.
+
+First build the Rust tool and prepare a fresh, empty private work directory. Set the settlement token in the local process environment; do not put it in the repository, wallet inventory, command history, or browser.
+
+~~~powershell
+cargo build --release --manifest-path darkbatch_crypto/Cargo.toml
+$env:DARKBATCH_SETTLEMENT_TOKEN = "<locally provisioned settlement token>"
+
+# Build, sign from the local key files, prove and extract. No network transaction is sent.
+python -m darkbatch.settlement.local_pczt_agent --api-base http://127.0.0.1:8000 --epoch-id 12 --wallet-inventory .\private\wallet-inventory.json --workdir .\private\epoch-12 --quote-batch-id 0x<64-hex-escrow-batch-id>
+
+# Only after the previous proof/report is reviewed, the same private workdir can submit it.
+# The agent rechecks the current FBA commitment, fully funded USDC escrow, target branch,
+# transaction expiry and raw-byte length before asking the API to broadcast.
+python -m darkbatch.settlement.local_pczt_agent --api-base http://127.0.0.1:8000 --epoch-id 12 --workdir .\private\epoch-12 --quote-batch-id 0x<64-hex-escrow-batch-id> --submit-existing --wait-for-confirmation 120
+~~~
+
+The second command does not rerun proof generation. It submits the previously extracted V6 transaction only if the same epoch/quote commitment is still active, the on-chain USDC batch is fully funded, and the transaction has not expired. It reports ZEC confirmation separately; it does not sign or release USDC. The settlement token must authorize both API calls, and a public/remote coordinator should only be used over HTTPS.
+
 ## Optional live Testnet submission
 
 Run only on a trusted machine connected to an activated Zebra Testnet node. Configure credentials locally, never in the repo or browser:
