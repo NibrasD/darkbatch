@@ -567,6 +567,59 @@ mod tests {
     }
 
     #[test]
+    fn fba_pczt_conserves_seller_fills_and_allocates_change_per_owner() {
+        let sk_bytes = [1u8; 32];
+        let sk = SpendingKey::from_bytes(sk_bytes).into_option().expect("valid fixture key");
+        let fvk = FullViewingKey::from(&sk);
+        let address = fvk.address_at(0u32, Scope::External);
+        let address_raw = address.to_raw_address_bytes();
+        let rho_bytes = [3u8; 32];
+        let rho = Rho::from_bytes(&rho_bytes).into_option().expect("valid rho");
+        let rseed_bytes = [4u8; 32];
+        let rseed = RandomSeed::from_bytes(rseed_bytes, &rho).into_option().expect("valid rseed");
+        let note = Note::from_parts(address.clone(), NoteValue::from_raw(1_000_000), rho, rseed, NoteVersion::V3)
+            .into_option().expect("valid fixture note");
+        let zero = MerkleHashOrchard::from_bytes(&[0u8; 32]).into_option().expect("canonical Merkle node");
+        let path = MerklePath::from_parts(0, [zero; 32]);
+        let anchor = path.root(note.commitment().into());
+        let request = PcztBuildRequest {
+            target_height: TESTNET_NU6_3_HEIGHT + 100,
+            ironwood_anchor_hex: hex::encode(anchor.to_bytes()),
+            inputs: vec![PcztSpendInput {
+                fvk_hex: hex::encode(fvk.to_bytes()),
+                raw_address_hex: hex::encode(address_raw),
+                value_zat: 1_000_000,
+                rho_hex: hex::encode(rho_bytes),
+                rseed_hex: hex::encode(rseed_bytes),
+                merkle_position: 0,
+                merkle_path_hex: vec![hex::encode([0u8; 32]); 32],
+            }],
+            outputs: vec![PcztRecipient {
+                address_raw_hex: hex::encode(address_raw),
+                value_zat: 970_000,
+                memo_hex: String::new(),
+            }],
+            change_fvk_hex: String::new(),
+            change_address_raw_hex: String::new(),
+            change_outputs: vec![PcztChangeOutput {
+                fvk_hex: hex::encode(fvk.to_bytes()),
+                address_raw_hex: hex::encode(address_raw),
+                value_zat: None,
+                seller_fill_zat: 970_000,
+            }],
+        };
+        let (pczt, report) = build_pczt(&request).expect("balanced FBA PCZT");
+        assert_eq!(report.input_total_zat, 1_000_000);
+        assert_eq!(report.recipient_total_zat, 970_000);
+        assert!(report.fee_zat > 0);
+        assert!(report.change_zat > 0);
+        assert_eq!(report.recipient_total_zat + report.fee_zat + report.change_zat, report.input_total_zat);
+        assert!(!report.broadcast_ready);
+        let bytes = pczt.serialize().expect("PCZT serializes");
+        assert!(Pczt::parse(&bytes).is_ok());
+    }
+
+    #[test]
     fn official_ironwood_pczt_sign_prove_extract_round_trip() {
         let sk_bytes = [1u8; 32];
         let sk = SpendingKey::from_bytes(sk_bytes).into_option().expect("valid fixture key");

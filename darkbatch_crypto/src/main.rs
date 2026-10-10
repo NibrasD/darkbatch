@@ -11,7 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | build-fba-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local]");
         return;
     }
 
@@ -461,6 +461,19 @@ fn main() {
             match darkbatch_crypto::pczt_settlement::build_pczt_from_files(input, pczt_output, report_output) {
                 Ok(report) => println!("{}", serde_json::to_string_pretty(&report).unwrap()),
                 Err(e) => { eprintln!("PCZT build failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "build-fba-pczt-local" => {
+            let input = args.get(2).map(String::as_str).unwrap_or("");
+            let pczt_output = args.get(3).map(String::as_str).unwrap_or("");
+            let report_output = args.get(4).map(String::as_str).unwrap_or("");
+            if input.is_empty() || pczt_output.is_empty() || report_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto build-fba-pczt-local <private-fba-settlement.json> <unsigned.pczt> <report.json>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::build_fba_pczt_from_files(input, pczt_output, report_output) {
+                Ok(report) => println!("{}", serde_json::to_string_pretty(&report).unwrap()),
+                Err(e) => { eprintln!("FBA PCZT build failed: {e}"); std::process::exit(1); }
             }
         }
         "sign-pczt-local" => {
