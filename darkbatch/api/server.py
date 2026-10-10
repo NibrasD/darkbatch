@@ -28,6 +28,7 @@ from darkbatch.core.repo import (
     record_epoch_zec_confirmed,
     record_epoch_quote_settled,
     get_epoch_history,
+    get_epoch_by_txid,
     update_wallet_balance
 )
 from darkbatch.core.wallet import ShieldedWallet
@@ -684,6 +685,10 @@ def submit_local_pczt_transaction(
             quote_batch_id=req.quote_batch_id,
             quote_plan_hash=quote_plan_hash(plan),
             quote_total_micro=int(plan["quote_total_micro"]),
+            quote_escrow_data_hash=quote_lock["escrow_data_hash"],
+            quote_chain_id=int(quote_lock["chain_id"]),
+            target_height=target_height,
+            consensus_branch_id=expected_branch,
         )
     except Exception as exc:
         # The network broadcast already happened; keep its TXID tracked and return an explicit
@@ -769,11 +774,46 @@ def finalize_quote_leg(
 
 @app.get("/api/v1/settlement/tx/{txid}")
 def get_testnet_tx(txid: str):
-    tx = TESTNET_ADAPTER.get_transaction(txid)
+    normalized_txid = txid.strip().lower()
+    tx = TESTNET_ADAPTER.get_transaction(normalized_txid)
     if not tx:
-        raise HTTPException(status_code=404, detail="Transaction is not tracked by the live settlement adapter")
+        persisted = get_epoch_by_txid(normalized_txid)
+        if not persisted:
+            raise HTTPException(status_code=404, detail="Transaction is not tracked by the adapter or settlement database")
+        persisted_status = str(persisted.get("status") or "")
+        if persisted_status not in {"ZEC_LEG_PENDING", "ZEC_CONFIRMED_QUOTE_PENDING", "CLEARED"}:
+            raise HTTPException(status_code=409, detail=f"Persisted epoch is not recoverable from settlement state: {persisted_status}")
+        restored_metadata = {
+            "epoch_id": int(persisted["epoch_id"]),
+            "clearing_price_usd": persisted.get("clearing_price_usd"),
+            "total_cleared_zec": persisted.get("total_cleared_zec"),
+            "total_cleared_usd": persisted.get("total_cleared_usd"),
+            "intent_ids": persisted.get("intent_ids", []),
+            "quote_batch_id": persisted.get("quote_batch_id"),
+            "quote_plan_hash": persisted.get("quote_plan_hash"),
+            "quote_escrow_data_hash": persisted.get("quote_escrow_data_hash"),
+            "quote_total_micro": persisted.get("quote_total_micro"),
+            "quote_chain_id": persisted.get("quote_chain_id"),
+            "target_height": persisted.get("target_height"),
+            "consensus_branch_id": persisted.get("consensus_branch_id"),
+        }
+        tx = TESTNET_ADAPTER.track_existing_raw_transaction(normalized_txid, restored_metadata)
+        if persisted_status == "CLEARED":
+            tx["epoch_settled"] = True
+            tx["quote_leg_status"] = "SETTLED"
+            tx["quote_txid"] = persisted.get("quote_tx_id")
+        tx = TESTNET_ADAPTER.get_transaction(normalized_txid)
+        if not tx:
+            raise HTTPException(status_code=502, detail="Persisted transaction could not be refreshed through Zebra RPC")
     if tx.get("status") == "CONFIRMED" and tx.get("epoch_id") is not None and tx.get("block_hash"):
         try:
+            persisted_epoch = get_epoch_by_txid(str(tx["txid"]))
+            if persisted_epoch and persisted_epoch.get("status") == "CLEARED":
+                tx["epoch_status"] = "CLEARED"
+                tx["quote_leg_status"] = "SETTLED"
+                tx["epoch_settled"] = True
+                tx["quote_txid"] = persisted_epoch.get("quote_tx_id")
+                return tx
             record_epoch_zec_confirmed(
                 epoch_id=int(tx["epoch_id"]),
                 tx_id=str(tx["txid"]),

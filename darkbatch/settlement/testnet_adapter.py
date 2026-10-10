@@ -309,10 +309,56 @@ class TestnetSettlementAdapter:
                     "build_report_fee_zat", "build_report_change_zat",
                     "build_report_input_count", "build_report_recipient_output_count",
                     "target_height", "consensus_branch_id", "quote_batch_id",
-                    "quote_plan_hash", "quote_total_micro", "quote_chain_id",
+                    "quote_plan_hash", "quote_escrow_data_hash", "quote_total_micro", "quote_chain_id",
                 }
             })
         self.broadcast_history[txid.lower()] = record
+        return record
+
+    def track_existing_raw_transaction(
+        self,
+        txid: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Restore non-secret tracking metadata from SQLite after an API restart.
+
+        This does not claim the TX is confirmed. The next get_transaction call must refresh
+        confirmations from the configured live Zebra RPC.
+        """
+        normalized = str(txid or "").strip().lower()
+        if not _TXID_RE.fullmatch(normalized):
+            raise ValueError("persisted ZEC TXID must be exactly 32-byte hexadecimal text")
+        existing = self.broadcast_history.get(normalized)
+        if existing is not None:
+            if metadata:
+                existing.update(metadata)
+            return existing
+        record = {
+            "txid": normalized,
+            "status": "BROADCAST_PENDING_CONFIRMATION",
+            "network": "Zcash Testnet",
+            "source": "restored persisted settlement record",
+            "confirmations": 0,
+            "block_hash": None,
+            "block_height": None,
+            "explorer_url": f"https://testnet.zcashexplorer.app/tx/{normalized}",
+            "live_node": True,
+            "simulation_only": False,
+            "epoch_settled": False,
+            "quote_leg_status": "NOT_SETTLED",
+            "note": "Restored from SQLite; status must be refreshed from Zebra before use.",
+        }
+        allowed = {
+            "epoch_id", "clearing_price_usd", "total_cleared_zec", "total_cleared_usd",
+            "intent_ids", "proof_report_txid", "build_report_input_total_zat",
+            "build_report_recipient_total_zat", "build_report_fee_zat", "build_report_change_zat",
+            "build_report_input_count", "build_report_recipient_output_count",
+            "target_height", "consensus_branch_id", "quote_batch_id", "quote_plan_hash",
+            "quote_escrow_data_hash", "quote_total_micro", "quote_chain_id",
+        }
+        if metadata:
+            record.update({key: value for key, value in metadata.items() if key in allowed})
+        self.broadcast_history[normalized] = record
         return record
 
     def get_transaction(self, txid: str) -> Optional[Dict[str, Any]]:

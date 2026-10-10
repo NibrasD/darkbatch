@@ -77,8 +77,13 @@ def init_db():
     for column, declaration in (
         ("quote_batch_id", "TEXT"),
         ("quote_plan_hash", "TEXT"),
+        ("quote_escrow_data_hash", "TEXT"),
+        ("quote_chain_id", "INTEGER"),
         ("quote_total_micro", "INTEGER"),
         ("quote_tx_id", "TEXT"),
+        ("target_height", "INTEGER"),
+        ("consensus_branch_id", "TEXT"),
+        ("intent_ids_json", "TEXT"),
     ):
         if column not in epoch_columns:
             cur.execute(f"ALTER TABLE epochs ADD COLUMN {column} {declaration}")

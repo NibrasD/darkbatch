@@ -183,6 +183,10 @@ def record_epoch_zec_pending(
     quote_batch_id: Optional[str] = None,
     quote_plan_hash: Optional[str] = None,
     quote_total_micro: Optional[int] = None,
+    quote_escrow_data_hash: Optional[str] = None,
+    quote_chain_id: Optional[int] = None,
+    target_height: Optional[int] = None,
+    consensus_branch_id: Optional[str] = None,
 ):
     """Persist broadcast-pending ZEC leg, but do not mark the cross-asset trade as filled."""
     conn = get_connection()
@@ -192,8 +196,10 @@ def record_epoch_zec_pending(
         INSERT INTO epochs (
             epoch_id, status, clearing_price_usd, total_cleared_zec,
             total_cleared_usd, tx_id, block_hash, quote_batch_id,
-            quote_plan_hash, quote_total_micro, quote_tx_id, created_at
-        ) VALUES (?, 'ZEC_LEG_PENDING', ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+            quote_plan_hash, quote_escrow_data_hash, quote_chain_id,
+            quote_total_micro, quote_tx_id, target_height,
+            consensus_branch_id, intent_ids_json, created_at
+        ) VALUES (?, 'ZEC_LEG_PENDING', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
         ON CONFLICT(epoch_id) DO UPDATE SET
             status='ZEC_LEG_PENDING',
             clearing_price_usd=excluded.clearing_price_usd,
@@ -203,13 +209,20 @@ def record_epoch_zec_pending(
             block_hash=NULL,
             quote_batch_id=excluded.quote_batch_id,
             quote_plan_hash=excluded.quote_plan_hash,
+            quote_escrow_data_hash=excluded.quote_escrow_data_hash,
+            quote_chain_id=excluded.quote_chain_id,
             quote_total_micro=excluded.quote_total_micro,
             quote_tx_id=NULL,
+            target_height=excluded.target_height,
+            consensus_branch_id=excluded.consensus_branch_id,
+            intent_ids_json=excluded.intent_ids_json,
             created_at=excluded.created_at
         """,
         (
             epoch_id, clearing_price_usd, total_cleared_zec, total_cleared_usd, tx_id,
-            quote_batch_id, quote_plan_hash, quote_total_micro, time.time(),
+            quote_batch_id, quote_plan_hash, quote_escrow_data_hash, quote_chain_id,
+            quote_total_micro, target_height, consensus_branch_id,
+            json.dumps(sorted(set(intent_ids))), time.time(),
         ),
     )
     for intent_id in intent_ids:
@@ -290,6 +303,29 @@ def record_epoch_quote_settled(
     )
     conn.commit()
     conn.close()
+
+
+def get_epoch_by_txid(tx_id: str) -> Optional[Dict[str, Any]]:
+    """Recover the persisted ZEC/USDC association after the API process restarts."""
+    if not isinstance(tx_id, str) or not tx_id.strip():
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM epochs WHERE lower(tx_id) = lower(?) ORDER BY epoch_id DESC LIMIT 1",
+        (tx_id.strip(),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    record = dict(row)
+    try:
+        record["intent_ids"] = json.loads(record.get("intent_ids_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        record["intent_ids"] = []
+    record["txid"] = str(record.get("tx_id") or "").lower()
+    return record
 
 
 def get_epoch_history() -> List[Dict[str, Any]]:
