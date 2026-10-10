@@ -314,6 +314,7 @@ def run(
             + _batch_id_hex(batch_id) + zec["txid"] + zec["block_hash"]
         )
         result["attestation_transaction"] = _send_evm_transaction(data, private_key, cfg, wait_seconds)
+        result["broadcast"] = True
         if result["attestation_transaction"]["status"] != "EVM_TRANSACTION_CONFIRMED":
             result["status"] = "ZEC_CONFIRMED_ON_ZEBRA_EVM_ATTESTATION_PENDING"
             return result
@@ -326,6 +327,7 @@ def run(
     if release_usdc and batch["status_code"] != STATUS_RELEASED:
         release_data = "0x" + _selector("releaseBatch(bytes32)") + _batch_id_hex(batch_id)
         result["release_transaction"] = _send_evm_transaction(release_data, private_key, cfg, wait_seconds)
+        result["broadcast"] = True
         if result["release_transaction"]["status"] != "EVM_TRANSACTION_CONFIRMED":
             result["status"] = "ZEC_ATTESTED_USDC_RELEASE_PENDING"
             return result
@@ -333,7 +335,6 @@ def run(
         if batch["status_code"] != STATUS_RELEASED:
             raise OracleError("release transaction mined, but escrow does not report RELEASED")
     result["onchain_escrow_status"] = batch["status_code"]
-    result["broadcast"] = True
     result["status"] = "USDC_RELEASED" if batch["status_code"] == STATUS_RELEASED else "ZEC_CONFIRMED_USDC_LOCKED"
     return result
 
