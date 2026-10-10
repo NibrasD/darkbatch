@@ -480,21 +480,43 @@ def _build_request(plan: Dict[str, Any], wallets: Dict[str, Any], anchor_hex: st
     return request, signing_rows
 
 
+def _selected_inputs_and_signers(
+    owners: Dict[str, Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Tuple[Dict[str, Any], Path]]]:
+    """Rebuild inputs and signing order from each owner's selected real Notes."""
+    inputs: List[Dict[str, Any]] = []
+    signing_rows: List[Tuple[Dict[str, Any], Path]] = []
+    for owner in owners.values():
+        for note in owner["selected"]:
+            inputs.append({
+                "fvk_hex": owner["fvk_hex"],
+                "raw_address_hex": note["raw_address_hex"].lower(),
+                "value_zat": note["_value"],
+                "rho_hex": note["rho_hex"].lower(),
+                "rseed_hex": note["rseed_hex"].lower(),
+                "merkle_position": note["_position"],
+                "merkle_path_hex": note["_path"],
+            })
+            signing_rows.append((owner, owner["spending_key_file"]))
+    return inputs, signing_rows
+
+
 def _run_full_pczt(binary: Path, workdir: Path, request: Dict[str, Any],
                    signing_rows: List[Tuple[Dict[str, Any], Path]]) -> Tuple[Dict[str, Any], str]:
     request_path = workdir / "private-fba-build.json"
     unsigned_pczt = workdir / "unsigned.pczt"
     build_report_path = workdir / "build-report.json"
-    _write_private_json(request_path, request)
 
     # Increase input selection only when the official builder indicates a genuine fee/funding
     # shortfall; invalid notes and bad Merkle paths must stop rather than be silently skipped.
+    # Keep this iterative: recursive retries can exceed Python's recursion limit for wallets
+    # with many small notes, and must rebuild action-index/signing order after every added input.
     owner_lookup = {owner["fvk_hex"]: owner for owner, _ in signing_rows}
-    all_signing_rows = list(signing_rows)
-    tried_counts = tuple(len(owner["selected"]) for owner in owner_lookup.values())
     maximum_rounds = sum(len(owner["candidates"]) for owner in owner_lookup.values()) + 1
     last_error = ""
+    build_report: Dict[str, Any] | None = None
     for _attempt in range(maximum_rounds):
+        request["inputs"], signing_rows = _selected_inputs_and_signers(owner_lookup)
         for path in (unsigned_pczt, build_report_path):
             try:
                 path.unlink()
@@ -521,12 +543,11 @@ def _run_full_pczt(binary: Path, workdir: Path, request: Dict[str, Any],
                 if next_note is not None:
                     owner["selected"].append(next_note)
                     owner["selected_value"] += next_note["_value"]
-                    # Rebuild inputs and signing-order mapping together; never keep stale indexes.
-                    return _retry_with_more_notes(binary, workdir, request, owner_lookup, signing_rows, next_note)
                     advanced = True
+                    break
             if not advanced:
                 raise AgentError(f"available notes cannot fund the actual protocol fee/change: {last_error}") from exc
-    else:
+    if build_report is None:
         raise AgentError(f"could not build PCZT after exhausting candidate notes: {last_error}")
 
     if build_report.get("status") != "FBA_PCZT_READY_FOR_LOCAL_PARTICIPANT_SIGNATURES":
@@ -590,29 +611,6 @@ def _run_full_pczt(binary: Path, workdir: Path, request: Dict[str, Any],
     if proof_report.get("network_confirmed") is not False or proof_report.get("broadcast_ready") is not True:
         raise AgentError("proof report contains inconsistent transaction readiness fields")
     return {"build_report": build_report, "proof_report": proof_report}, raw_tx_hex
-
-
-def _retry_with_more_notes(binary: Path, workdir: Path, request: Dict[str, Any],
-                           owners: Dict[str, Dict[str, Any]],
-                           original_rows: List[Tuple[Dict[str, Any], Path]],
-                           added_note: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
-    # Rebuild input records and key assignment from each owner's authoritative selected-note list.
-    inputs = []
-    signing_rows = []
-    for owner in owners.values():
-        for note in owner["selected"]:
-            inputs.append({
-                "fvk_hex": owner["fvk_hex"],
-                "raw_address_hex": note["raw_address_hex"].lower(),
-                "value_zat": note["_value"],
-                "rho_hex": note["rho_hex"].lower(),
-                "rseed_hex": note["rseed_hex"].lower(),
-                "merkle_position": note["_position"],
-                "merkle_path_hex": note["_path"],
-            })
-            signing_rows.append((owner, owner["spending_key_file"]))
-    request["inputs"] = inputs
-    return _run_full_pczt(binary, workdir, request, signing_rows)
 
 
 def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
