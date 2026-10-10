@@ -76,7 +76,13 @@ class BatchAuctionSolver:
     def solve(self, epoch_id: int, intents: List[SwapOrderIntent]) -> BatchClearResult:
         start_time = time.perf_counter()
 
-        valid_intents = [i for i in intents if i.verify_signature()]
+        # Ignore exact replay of an already-seen intent ID within one epoch.
+        # The pro-rata allocator is keyed by intent_id, so duplicates must not be counted twice.
+        valid_by_id: Dict[str, SwapOrderIntent] = {}
+        for intent in intents:
+            if intent.verify_signature():
+                valid_by_id.setdefault(intent.intent_id, intent)
+        valid_intents = list(valid_by_id.values())
         buys = [i for i in valid_intents if i.direction == OrderDirection.BUY_ZEC]
         sells = [i for i in valid_intents if i.direction == OrderDirection.SELL_ZEC]
 
