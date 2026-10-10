@@ -569,7 +569,7 @@ pub fn combine_pczt_files(input_paths: &[String], output_path: &str) -> Result<(
     Ok(())
 }
 
-fn prove_and_extract(pczt: Pczt) -> Result<Vec<u8>, String> {
+fn prove_and_extract(pczt: Pczt) -> Result<(Vec<u8>, String, u32), String> {
     let proving_key = orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::PostNu6_3);
     let mut rng = rand::rng();
     let proved = Prover::new(pczt)
@@ -700,7 +700,7 @@ mod tests {
         let path = MerklePath::from_parts(0, [zero; 32]);
         let anchor = path.root(note.commitment().into());
         let request = PcztBuildRequest {
-            target_height: TESTNET_NU6_3_HEIGHT + 100,
+            target_height: TESTNET_NU7_HEIGHT + 100,
             ironwood_anchor_hex: hex::encode(anchor.to_bytes()),
             inputs: vec![PcztSpendInput {
                 fvk_hex: hex::encode(fvk.to_bytes()),
