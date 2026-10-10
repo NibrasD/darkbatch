@@ -10,7 +10,7 @@ The operator opens a batch with a fixed plan hash, sorted buyer deposit rows, so
 
 An unconfirmed batch can become `REFUNDABLE` only after its deadline and only through the oracle. The oracle must verify that the ZEC leg is not confirmed and cannot still validly confirm before attesting this. Paid buyers can claim only their own deposits. A successful refund does not alter another buyer's entitlement.
 
-The contract exposes eleven static ABI words via `getBatchStatus(bytes32)`. Word 11 is `escrowDataHash = keccak256(abi.encode(buyerAddresses, buyerAmounts, sellerAddresses, sellerAmounts))`. The coordinator compares it with the exact plan's payout arrays as well as comparing the plan hash and totals.
+The contract exposes eleven static ABI words via `getBatchStatus(bytes32)`. Word 11 is `escrowDataHash = keccak256(abi.encode(buyerAddresses, buyerAmounts, sellerAddresses, sellerAmounts))`. The coordinator compares it with the exact plan's payout arrays as well as comparing the plan hash and totals. When finalizing, the coordinator also requires the confirmed escrow batch to reference the exact ZEC TXID and block hash stored for the epoch, and verifies an EVM receipt containing the matching `BatchReleased(batchId, zecTxid)` event plus the configured minimum number of EVM confirmations.
 
 ## Build and test
 
@@ -22,7 +22,7 @@ forge test --root contracts -vv
 
 ## Deployment prerequisites
 
-No contract is deployed by the repository changes. Before any value is used, choose a target EVM network; verify its canonical USDC token address and six-decimal amount convention; deploy the contract with distinct operator and oracle accounts; fund only test tokens first; and independently test refund and payout paths. Configure the coordinator with `DARKBATCH_QUOTE_RPC_URL`, `DARKBATCH_QUOTE_CHAIN_ID`, `DARKBATCH_USDC_TOKEN_ADDRESS`, and `DARKBATCH_USDC_ESCROW_ADDRESS`.
+No contract is deployed by the repository changes. The coordinator can set `DARKBATCH_QUOTE_MIN_CONFIRMATIONS` (default `1`) to require additional EVM block confirmations for USDC release receipts. Before any value is used, choose a target EVM network; verify its canonical USDC token address and six-decimal amount convention; deploy the contract with distinct operator and oracle accounts; fund only test tokens first; and independently test refund and payout paths. Configure the coordinator with `DARKBATCH_QUOTE_RPC_URL`, `DARKBATCH_QUOTE_CHAIN_ID`, `DARKBATCH_USDC_TOKEN_ADDRESS`, and `DARKBATCH_USDC_ESCROW_ADDRESS`.
 
 The oracle is a major trust boundary: the EVM contract cannot prove that a shielded Zcash transaction is confirmed or unconfirmed. The oracle service must independently query a trusted, synchronized Zebra node and publish confirmation / expiry attestations. There is currently no deployed oracle or end-to-end key management in this repository. The contract and the whole cross-chain mechanism have not been audited and must not be used with real funds.
 

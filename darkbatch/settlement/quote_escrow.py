@@ -196,8 +196,7 @@ def _rpc(url: str, method: str, params: list[Any]) -> Any:
     return result["result"]
 
 
-def _selector(signature: str) -> str:
-    # keccak-256, as required by the Ethereum ABI (not hashlib.sha3_256).
+def _keccak256_hex(payload: bytes) -> str:
     try:
         from Crypto.Hash import keccak
     except ImportError as exc:
@@ -205,8 +204,13 @@ def _selector(signature: str) -> str:
             "EVM escrow verification requires pycryptodome; install requirements.txt"
         ) from exc
     digest = keccak.new(digest_bits=256)
-    digest.update(signature.encode("ascii"))
-    return digest.hexdigest()[:8]
+    digest.update(payload)
+    return digest.hexdigest()
+
+
+def _selector(signature: str) -> str:
+    # keccak-256, as required by the Ethereum ABI (not hashlib.sha3_256).
+    return _keccak256_hex(signature.encode("ascii"))[:8]
 
 
 def _word(result: str, index: int) -> str:
@@ -334,6 +338,8 @@ def verify_released_quote_batch_by_hash(
     expected_total_micro: int,
     release_txid: str,
     expected_escrow_data_hash: str,
+    expected_zec_txid: str,
+    expected_zec_block_hash: str,
 ) -> Dict[str, Any]:
     """Verify an EVM batch is RELEASED for the plan attached to a confirmed ZEC transaction."""
     normalized_hash = str(expected_plan_hash).lower().removeprefix("0x")
@@ -351,12 +357,52 @@ def verify_released_quote_batch_by_hash(
         raise QuoteEscrowError("released USDC totals do not match the FBA quote")
     if batch["token_address"] != batch["expected_token_address"]:
         raise QuoteEscrowError("released quote batch uses the wrong token contract")
+    normalized_zec_txid = _batch_id_hex(expected_zec_txid)
+    normalized_zec_block_hash = _batch_id_hex(expected_zec_block_hash)
+    if batch["zec_txid"] != normalized_zec_txid or batch["zec_block_hash"] != normalized_zec_block_hash:
+        raise QuoteEscrowError("escrow's confirmed ZEC TXID/block hash does not match the confirmed epoch transaction")
+
+    cfg = _config()
     txid = _batch_id_hex(release_txid)
-    receipt = _rpc(_config()["rpc_url"], "eth_getTransactionReceipt", ["0x" + txid])
+    receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", ["0x" + txid])
     if not isinstance(receipt, dict) or int(receipt.get("status", "0x0"), 16) != 1:
         raise QuoteEscrowError("USDC release transaction is not confirmed successfully on the EVM network")
     if str(receipt.get("to", "")).lower() != batch["escrow_address"]:
         raise QuoteEscrowError("USDC release receipt was not sent to the configured escrow contract")
+
+    # A generic successful call to the escrow is not proof that this batch was released.
+    event_topic = "0x" + _keccak256_hex(b"BatchReleased(bytes32,bytes32)")
+    expected_batch_topic = "0x" + _batch_id_hex(batch_id)
+    expected_tx_topic = "0x" + normalized_zec_txid
+    found_batch_release = False
+    for log in receipt.get("logs", []):
+        topics = log.get("topics", [])
+        if (
+            str(log.get("address", "")).lower() == batch["escrow_address"]
+            and len(topics) >= 3
+            and str(topics[0]).lower() == event_topic
+            and str(topics[1]).lower() == expected_batch_topic
+            and str(topics[2]).lower() == expected_tx_topic
+        ):
+            found_batch_release = True
+            break
+    if not found_batch_release:
+        raise QuoteEscrowError("EVM receipt has no BatchReleased event for this exact escrow batch and ZEC TXID")
+
+    # Require a configurable number of EVM confirmations to reduce release-receipt reorg risk.
+    try:
+        minimum_confirmations = int(os.getenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "1"))
+        receipt_height = int(str(receipt.get("blockNumber", "0x0")), 16)
+        chain_tip = int(_rpc(cfg["rpc_url"], "eth_blockNumber", []), 16)
+    except (ValueError, TypeError):
+        raise QuoteEscrowError("EVM release receipt has no usable block number or confirmation configuration")
+    if minimum_confirmations < 1 or receipt_height <= 0 or chain_tip < receipt_height:
+        raise QuoteEscrowError("EVM release receipt block/confirmation configuration is invalid")
+    if chain_tip - receipt_height + 1 < minimum_confirmations:
+        raise QuoteEscrowError(
+            f"USDC release has {chain_tip - receipt_height + 1} EVM confirmation(s); "
+            f"{minimum_confirmations} required"
+        )
     return {
         "status": "USDC_RELEASED",
         "release_txid": "0x" + txid,

@@ -734,6 +734,8 @@ def finalize_quote_leg(
             quote_total,
             req.quote_release_txid,
             str(record.get("quote_escrow_data_hash", "")),
+            zec_txid,
+            str(record.get("block_hash", "")),
         )
     except QuoteEscrowError as exc:
         raise HTTPException(status_code=409, detail=f"USDC payout is not verified; epoch remains pending: {exc}")
