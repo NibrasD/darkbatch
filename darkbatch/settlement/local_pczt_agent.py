@@ -758,6 +758,69 @@ def _settle_usdc_after_zec_confirmation(
     return result
 
 
+def finalize_usdc_existing(
+    api_base: str,
+    epoch_id: int,
+    workdir: Path,
+    token: str,
+    quote_batch_id: str,
+    minimum_zec_confirmations: int = 2,
+    evm_wait_seconds: int = 120,
+) -> Dict[str, Any]:
+    """Resume only the USDC release/finalization for a previously broadcast transaction."""
+    api_base = _validated_api_base(api_base)
+    if not quote_batch_id:
+        raise AgentError("--finalize-usdc-existing requires --quote-batch-id")
+    if minimum_zec_confirmations < 1 or evm_wait_seconds < 1:
+        raise AgentError("minimum ZEC confirmations and EVM wait timeout must be positive")
+    if not os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip():
+        raise AgentError("--finalize-usdc-existing requires DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY in the local environment")
+
+    plan_path = workdir / "fba-plan.json"
+    proof_path = workdir / "proof-report.json"
+    for path in (plan_path, proof_path):
+        if not path.is_file():
+            raise AgentError(f"USDC recovery artifact is missing: {path}")
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    if plan.get("schema") != PLAN_SCHEMA or int(plan.get("epoch_id", -1)) != epoch_id:
+        raise AgentError("saved FBA plan does not match the requested epoch")
+    if proof.get("status") != "PROOF_GENERATED_AND_TRANSACTION_EXTRACTED" or proof.get("network") != "Zcash Testnet":
+        raise AgentError("saved proof report is not a verified Testnet V6 extraction report")
+    txid = str(proof.get("txid", "")).strip().lower()
+    if len(txid) != 64 or any(ch not in "0123456789abcdef" for ch in txid):
+        raise AgentError("saved proof report has an invalid ZEC TXID")
+
+    latest = _json_http(
+        api_base.rstrip("/") + f"/api/v1/settlement/tx/{txid}",
+        token=token,
+        timeout=10.0,
+    )
+    confirmations = int(latest.get("confirmations", 0))
+    if latest.get("status") != "CONFIRMED" or confirmations < minimum_zec_confirmations:
+        return {
+            "status": "ZEC_CONFIRMATIONS_PENDING",
+            "epoch_id": epoch_id,
+            "txid": txid,
+            "confirmations": confirmations,
+            "minimum_zec_confirmations": minimum_zec_confirmations,
+            "epoch_settled": False,
+            "message": "USDC was not submitted: the coordinator has not observed the required real ZEC confirmations.",
+        }
+
+    result = _settle_usdc_after_zec_confirmation(
+        api_base, epoch_id, quote_batch_id, txid, plan_path, token,
+        minimum_zec_confirmations, evm_wait_seconds,
+    )
+    return {
+        **result,
+        "epoch_id": epoch_id,
+        "txid": txid,
+        "confirmations": confirmations,
+        "workdir": str(workdir),
+    }
+
+
 def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
               workdir: Path, token: str, max_age: int, max_tip_lag: int,
               broadcast: bool, quote_batch_id: str | None = None,
@@ -1112,6 +1175,8 @@ def main() -> int:
                         help="Private JSON inventory from a real synced Zcash Testnet wallet/provider; required unless --submit-existing")
     parser.add_argument("--submit-existing", action="store_true",
                         help="Submit the already-proven raw transaction in --workdir without rescanning/rebuilding")
+    parser.add_argument("--finalize-usdc-existing", action="store_true",
+                        help="Resume only the USDC oracle/release/finalization for a previously broadcast ZEC transaction; never rebroadcasts ZEC")
     parser.add_argument("--rust-binary", type=Path,
                         default=Path(os.getenv("DARKBATCH_CRYPTO_BIN", "darkbatch_crypto/target/release/darkbatch_crypto")))
     parser.add_argument("--workdir", required=True, type=Path,
@@ -1142,7 +1207,14 @@ def main() -> int:
         if args.wait_for_confirmation < 0 or args.poll_interval <= 0:
             raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
         api_base = args.api_base.rstrip("/")
-        if args.submit_existing:
+        if args.finalize_usdc_existing:
+            if args.submit_existing or args.broadcast or args.wallet_inventory is not None or args.settle_usdc:
+                raise AgentError("--finalize-usdc-existing must be used alone; it never builds or broadcasts a ZEC transaction")
+            result = finalize_usdc_existing(
+                api_base, args.epoch_id, args.workdir.resolve(), token,
+                args.quote_batch_id, args.minimum_zec_confirmations, args.evm_wait_seconds,
+            )
+        elif args.submit_existing:
             result = submit_existing(
                 api_base, args.epoch_id, args.workdir.resolve(), token,
                 args.quote_batch_id, args.wait_for_confirmation, args.poll_interval,
@@ -1150,7 +1222,7 @@ def main() -> int:
             )
         else:
             if args.wallet_inventory is None:
-                raise AgentError("--wallet-inventory is required unless --submit-existing is used")
+                raise AgentError("--wallet-inventory is required unless --submit-existing or --finalize-usdc-existing is used")
             result = run_agent(
                 api_base, args.epoch_id, args.wallet_inventory, args.rust_binary.resolve(),
                 args.workdir.resolve(), token, args.max_inventory_age, args.max_tip_lag, args.broadcast,
