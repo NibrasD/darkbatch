@@ -411,16 +411,22 @@ def get_testnet_status():
         "testnet_nu7_activation_height": 4465026,
         "testnet_nu7_consensus_branch_id": "0x77190AD9",
         "local_pczt_agent_required": True,
+        "local_pczt_cli_available": True,
+        "participant_pczt_redaction_available": True,
         "local_raw_v6_submission_available": True,
-        "quote_escrow_supported": True,
+        "automatic_spendable_note_selection_available": False,
+        "automatic_fba_to_pczt_handoff_available": False,
+        "quote_escrow_verification_supported": True,
         "quote_escrow_configured": all(os.getenv(name, "").strip() for name in (
             "DARKBATCH_QUOTE_RPC_URL", "DARKBATCH_QUOTE_CHAIN_ID",
             "DARKBATCH_USDC_TOKEN_ADDRESS", "DARKBATCH_USDC_ESCROW_ADDRESS",
         )),
-        "quote_leg_settlement_implemented": True,
-        "live_broadcast_block_reason": None if bundle_builder_is_live_safe else (
-            "Legacy assembler is not certified for live broadcast; valid participant spend inputs, "
-            "cooperative PCZT authorization, and matching Halo 2 proofs are not implemented."
+        "automatic_quote_leg_settlement_available": False,
+        "live_broadcast_block_reason": (
+            "Automatic FBA settlement remains disabled. The legacy FBA assembler is not safe to broadcast. "
+            "A separate official-PCZT CLI supports manual build, redacted participant signing, proof/extraction, "
+            "and raw-V6 submission, but still requires real spendable notes/witnesses from a trusted local wallet "
+            "and an explicit token-protected handoff; the API does not scan notes or invoke that workflow automatically."
         ),
         "remote_chain_info": chain_info,
         "local_simulation_enabled": TESTNET_ADAPTER.allow_simulation,
