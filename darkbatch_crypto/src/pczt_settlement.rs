@@ -125,7 +125,7 @@ fn prepare_spend(input: &PcztSpendInput, anchor: Anchor) -> Result<PreparedSpend
     let address = Address::from_raw_address_bytes(&address_bytes).into_option()
         .ok_or_else(|| "input.raw_address_hex is not a valid raw Ironwood address".to_string())?;
     let rho_bytes = decode_array::<32>(&input.rho_hex, "input.rho_hex")?;
-    let rho = Rho::from_bytes(rho_bytes).into_option()
+    let rho = Rho::from_bytes(&rho_bytes).into_option()
         .ok_or_else(|| "input.rho_hex is not a canonical Orchard rho".to_string())?;
     let rseed_bytes = decode_array::<32>(&input.rseed_hex, "input.rseed_hex")?;
     let rseed = RandomSeed::from_bytes(rseed_bytes, &rho).into_option()
@@ -345,7 +345,7 @@ mod tests {
         let address = fvk.address_at(0u32, Scope::External);
         let address_raw = address.to_raw_address_bytes();
         let rho_bytes = [1u8; 32];
-        let rho = Rho::from_bytes(rho_bytes).into_option().expect("valid rho");
+        let rho = Rho::from_bytes(&rho_bytes).into_option().expect("valid rho");
         let rseed_bytes = [2u8; 32];
         let rseed = RandomSeed::from_bytes(rseed_bytes, &rho).into_option().expect("valid rseed");
         let note = Note::from_parts(address.clone(), NoteValue::from_raw(1_000_000), rho, rseed, NoteVersion::V3)
