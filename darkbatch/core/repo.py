@@ -84,22 +84,28 @@ def save_intent(intent: SwapOrderIntent, epoch_id: int):
     cur.execute("""
     INSERT OR REPLACE INTO intents (
         intent_id, direction, base_amount_zat, limit_price_cents,
-        shielded_address, expiry_height, value_commitment, bsk_share,
+        shielded_address, quote_address, expiry_height, value_commitment, bsk_share,
         auth_pubkey_hex, signature_hex, epoch_id, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         intent.intent_id, intent.direction.value, intent.base_amount_zat,
-        intent.limit_price_cents, intent.shielded_address, intent.expiry_height,
+        intent.limit_price_cents, intent.shielded_address, intent.quote_address, intent.expiry_height,
         intent.value_commitment, hex(intent.bsk_share), intent.auth_pubkey_hex,
         intent.signature_hex, epoch_id, "PENDING", intent.created_at_timestamp
     ))
     conn.commit()
     conn.close()
 
-def get_pending_intents() -> List[SwapOrderIntent]:
+def get_pending_intents(epoch_id: Optional[int] = None) -> List[SwapOrderIntent]:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM intents WHERE status = 'PENDING'")
+    if epoch_id is None:
+        cur.execute("SELECT * FROM intents WHERE status = 'PENDING' ORDER BY intent_id")
+    else:
+        cur.execute(
+            "SELECT * FROM intents WHERE status = 'PENDING' AND epoch_id = ? ORDER BY intent_id",
+            (epoch_id,),
+        )
     rows = cur.fetchall()
     conn.close()
     res = []
@@ -110,6 +116,7 @@ def get_pending_intents() -> List[SwapOrderIntent]:
             base_amount_zat=r["base_amount_zat"],
             limit_price_cents=r["limit_price_cents"],
             shielded_address=r["shielded_address"],
+            quote_address=r["quote_address"] if "quote_address" in r.keys() else None,
             expiry_height=r["expiry_height"],
             created_at_timestamp=r["created_at"],
             blinding_scalar=1,  # deserialized
@@ -166,10 +173,170 @@ def record_epoch_clear(
     conn.commit()
     conn.close()
 
+def record_epoch_zec_pending(
+    epoch_id: int,
+    clearing_price_usd: float,
+    total_cleared_zec: float,
+    total_cleared_usd: float,
+    tx_id: str,
+    intent_ids: List[str],
+    quote_batch_id: Optional[str] = None,
+    quote_plan_hash: Optional[str] = None,
+    quote_total_micro: Optional[int] = None,
+    quote_escrow_data_hash: Optional[str] = None,
+    quote_chain_id: Optional[int] = None,
+    target_height: Optional[int] = None,
+    consensus_branch_id: Optional[str] = None,
+):
+    """Persist broadcast-pending ZEC leg, but do not mark the cross-asset trade as filled."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO epochs (
+            epoch_id, status, clearing_price_usd, total_cleared_zec,
+            total_cleared_usd, tx_id, block_hash, quote_batch_id,
+            quote_plan_hash, quote_escrow_data_hash, quote_chain_id,
+            quote_total_micro, quote_tx_id, target_height,
+            consensus_branch_id, intent_ids_json, created_at
+        ) VALUES (?, 'ZEC_LEG_PENDING', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+        ON CONFLICT(epoch_id) DO UPDATE SET
+            status='ZEC_LEG_PENDING',
+            clearing_price_usd=excluded.clearing_price_usd,
+            total_cleared_zec=excluded.total_cleared_zec,
+            total_cleared_usd=excluded.total_cleared_usd,
+            tx_id=excluded.tx_id,
+            block_hash=NULL,
+            quote_batch_id=excluded.quote_batch_id,
+            quote_plan_hash=excluded.quote_plan_hash,
+            quote_escrow_data_hash=excluded.quote_escrow_data_hash,
+            quote_chain_id=excluded.quote_chain_id,
+            quote_total_micro=excluded.quote_total_micro,
+            quote_tx_id=NULL,
+            target_height=excluded.target_height,
+            consensus_branch_id=excluded.consensus_branch_id,
+            intent_ids_json=excluded.intent_ids_json,
+            created_at=excluded.created_at
+        """,
+        (
+            epoch_id, clearing_price_usd, total_cleared_zec, total_cleared_usd, tx_id,
+            quote_batch_id, quote_plan_hash, quote_escrow_data_hash, quote_chain_id,
+            quote_total_micro, target_height, consensus_branch_id,
+            json.dumps(sorted(set(intent_ids))), time.time(),
+        ),
+    )
+    for intent_id in intent_ids:
+        cur.execute(
+            "UPDATE intents SET status = 'ZEC_LEG_PENDING' WHERE intent_id = ? AND epoch_id = ? AND status = 'PENDING'",
+            (intent_id, epoch_id),
+        )
+    cur.execute(
+        "INSERT OR IGNORE INTO epochs (epoch_id, status, created_at) VALUES (?, 'ACTIVE', ?)",
+        (epoch_id + 1, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_epoch_zec_confirmed(epoch_id: int, tx_id: str, block_hash: str):
+    """Mark only the ZEC leg confirmed; quote settlement still remains pending."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE epochs
+        SET status='ZEC_CONFIRMED_QUOTE_PENDING', block_hash=?
+        WHERE epoch_id=? AND tx_id=?
+          AND status IN ('ZEC_LEG_PENDING', 'ZEC_CONFIRMED_QUOTE_PENDING')
+        """,
+        (block_hash, epoch_id, tx_id),
+    )
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise RuntimeError("epoch does not match the exact broadcast TXID or is not awaiting ZEC confirmation")
+    cur.execute(
+        """
+        UPDATE intents
+        SET status='ZEC_CONFIRMED_QUOTE_PENDING'
+        WHERE epoch_id=? AND status IN ('ZEC_LEG_PENDING', 'ZEC_CONFIRMED_QUOTE_PENDING')
+        """,
+        (epoch_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_epoch_quote_settled(
+    epoch_id: int,
+    zec_tx_id: str,
+    zec_block_hash: str,
+    quote_batch_id: str,
+    quote_plan_hash: str,
+    quote_total_micro: int,
+    quote_tx_id: str,
+):
+    """Mark FBA intents FILLED only after both ZEC confirmation and on-chain USDC release."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE epochs
+        SET status='CLEARED', tx_id=?, block_hash=?, quote_batch_id=?,
+            quote_plan_hash=?, quote_total_micro=?, quote_tx_id=?
+        WHERE epoch_id=?
+          AND status='ZEC_CONFIRMED_QUOTE_PENDING'
+          AND tx_id=? AND block_hash=?
+          AND quote_batch_id=? AND quote_plan_hash=? AND quote_total_micro=?
+        """,
+        (
+            zec_tx_id, zec_block_hash, quote_batch_id, quote_plan_hash,
+            int(quote_total_micro), quote_tx_id, epoch_id, zec_tx_id, zec_block_hash,
+            quote_batch_id, quote_plan_hash, int(quote_total_micro),
+        ),
+    )
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise RuntimeError("epoch no longer matches the confirmed ZEC transaction and funded quote batch")
+    cur.execute(
+        """
+        UPDATE intents SET status='FILLED'
+        WHERE epoch_id=? AND status='ZEC_CONFIRMED_QUOTE_PENDING'
+        """,
+        (epoch_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_epoch_by_txid(tx_id: str) -> Optional[Dict[str, Any]]:
+    """Recover the persisted ZEC/USDC association after the API process restarts."""
+    if not isinstance(tx_id, str) or not tx_id.strip():
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM epochs WHERE lower(tx_id) = lower(?) ORDER BY epoch_id DESC LIMIT 1",
+        (tx_id.strip(),),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    record = dict(row)
+    try:
+        record["intent_ids"] = json.loads(record.get("intent_ids_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        record["intent_ids"] = []
+    record["txid"] = str(record.get("tx_id") or "").lower()
+    return record
+
+
 def get_epoch_history() -> List[Dict[str, Any]]:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM epochs WHERE status = 'CLEARED' ORDER BY epoch_id DESC")
+    cur.execute("SELECT * FROM epochs WHERE status IN ('CLEARED', 'ZEC_LEG_PENDING', 'ZEC_CONFIRMED_QUOTE_PENDING') ORDER BY epoch_id DESC")
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]

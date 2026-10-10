@@ -1,0 +1,52 @@
+name: DarkBatch validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: darkbatch-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python API and FBA tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pytest fastapi pydantic cryptography pycryptodome eth-account
+      - name: Build Rust crypto CLI used by Python
+        run: cargo build --release --manifest-path darkbatch_crypto/Cargo.toml
+      - name: Compile Python sources
+        run: python -m compileall -q darkbatch
+      - name: Check dashboard JavaScript syntax
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          html = pathlib.Path("darkbatch/web/index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, flags=re.I | re.S)
+          if not scripts:
+              raise SystemExit("No inline JavaScript found in dashboard")
+          pathlib.Path("/tmp/darkbatch-dashboard.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/darkbatch-dashboard.js
+      - name: Run test suite
+        run: python -m pytest darkbatch/tests/ -v
+
+  rust-tests:
+    name: Rust cryptography tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Rust tests
+        run: cargo test --release --manifest-path darkbatch_crypto/Cargo.toml

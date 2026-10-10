@@ -1,155 +1,118 @@
-# DarkBatch 🛡️⚖️
-### Confidential Intent-Based Frequent Batch Auction (FBA) & RFQ Protocol with ZIP-229 Settlement for Shielded Zcash (Ironwood Era)
+# DarkBatch
 
-[![Zcash Protocol](https://img.shields.io/badge/Zcash-NU6.3%20Ironwood-blue.svg)](https://z.cash)
-[![Specification](https://img.shields.io/badge/Spec-ZIP--229%20v6%20(0xD884B698)-amber.svg)](https://zips.z.cash/zip-0229)
-[![Rust Engine](https://img.shields.io/badge/Rust-pasta__curves%20Pallas-orange.svg)](https://crates.io/crates/pasta_curves)
-[![MEV Protection](https://img.shields.io/badge/MEV%20Protection-100%25%20FBA-emerald.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-green.svg)]()
+**Privacy-preserving uniform-price batch trading for shielded Zcash, with a USDC quote-asset escrow.**
 
----
+DarkBatch explores a frequent batch auction (FBA) where orders are matched off-chain in discrete epochs and ZEC settlement is constructed with Zcash's official Rust/PCZT tooling. A separate EVM escrow holds USDC payouts and releases them only after a local oracle verifies the associated ZEC transaction on Zebra Testnet.
 
-## 1. Executive Summary & Design Philosophy
+> **Project status: research prototype.** The repository now contains the local Ironwood wallet scanner, real-note inventory exporter, official-library PCZT build/sign/prove/extract path, Zebra broadcast/confirmation tracking, USDC escrow checks, and opt-in oracle/release/recovery workflow. The complete cross-chain path has **not yet been demonstrated end-to-end on a funded Testnet wallet and deployed EVM escrow**. Do not present a local test, simulated receipt, successful broadcast, or code path as proof of a confirmed cross-chain settlement. Do not use mainnet funds.
 
-**DarkBatch** is an institutional-grade, MEV-free decentralized exchange primitive engineered for the **Zcash Ironwood shielded ecosystem**. Inspired by the venture success of **Archer Exchange** (4th Place DeFi, Colosseum Cypherpunk) and the mathematical foundations of **Frequent Batch Auctions (FBA)**, DarkBatch solves the single greatest barrier facing shielded ZEC adoption: **private, zero-slippage, front-running-immune liquidity**.
+## What the project does
 
-### Architectural Positioning & Scope
-To maintain complete cryptographic and protocol integrity:
-1. **The Off-Chain Matching Layer (FBA / RFQ):** Market participants commit off-chain sealed limit intents. In discrete epochs, an autonomous solver aggregates supply and demand curves to calculate a single **Uniform Clearing Price ($P^*$)**. All inframarginal orders are filled 100%, and pro-rata rationing is applied strictly to marginal orders at $P^*$.
-2. **The Settlement Layer (ZIP 229 / Ironwood Adapter):** Fills are compiled into **ZIP-229 Transaction v6** consensus payloads (`0xD884B698`), encoding authentic 820-byte `OrchardAction` descriptors (§ 7.5) with 580-byte encrypted note ciphertexts (`0x03` Ironwood format).
-3. **Execution Transparency:** Fully distinguishes between `BROADCAST_TESTNET_LIVE` (active Zebra JSON-RPC `sendrawtransaction`) and `VERIFIED_LOCAL_CONSENSUS` (local Zebra NU6.3 consensus validator engine).
+1. **Batch matching.** Collects sealed intents, finds a uniform clearing price, and uses deterministic integer-zatoshi allocation for marginal pro-rata fills.
+2. **Private local spend preparation.** A locally run Zebra Testnet scanner tracks actual Ironwood notes and current Merkle witnesses. Private wallet inventory, note openings, viewing keys, Merkle paths, and spending keys remain on the local machine.
+3. **Official Zcash transaction path.** Rust tooling builds a V6 PCZT from real spendable notes and the shared anchor, maps buyer fills and per-seller change, signs participant contributions, proves, and extracts raw V6 transaction bytes.
+4. **Cross-asset USDC leg.** The coordinator verifies the exact USDC escrow funding and payout commitments before allowing ZEC broadcast. After the required ZEC confirmations, the explicit local oracle workflow attests the matching transaction, releases escrowed USDC, and asks the coordinator to finalize only after it verifies the matching release receipt.
+5. **Fail-closed status.** A simulated balance, local block, raw-transaction submission, ZEC confirmation, and USDC release are separate states. The legacy experimental assembler is blocked from live broadcast; only the extracted official-library V6 transaction can be submitted through the trusted local workflow.
 
----
+## Implementation and evidence
 
-## 2. Protocol Correctness & Cryptographic Specifications
+| Area | Implemented in repository | What still needs proof |
+|---|---|---|
+| FBA matching and epoch records | Python API, solver, tests, dashboard | Independent economic/privacy review |
+| Wallet scanning | Zebra Testnet RPC scanner, Ironwood note tracking, Merkle witness refresh, private inventory export | Run against a funded synced wallet with real notes |
+| PCZT settlement | Rust V6 construction, participant redaction/signing, combination, Halo 2 proof and extraction | Successful build/prove and real transaction acceptance on a live Testnet |
+| USDC escrow | Solidity escrow state machine, payout-plan commitment checks, EVM read/preflight | Deploy/configure escrow and fund a test batch |
+| Cross-chain completion | Confirmation-gated oracle, release, coordinator finalization, pending-transaction recovery | Execute and archive an end-to-end ZEC+USDC Testnet evidence bundle |
+| Automated validation | Python, Rust and Solidity test suites/workflows | The latest GitHub Actions attempts did not start any step because no runner was assigned; they are **not passing test runs** |
 
-### A. Authentic Pallas Curve Cryptography (`darkbatch_crypto`)
-* Implemented in Rust using `pasta_curves = "0.6"` ($y^2 = x^3 + 5$ over $\mathbb{F}_p$) and official Zcash crates (`orchard = "0.16.0"`, `reddsa = "0.6"`, `blake2b_simd = "1.0"`).
-* **Protocol-Compliant Generator Derivation (Zcash Specification § 5.4.9.4):**
-  $$\mathcal{V}^{\text{Orchard}} = \mathrm{GroupHash}^{\mathbb{P}}(\texttt{"z.cash:Orchard-cv"}, \texttt{"v"})$$
-  $$\mathcal{R}^{\text{Orchard}} = \mathrm{GroupHash}^{\mathbb{P}}(\texttt{"z.cash:Orchard-cv"}, \texttt{"r"})$$
-* **Pedersen Value Commitments:**
-  $$C = [v] \cdot \mathcal{V}^{\text{Orchard}} + [r] \cdot \mathcal{R}^{\text{Orchard}}$$
-* **Consensus Value Balance Conservation:**
-  $$\sum C^{\text{in}} - \sum C^{\text{out}} - [valueBalance]\mathcal{V} = [bsk_{\text{bundle}}] \cdot \mathcal{R}$$
+The repository is not independently audited, and this software is not a production DEX or trustless atomic swap. The EVM oracle is an explicit trust boundary: the contract relies on the configured oracle to attest to Zebra's observed confirmation. Any committee evaluation should distinguish a working code path from a verified live-chain execution.
 
-### B. Spend Authorization & Randomized Keys (§ 5.4.6.1)
-* **Randomized Validating Key Derivation:**
-  $$rsk = \mathrm{RandomizePrivate}(\alpha, ask), \quad rk = \mathrm{DerivePublic}(rsk)$$
-* $rk$ is embedded at offset 64..96 of each 820-byte `OrchardAction`.
-* The spend authorization signature in `vSpendAuthSigsIronwood` is signed by $rsk$ over the canonical SIGHASH digest and verifies mathematically against $rk$ ($rk.\mathrm{verify}(sighash, sig) == \mathrm{Ok(())}$).
+## Architecture
 
-### C. Authentic Zcash Orchard Note Encryption (§ 5.4.3.4 & § 5.4.3.5)
-* **Key Agreement on Pallas:**
-  - $g_d = \mathrm{DiversifyHash}(d)$
-  - $epk = [esk] \cdot g_d$
-  - $pk_d = [ivk] \cdot g_d$
-  - $sharedSecret = [esk] \cdot pk_d = [ivk] \cdot epk$
-* **Key Derivation (KDF):**
-  $$K^{\text{enc}} = \mathrm{BLAKE2b-256}(\texttt{"Zcash\_OrchardKDF"}, sharedSecret \parallel epk)$$
-  $$ock = \mathrm{BLAKE2b-256}(\texttt{"Zcash\_Orchardock"}, ovk \parallel cv \parallel cmx \parallel epk)$$
-* **Note Plaintext & Ciphertexts:**
-  - `NotePlaintext` (564B): Lead byte `0x03` (ZIP 2005) + diversifier (11B) + value (8B) + rseed (32B) + raw memo (512B).
-  - $C^{\text{enc}}$ (580B): `ChaCha20Poly1305`($K^{\text{enc}}$, $0^{12}$, `NotePlaintext`).
-  - $C^{\text{out}}$ (80B): `ChaCha20Poly1305`($ock$, $0^{12}$, $pk_d \parallel esk$).
-  - Decryptable exclusively by recipient's $ivk$ via $[ivk] \cdot epk$.
+~~~
+Sealed intents
+     |
+     v
+FBA solver (uniform price + integer pro-rata fills)
+     |
+     v
+Private local settlement plan
+     |
+     +-------------------------+
+     |                         |
+     v                         v
+Zebra Testnet wallet       USDC escrow preflight
+scan / notes / witnesses   exact plan + funding check
+     |                         |
+     v                         |
+Rust PCZT build, participant signatures, Halo 2 proof
+     |
+     v
+Extract V6 transaction -> Zebra broadcast -> required confirmations
+     |
+     v
+Local oracle verifies tx + epoch + payout commitments
+     |
+     v
+EVM attestation -> USDC release receipt -> coordinator verifies -> CLEARED
+~~~
 
-### D. ZIP 244 Hierarchical Transaction Identifier for Transaction v6 (ZIP 229 § 7.1)
-* Tree of digests computed using official BLAKE2b-256 personalizations:
-  - Header Digest: `BLAKE2b-256("ZTxIdIronwd_H_v6", header || version_group_id || branch_id || lock_time || expiry_height)`
-  - Transparent Digest: `BLAKE2b-256("ZTxIdIronwd_T_v6", "")`
-  - Sapling Digest: `BLAKE2b-256("ZTxIdIronwd_S_v6", "")`
-  - Orchard Digest: `BLAKE2b-256("ZTxIdIronwd_O_v6", "")`
-  - Action Digest: `BLAKE2b-256("ZTxIdIronwAct_v6", nActions || action_1 || ...)`
-  - Ironwood Digest: `BLAKE2b-256("ZTxIdIronwd_I_v6", actions_digest || flags || value_balance || anchor)`
-  - Root Identifier ($txid$): `BLAKE2b-256("ZTxIdIronwdHash_", header_digest || transparent_digest || sapling_digest || orchard_digest || ironwood_digest)`
+The legacy API does not treat an epoch-clear action or a simulated result as settlement success.
 
-### E. Halo 2 Orchard Prover & Verifier Key Architecture
-* Circuit parameters integrated directly with `orchard::circuit::VerifyingKey::build(OrchardCircuitVersion::PostNu6_3)`.
+## Run the local demo
 
----
+The local demo demonstrates the matching API and dashboard, **not live ZEC or USDC transfers**.
 
-## 3. End-to-End Execution Pipeline
-
-```
-Trader A (Buyer)  ─── Sealed Limit Intent ────┐
-Trader B (Seller) ─── Sealed Limit Intent ────┼──> [ DarkBatch Zero-Leak Mempool ]
-Trader C (Whale)  ─── Sealed Limit Intent ────┘                   │
-                                                                   ▼
-                                                       [ Batch Solver Engine ]
-                                                       - Solves Uniform Price P*
-                                                       - Inframarginal filled 100%
-                                                       - Marginal prorated
-                                                                   │
-                                                                   ▼
-                                                   [ ZIP-229 Settlement Engine ]
-                                                   - Version Group ID: 0xD884B698
-                                                   - Branch ID: 0x37A5165B (NU6.3)
-                                                   - 820B OrchardActions (§ 7.5)
-                                                   - 580B encCiphertext (lead 0x03)
-                                                   - ZIP 244 Hierarchical Digest TxID
-                                                                   │
-                                                                   ▼
-                                                   [ Testnet Settlement Adapter ]
-                                                   - Live RPC sendrawtransaction (live_node: true)
-                                                   - Local Zebra NU6.3 validator (live_node: false)
-```
-
----
-
-## 4. Verification & Testing
-
-### 1. Running the Rust Cryptographic Suite
-```bash
-cargo test --manifest-path darkbatch_crypto/Cargo.toml --release
-```
-All 11 Rust tests pass:
-* `test_zip229_consensus_constants`: Verifies `VERSION_GROUP_ID_V6 == 0xD884B698` and branch `0x37A5165B`.
-* `test_orchard_action_exact_820_bytes`: Verifies exact 820-byte serialization per § 7.5.
-* `test_authentic_zcash_note_encryption_roundtrip`: Verifies RFC 8439 580-byte note encryption and IVK decryption.
-* `test_authentic_randomized_spend_auth`: Verifies RedPallas $rsk \to rk$ verification.
-* `test_zip244_hierarchical_txid`: Verifies ZIP 229 § 7.1 tree of digests.
-* `test_orchard_circuit_keys`: Verifies `OrchardCircuitVersion::PostNu6_3` Halo 2 parameter generation.
-* `test_pedersen_homomorphism` & `test_value_balance_conservation`.
-
-### 2. Running the Full Python Test Suite
-```bash
-python -m pytest darkbatch/tests/ -v
-```
-All 9 unit and end-to-end integration tests pass 100%:
-* `test_pedersen_commitment` (Pallas engine with `z.cash:Orchard-cv` derivation)
-* `test_strictly_512_byte_encrypted_memo` (strict 512-byte buffer)
-* `test_intent_creation_and_signature`
-* `test_fba_inframarginal_priority_and_marginal_rationing`
-* `test_mev_resistance_and_order_invariance`
-* `test_zip228_action_groups_and_v6_bundle` (ZIP 229 v6 bundle with 0xD884B698, 580B ciphertext, and IVK note decryption)
-* `test_testnet_settlement_adapter_broadcast` (Local Zebra NU6.3 verification & transparent receipt)
-* `test_nu6_3_consensus_and_crypto_integrity` (NU6.3 consensus constants & RedPallas signatures)
-* `test_full_system_lifecycle` (E2E lifecycle with consensus engine)
-
----
-
-## 5. Live Demo & Interaction
-
-### 1. Start Coordinator API
-```bash
+~~~bash
+python -m pip install -r requirements.txt
 python -m uvicorn darkbatch.api.server:app --host 127.0.0.1 --port 8000
-```
+~~~
 
-### 2. Run CLI Operations
-```bash
-# Seed realistic sealed liquidity
+In a second terminal:
+
+~~~bash
 python darkbatch/cli/darkbatch_cli.py epoch seed
-
-# View zero-leak mempool
 python darkbatch/cli/darkbatch_cli.py epoch status
-
-# Trigger uniform clearing & settlement
 python darkbatch/cli/darkbatch_cli.py epoch clear
-```
+~~~
 
-### 3. Web Dashboard
-Navigate to `http://127.0.0.1:8000` to interact with:
-* Real-time sealed orderbook (zero cleartext leaks).
-* Dynamic supply & demand depth chart showing $P^*$ clearing price.
-* Ironwood block explorer with Action Groups and 512-byte memo decrypter using wallet IVKs.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Inspect the reported settlement status; the local simulator is not Zebra, and the legacy assembler is not live-broadcastable.
+
+## Build and test
+
+~~~bash
+cargo build --release --manifest-path darkbatch_crypto/Cargo.toml
+cargo test --release --manifest-path darkbatch_crypto/Cargo.toml
+python -m compileall -q darkbatch
+python -m pytest darkbatch/tests/ -v
+~~~
+
+Solidity escrow tests (requires Foundry):
+
+~~~bash
+forge test --root contracts -vv
+~~~
+
+These commands must be run successfully before treating the corresponding test suites as validated. Unit tests do not replace a real Zebra transaction and USDC escrow integration run.
+
+## Real Testnet workflow
+
+The real-wallet workflow is intentionally explicit and runs beside the user's synced wallet/node:
+
+- [Ironwood wallet scan → private inventory → PCZT → optional Zebra/USDC settlement](docs/IRONWOOD_LOCAL_WALLET_WORKFLOW.md)
+- [PCZT settlement implementation notes](docs/LOCAL_PCZT_SETTLEMENT.md)
+- [Submission brief for reviewers](docs/SUBMISSION_BRIEF.md)
+
+Use a Zebra **Testnet** node and a funded, correctly configured test escrow only. Keep spending keys and private inventory out of Git, logs, screenshots, and the public coordinator. The **--settle-usdc** switch is an irreversible action: use it only after reviewing the epoch, batch ID, payout commitments, and preflight result.
+
+## Security boundaries
+
+- No automatic simulation fallback for a failed real-network submission.
+- No status of **CLEARED** until the coordinator validates the confirmed ZEC transaction and matching USDC release receipt.
+- Wallet inventory, note openings, witnesses, PCZTs, and keys are local-only artifacts.
+- Pending EVM transaction hashes are persisted locally and polled during recovery rather than replaced automatically.
+- No mainnet deployment is recommended before independent protocol, cryptographic, wallet, contract, and economic review.
+
+## License
+
+See [LICENSE](LICENSE).

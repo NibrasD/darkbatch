@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DarkBatch — Confidential Intent-Based Batch Auction (Zcash Ironwood)</title>
+    <title>DarkBatch — Experimental FBA Prototype (Live Settlement Disabled)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -33,11 +33,11 @@
                 <div>
                     <div class="flex items-center gap-2">
                         <span class="text-lg font-bold tracking-tight text-white">DarkBatch</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Ironwood NU6.3</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">ZIP-228 / v6</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">Zero-Leak Sealed</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Local Prototype</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Experimental FBA</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">Simulated Orders</span>
                     </div>
-                    <p class="text-xs text-slate-400">MEV-Free Intent Batch Auction for Shielded Zcash</p>
+                    <p class="text-xs text-slate-400">Experimental FBA matching — local simulation only</p>
                 </div>
             </div>
 
@@ -86,7 +86,7 @@
                 Equilibrium Depth Curve
             </button>
             <button onclick="switchTab('explorer')" id="tab-explorer" class="py-2.5 px-4 font-semibold text-slate-400 hover:text-white border-b-2 border-transparent">
-                Ironwood Block Explorer & Memo Decrypter
+                Local Simulation Explorer & Memo Decrypter
             </button>
             <button onclick="switchTab('spec')" id="tab-spec" class="py-2.5 px-4 font-semibold text-slate-400 hover:text-white border-b-2 border-transparent">
                 Whitepaper & ZIP-228 Specs
@@ -144,6 +144,12 @@
                             <input id="input-address" type="text" readonly class="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2 text-[11px] mono text-slate-400 truncate">
                         </div>
 
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">USDC Wallet (EVM address)</label>
+                            <input id="input-quote-address" type="text" placeholder="0x… (required for USDC settlement)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-[11px] mono text-white focus:outline-none focus:border-amber-500 transition">
+                            <p class="mt-1 text-[10px] text-slate-500">This address is part of the signed order terms. Demo wallets can leave it empty; actual USDC settlement cannot.</p>
+                        </div>
+
                         <div class="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl text-xs space-y-1">
                             <div class="flex justify-between text-slate-400">
                                 <span>Pallas Commitment:</span>
@@ -154,8 +160,8 @@
                                 <span class="mono text-emerald-400">bsk_i Generated</span>
                             </div>
                             <div class="flex justify-between text-slate-400">
-                                <span>Mempool Confidentiality:</span>
-                                <span class="text-purple-400 font-semibold">100% Sealed</span>
+                                <span>Protocol Status:</span>
+                                <span class="text-amber-300 font-semibold">Experimental / Unaudited</span>
                             </div>
                         </div>
 
@@ -166,12 +172,12 @@
                 </div>
             </div>
 
-            <!-- Right: ZERO-LEAK SEALED MEMPOOL (8 Cols) -->
+            <!-- Right: Local sealed-intent prototype (not privacy-audited) -->
             <div class="lg:col-span-8 space-y-5">
                 <!-- Epoch Header Banner -->
                 <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
                     <div>
-                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Zero-Leak Confidential Mempool</span>
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Local Sealed-Intent Pool</span>
                         <div class="flex items-baseline gap-3 mt-1">
                             <span class="text-2xl font-bold text-white mono" id="banner-epoch">Epoch #1</span>
                             <span class="text-xs text-purple-400 font-semibold" id="banner-pending-count">0 sealed orders</span>
@@ -187,7 +193,7 @@
                 <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 space-y-3">
                     <div class="flex justify-between items-center border-b border-slate-800 pb-2">
                         <h3 class="text-xs font-bold text-purple-400 flex items-center gap-2">
-                            <span>🔒</span> ACTIVE SEALED INTENT POOL (ZERO-LEAK)
+                            <span>🔒</span> LOCAL INTENT POOL (NOT AUDITED)
                         </h3>
                         <span id="sealed-count-badge" class="text-xs mono text-slate-400">0 orders committed</span>
                     </div>
@@ -214,11 +220,11 @@
                             <p id="res-price" class="text-base font-bold text-amber-400 mono mt-0.5">$0.00</p>
                         </div>
                         <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="text-slate-500 uppercase text-[10px]">Cleared Volume</span>
+                            <span class="text-slate-500 uppercase text-[10px]">Proposed Volume</span>
                             <p id="res-volume" class="text-base font-bold text-white mono mt-0.5">0.00 ZEC</p>
                         </div>
                         <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                            <span class="text-slate-500 uppercase text-[10px]">Settled Value USD</span>
+                            <span class="text-slate-500 uppercase text-[10px]">Proposed Value USD</span>
                             <p id="res-usd" class="text-base font-bold text-white mono mt-0.5">$0.00</p>
                         </div>
                         <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
@@ -227,13 +233,14 @@
                         </div>
                     </div>
 
+                    <div id="execution-status" class="p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200" role="status">Live settlement is disabled: current bundles are not certified for cooperative PCZT broadcast.</div>
                     <div class="p-3.5 bg-slate-950 rounded-xl border border-slate-800/80 text-xs mono space-y-1.5 text-slate-400">
                         <div class="flex justify-between truncate">
-                            <span>Bundle TXID:</span>
+                            <span>Candidate TXID (not broadcast):</span>
                             <span id="res-txid" class="text-slate-200">Awaiting execution...</span>
                         </div>
                         <div class="flex justify-between truncate">
-                            <span>Mined Block Hash:</span>
+                            <span>Simulation Block Hash:</span>
                             <span id="res-block" class="text-amber-400/90 truncate max-w-xs">None</span>
                         </div>
                     </div>
@@ -274,8 +281,8 @@
 
             <!-- Block List -->
             <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
-                <h2 class="text-base font-bold text-white mb-1">Ironwood Shielded Block Explorer</h2>
-                <p class="text-xs text-slate-400 mb-4">Mined blocks, Action Groups [SwapAction + FeeAction], and 512-byte memos.</p>
+                <h2 class="text-base font-bold text-white mb-1">Local Simulation Explorer</h2>
+                <p class="text-xs text-rose-300 mb-4">Local simulated records only. These are not Zebra blocks, Testnet confirmations, or real ZEC transfers.</p>
                 <div id="blocks-list" class="space-y-3">
                     <div class="text-center text-slate-500 py-8 text-xs">Loading blocks...</div>
                 </div>
@@ -284,22 +291,19 @@
 
         <!-- TAB 4: WHITEPAPER & SPECIFICATIONS -->
         <div id="view-spec" class="hidden bg-slate-900/70 border border-slate-800 rounded-2xl p-6 text-sm text-slate-300 space-y-4 leading-relaxed">
-            <h2 class="text-lg font-bold text-white">DarkBatch: Technical Whitepaper & Architectural Summary</h2>
+            <h2 class="text-lg font-bold text-white">DarkBatch: Prototype Architecture & Known Limitations</h2>
             <p>
-                DarkBatch brings the venture-backed market structure innovation of <strong>Archer Exchange</strong> (4th Place DeFi in Colosseum Cypherpunk) directly to <strong>Zcash NU6.3 (Ironwood Era)</strong>.
+                DarkBatch is an experimental sealed-intent FBA matching prototype. It is not yet able to settle real ZEC on Zcash Testnet.
             </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Zero-Leak Sealed Intent Protocol</h3>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">1. Sealed-Intent Prototype (not privacy-audited)</h3>
             <p>
-                Unlike transparent order books where high-frequency bots front-run and extract MEV, DarkBatch uses a sealed mempool where only Pallas Pedersen value commitments ($C = [v]\mathcal{V} + [r]\mathcal{R}$) are visible. Trade prices, sizes, and counterparties are 100% concealed.
-            </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">2. Authentic ZIP-228 Swap Bundles</h3>
+                This prototype calculates batch matches from locally stored order intents. The current UI hides raw order details from its public orderbook endpoint, but the implementation has not been independently audited for confidentiality and is not a production privacy guarantee.</p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">2. Experimental Settlement Builder (not live-safe)</h3>
             <p>
-                Each Swap Order forms an <code>ActionGroup</code> containing both a <code>SwapAction</code> and a <code>FeeAction</code>. The binding keys are summed up ($bsk_{\text{bundle}} = \sum bsk_i \pmod q$), proving that the bundle conserves value on-chain without disclosing individual amounts.
-            </p>
-            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Strict 512-Byte Memos & ZIP 229 (Transaction v6)</h3>
+                The legacy FBA API assembler remains unsafe for live broadcast. A separate Rust command-line tool uses the official Zcash transaction builder to create a V6 PCZT from supplied real notes and Merkle witnesses, accepts local participant signatures, creates the Ironwood proof and extracts raw transaction bytes. It is not yet automatically driven by FBA fills and does not implement the USDC leg.</p>
+            <h3 class="text-base font-semibold text-amber-400 mt-4">3. Work required before Testnet</h3>
             <p>
-                Settlement transactions conform to <strong>ZIP 229 (Transaction v6)</strong> and <strong>ZIP 258 (NU6.3)</strong> with mandatory consensus Version Group ID <code>0xD884B698</code>, Consensus Branch ID <code>0x37A5165B</code>, Zebra full validator support (activation height 4,134,000), authentic 820-byte <code>OrchardAction</code> encodings (§ 7.5), RFC 8439 ChaCha20Poly1305 580-byte <code>encCiphertext</code> (lead byte <code>0x03</code> for Ironwood), real RedPallas signatures on Pallas curve, and live Testnet broadcast adapter integration.
-            </p>
+                The local Rust tool requires real note data, full viewing keys and current Merkle witnesses supplied privately; it does not scan the wallet automatically or combine independent participant contributions yet. A separate local command can submit its extracted V6 transaction to Zebra Testnet and poll for a block confirmation, but only then can the ZEC leg be described as confirmed. USDC settlement remains unimplemented.</p>
         </div>
 
     </main>
@@ -404,6 +408,7 @@
             const zec = parseFloat(document.getElementById('input-amount').value);
             const price = parseFloat(document.getElementById('input-price').value);
             const addr = document.getElementById('input-address').value;
+            const quoteAddress = document.getElementById('input-quote-address').value.trim();
 
             await fetch('/api/v1/intent', {
                 method: 'POST',
@@ -412,7 +417,8 @@
                     direction: currentDirection,
                     zec_amount: zec,
                     limit_price_usd: price,
-                    shielded_address: addr
+                    shielded_address: addr,
+                    quote_address: quoteAddress || null
                 })
             });
             fetchEpoch();
@@ -425,15 +431,258 @@
         }
 
         async function clearEpochNow() {
-            const res = await fetch('/api/v1/epoch/clear', { method: 'POST' });
+            const statusBox = document.getElementById('execution-status');
+            statusBox.innerText = 'Checking settlement requirements…';
+            statusBox.className = 'p-3 rounded-xl border border-slate-700 bg-slate-900 text-xs text-slate-300';
+            try {
+                const res = await fetch('/api/v1/epoch/clear', { method: 'POST' });
+                const data = await res.json();
+                const result = data.result || {};
+                const state = result.status || data.status || 'UNKNOWN';
+
+                if (state === 'LOCAL_PCZT_REQUIRED') {
+                    statusBox.innerText = 'FBA matched locally. No ZEC has moved. A trusted local agent must select real unspent Notes, verify Merkle witnesses, sign each participant input, generate the Halo 2 proof, and extract the V6 transaction. USDC is not settled by this step.';
+                    statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
+                } else if (state === 'SETTLEMENT_BLOCKED') {
+                    statusBox.innerText = 'SETTLEMENT BLOCKED — no transaction was broadcast. ' + (result.reason || 'Check the local Testnet PCZT agent and Zebra status.');
+                    statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
+                } else if (state === 'SIMULATED_ONLY') {
+                    statusBox.innerText = 'SIMULATION ONLY — no Zcash transaction or confirmation exists.';
+                    statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
+                } else if (state === 'BROADCAST_PENDING_CONFIRMATION' || state === 'MEMPOOL') {
+                    statusBox.innerText = 'ZEC transaction broadcast; awaiting a real Testnet block confirmation. The USDC/quote leg is still NOT SETTLED.';
+                    statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
+                } else if (state === 'ZEC_CONFIRMED_QUOTE_PENDING' || state === 'CONFIRMED') {
+                    statusBox.innerText = 'ZEC leg confirmed on Testnet. USDC/quote leg is not integrated; the complete FBA trade is NOT SETTLED.';
+                    statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
+                } else if (state === 'SETTLED_AND_MINED') {
+                    statusBox.innerText = 'Local simulator result only. It is not a real Testnet settlement.';
+                    statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
+                } else {
+                    statusBox.innerText = 'No completed settlement. Status: ' + state;
+                    statusBox.className = 'p-3 rounded-xl border border-slate-700 bg-slate-900 text-xs text-slate-300';
+                }
+            } catch (error) {
+                statusBox.innerText = 'Could not check settlement status: ' + error.message;
+                statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
+            }
+            fetchEpoch();
+            fetchWallets();
+        }
+
+        async function decryptMemo() {
+            const hex = document.getElementById('input-memo-hex').value.trim();
+            if (!hex) return;
+            const res = await fetch('/api/v1/wallet/decrypt-memo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ alias: currentWallet, memo_hex: hex })
+            });
             const data = await res.json();
-            if (data.result && data.result.status === 'SETTLED_AND_MINED') {
-                document.getElementById('res-price').innerText = '$' + data.result.clearing_price_usd.toFixed(2);
-                document.getElementById('res-volume').innerText = data.result.cleared_zec.toFixed(2) + ' ZEC';
-                document.getElementById('res-usd').innerText = '$' + data.result.cleared_usd.toFixed(2);
-                document.getElementById('res-latency').innerText = data.result.execution_latency_ms + ' ms';
-                document.getElementById('res-txid').innerText = data.result.tx_id;
-                document.getElementById('res-block').innerText = data.result.block_hash;
+            const box = document.getElementById('decrypted-result');
+            box.classList.remove('hidden');
+            if (data.status === 'SUCCESS') {
+                box.innerText = JSON.stringify(data.receipt, null, 2);
+                box.className = 'p-3 bg-slate-950 border border-emerald-500/30 rounded-xl text-xs mono text-emerald-400 whitespace-pre-wrap';
+            } else {
+                box.innerText = 'Decryption failed: ' + (data.detail || 'Wrong viewing key for this output');
+                box.className = 'p-3 bg-slate-950 border border-rose-500/30 rounded-xl text-xs mono text-rose-400 whitespace-pre-wrap';
+            }
+        }
+
+        async function loadExplorer() {
+            const res = await fetch('/api/v1/node/blocks');
+            const data = await res.json();
+            const container = document.getElementById('blocks-list');
+            container.innerHTML = '<div class="p-2 text-[11px] text-rose-300">LOCAL SIMULATION — not Testnet</div>' + data.blocks.map(b => `
+                <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 mono text-xs">
+                    <div class="flex justify-between items-center">
+                        <span class="text-amber-400 font-bold text-sm">Block #${b.height}</span>
+                        <span class="text-slate-500">${new Date(b.timestamp * 1000).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="text-slate-400 truncate">Hash: <span class="text-slate-200">${b.hash}</span></div>
+                    <div class="text-slate-400 truncate">Anchor Root: <span class="text-emerald-400">${b.anchor_root}</span></div>
+                    <div class="text-slate-400">Transactions: <span class="text-white">${b.tx_count} v6 settlement tx</span></div>
+                </div>
+            `).join('');
+        }
+
+        function renderDepthChart() {
+            const ctx = document.getElementById('depthChart').getContext('2d');
+            if (depthChart) depthChart.destroy();
+            depthChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['$40.00', '$41.00', '$42.00', '$42.60 (P*)', '$43.00', '$44.00', '$45.00'],
+                    datasets: [
+                        {
+                            label: 'Cumulative Demand (Bids)',
+                            data: [60, 55, 48, 35, 20, 10, 0],
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            fill: true,
+                            stepped: true
+                        },
+                        {
+                            label: 'Cumulative Supply (Asks)',
+                            data: [0, 10, 22, 35, 45, 52, 60],
+                            borderColor: '#f43f5e',
+                            backgroundColor: 'rgba(244, 63, 94, 0.1)',
+                            fill: true,
+                            stepped: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' }, title: { display: true, text: 'Volume (ZEC)', color: '#94a3b8' } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#e2e8f0' } }
+                    }
+                }
+            });
+        }
+
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/feed');
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'TICK') {
+                    document.getElementById('header-epoch').innerText = '#' + data.epoch_id;
+                    document.getElementById('header-countdown').innerText = data.seconds_remaining + 's';
+                } else if (data.type === 'NEW_SEALED_INTENT' || data.type === 'SEEDED' || data.type === 'EPOCH_CLEARED') {
+                    fetchEpoch();
+                    fetchWallets();
+                }
+            };
+            ws.onclose = () => setTimeout(initWebSocket, 2000);
+        }
+
+        fetchWallets();
+        fetchEpoch();
+        initWebSocket();
+        setInterval(fetchEpoch, 3000);
+    </script>
+</body>
+</html>
+ + Number(result.clearing_price_usd || 0).toFixed(2);
+                    document.getElementById('res-volume').innerText = Number(result.cleared_zec || 0).toFixed(2) + ' ZEC';
+                    document.getElementById('res-usd').innerText = '
+        async function decryptMemo() {
+            const hex = document.getElementById('input-memo-hex').value.trim();
+            if (!hex) return;
+            const res = await fetch('/api/v1/wallet/decrypt-memo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ alias: currentWallet, memo_hex: hex })
+            });
+            const data = await res.json();
+            const box = document.getElementById('decrypted-result');
+            box.classList.remove('hidden');
+            if (data.status === 'SUCCESS') {
+                box.innerText = JSON.stringify(data.receipt, null, 2);
+                box.className = 'p-3 bg-slate-950 border border-emerald-500/30 rounded-xl text-xs mono text-emerald-400 whitespace-pre-wrap';
+            } else {
+                box.innerText = 'Decryption failed: ' + (data.detail || 'Wrong viewing key for this output');
+                box.className = 'p-3 bg-slate-950 border border-rose-500/30 rounded-xl text-xs mono text-rose-400 whitespace-pre-wrap';
+            }
+        }
+
+        async function loadExplorer() {
+            const res = await fetch('/api/v1/node/blocks');
+            const data = await res.json();
+            const container = document.getElementById('blocks-list');
+            container.innerHTML = data.blocks.map(b => `
+                <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 mono text-xs">
+                    <div class="flex justify-between items-center">
+                        <span class="text-amber-400 font-bold text-sm">Block #${b.height}</span>
+                        <span class="text-slate-500">${new Date(b.timestamp * 1000).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="text-slate-400 truncate">Hash: <span class="text-slate-200">${b.hash}</span></div>
+                    <div class="text-slate-400 truncate">Anchor Root: <span class="text-emerald-400">${b.anchor_root}</span></div>
+                    <div class="text-slate-400">Transactions: <span class="text-white">${b.tx_count} v6 settlement tx</span></div>
+                </div>
+            `).join('');
+        }
+
+        function renderDepthChart() {
+            const ctx = document.getElementById('depthChart').getContext('2d');
+            if (depthChart) depthChart.destroy();
+            depthChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['$40.00', '$41.00', '$42.00', '$42.60 (P*)', '$43.00', '$44.00', '$45.00'],
+                    datasets: [
+                        {
+                            label: 'Cumulative Demand (Bids)',
+                            data: [60, 55, 48, 35, 20, 10, 0],
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            fill: true,
+                            stepped: true
+                        },
+                        {
+                            label: 'Cumulative Supply (Asks)',
+                            data: [0, 10, 22, 35, 45, 52, 60],
+                            borderColor: '#f43f5e',
+                            backgroundColor: 'rgba(244, 63, 94, 0.1)',
+                            fill: true,
+                            stepped: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' }, title: { display: true, text: 'Volume (ZEC)', color: '#94a3b8' } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#e2e8f0' } }
+                    }
+                }
+            });
+        }
+
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/feed');
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'TICK') {
+                    document.getElementById('header-epoch').innerText = '#' + data.epoch_id;
+                    document.getElementById('header-countdown').innerText = data.seconds_remaining + 's';
+                } else if (data.type === 'NEW_SEALED_INTENT' || data.type === 'SEEDED' || data.type === 'EPOCH_CLEARED') {
+                    fetchEpoch();
+                    fetchWallets();
+                }
+            };
+            ws.onclose = () => setTimeout(initWebSocket, 2000);
+        }
+
+        fetchWallets();
+        fetchEpoch();
+        initWebSocket();
+        setInterval(fetchEpoch, 3000);
+    </script>
+</body>
+</html>
+ + Number(result.cleared_usd || 0).toFixed(2);
+                    document.getElementById('res-latency').innerText = (result.execution_latency_ms ?? '—') + ' ms';
+                    document.getElementById('res-txid').innerText = result.tx_id || '—';
+                    document.getElementById('res-block').innerText = result.block_hash || '—';
+                } else {
+                    statusBox.innerText = 'No settlement confirmation. Status: ' + (data.status || result.status || 'unknown');
+                }
+            } catch (error) {
+                statusBox.innerText = 'Could not check settlement status: ' + error.message;
+                statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
             }
             fetchEpoch();
             fetchWallets();

@@ -1,0 +1,11 @@
+{
+  "name": "darkbatch-usdc-escrow-operations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "escrow:open": "node register-usdc-batch.mjs",
+    "escrow:deposit": "node deposit-usdc-batch.mjs",
+    "escrow:release": "node confirm-zec-and-release-usdc.mjs"
+  },
+  "dependencies": { "ethers": "^6.15.0" }
+}

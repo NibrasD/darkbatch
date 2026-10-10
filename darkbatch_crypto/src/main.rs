@@ -6,16 +6,32 @@ use group::GroupEncoding;
 use pasta_curves::pallas::Scalar;
 use ff::PrimeField;
 use std::env;
+use std::io::Read;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | build-fba-pczt-local | redact-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local | scan-ironwood-block-stdin | ironwood-tree-root-stdin | derive-ironwood-address-stdin | export-ironwood-fvk-stdin]");
         return;
     }
 
     match args[1].as_str() {
+        "scan-ironwood-block-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| {
+                darkbatch_crypto::scan_ironwood_block_json(&input)
+                    .and_then(|value| serde_json::to_value(value).map_err(|e| format!("Could not serialize scan result: {e}")))
+            })
+        ),
+        "ironwood-tree-root-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| darkbatch_crypto::ironwood_tree_root_json(&input))
+        ),
+        "derive-ironwood-address-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| darkbatch_crypto::derive_ironwood_address_json(&input))
+        ),
+        "export-ironwood-fvk-stdin" => emit_json_result(
+            read_stdin_json_string().and_then(|input| darkbatch_crypto::export_ironwood_fvk_json(&input))
+        ),
         "commit" => {
             let val: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);
             let r = if let Some(r_hex) = args.get(3) {
@@ -450,6 +466,91 @@ fn main() {
                 Err(e) => println!("{}", serde_json::json!({ "error": e })),
             }
         }
+        "build-pczt-local" => {
+            let input = args.get(2).map(String::as_str).unwrap_or("");
+            let pczt_output = args.get(3).map(String::as_str).unwrap_or("");
+            let report_output = args.get(4).map(String::as_str).unwrap_or("");
+            if input.is_empty() || pczt_output.is_empty() || report_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto build-pczt-local <private-build.json> <unsigned.pczt> <report.json>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::build_pczt_from_files(input, pczt_output, report_output) {
+                Ok(report) => println!("{}", serde_json::to_string_pretty(&report).unwrap()),
+                Err(e) => { eprintln!("PCZT build failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "build-fba-pczt-local" => {
+            let input = args.get(2).map(String::as_str).unwrap_or("");
+            let pczt_output = args.get(3).map(String::as_str).unwrap_or("");
+            let report_output = args.get(4).map(String::as_str).unwrap_or("");
+            if input.is_empty() || pczt_output.is_empty() || report_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto build-fba-pczt-local <private-fba-settlement.json> <unsigned.pczt> <report.json>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::build_fba_pczt_from_files(input, pczt_output, report_output) {
+                Ok(report) => println!("{}", serde_json::to_string_pretty(&report).unwrap()),
+                Err(e) => { eprintln!("FBA PCZT build failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "redact-pczt-local" => {
+            let pczt_input = args.get(2).map(String::as_str).unwrap_or("");
+            let action_index: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+            let pczt_output = args.get(4).map(String::as_str).unwrap_or("");
+            if pczt_input.is_empty() || action_index == usize::MAX || pczt_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto redact-pczt-local <private-unsigned.pczt> <ironwood-action-index> <participant-redacted.pczt>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::redact_pczt_for_participant_file(
+                pczt_input, action_index, pczt_output
+            ) {
+                Ok(()) => println!("{}", serde_json::json!({
+                    "status":"PARTICIPANT_PCZT_REDACTED",
+                    "ironwood_action_index":action_index,
+                    "output":pczt_output,
+                    "other_spend_note_metadata_shared":false,"output_wallet_metadata_shared":false
+                })),
+                Err(e) => { eprintln!("PCZT redaction failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "sign-pczt-local" => {
+            let pczt_input = args.get(2).map(String::as_str).unwrap_or("");
+            let spending_key_file = args.get(3).map(String::as_str).unwrap_or("");
+            let action_index: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+            let pczt_output = args.get(5).map(String::as_str).unwrap_or("");
+            if pczt_input.is_empty() || spending_key_file.is_empty() || action_index == usize::MAX || pczt_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto sign-pczt-local <participant-redacted.pczt> <local-spending-key-file> <ironwood-action-index> <signed-redacted.pczt>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::sign_pczt_from_local_key_file(pczt_input, spending_key_file, action_index, pczt_output) {
+                Ok(()) => println!("{}", serde_json::json!({"status":"PARTICIPANT_SIGNATURE_ADDED_LOCALLY","ironwood_action_index":action_index})),
+                Err(e) => { eprintln!("PCZT signing failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "combine-pczts-local" => {
+            let output = args.get(2).map(String::as_str).unwrap_or("");
+            let inputs: Vec<String> = args.iter().skip(3).cloned().collect();
+            if output.is_empty() || inputs.len() < 2 {
+                eprintln!("Usage: darkbatch_crypto combine-pczts-local <combined.pczt> <private-original-unsigned.pczt> <signed-redacted-a.pczt> [more signed-redacted PCZTs...]");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::combine_pczt_files(&inputs, output) {
+                Ok(()) => println!("{}", serde_json::json!({"status":"PCZT_CONTRIBUTIONS_COMBINED","contributions":inputs.len(),"output":output})),
+                Err(e) => { eprintln!("PCZT combination failed: {e}"); std::process::exit(1); }
+            }
+        }
+        "prove-extract-pczt-local" => {
+            let pczt_input = args.get(2).map(String::as_str).unwrap_or("");
+            let tx_hex_output = args.get(3).map(String::as_str).unwrap_or("");
+            let report_output = args.get(4).map(String::as_str).unwrap_or("");
+            if pczt_input.is_empty() || tx_hex_output.is_empty() || report_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto prove-extract-pczt-local <fully-signed.pczt> <raw-transaction.hex> <report.json>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::prove_extract_pczt_to_hex_file(pczt_input, tx_hex_output, report_output) {
+                Ok(()) => println!("{}", std::fs::read_to_string(report_output).unwrap_or_default()),
+                Err(e) => { eprintln!("PCZT proof/extraction failed: {e}"); std::process::exit(1); }
+            }
+        }
         "generate-ironwood-proof" => {
             let addr_hex = args.get(2).cloned().unwrap_or_default();
             let val_zat: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);
@@ -486,6 +587,27 @@ fn main() {
         }
         _ => {
             eprintln!("Unknown command");
+        }
+    }
+}
+
+fn read_stdin_json_string() -> Result<String, String> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| format!("Could not read request from stdin: {e}"))?;
+    if input.trim().is_empty() {
+        return Err("Request body is empty.".to_owned());
+    }
+    Ok(input)
+}
+
+fn emit_json_result(result: Result<serde_json::Value, String>) {
+    match result {
+        Ok(value) => println!("{}", value),
+        Err(error) => {
+            eprintln!("Ironwood wallet operation failed closed: {error}");
+            std::process::exit(2);
         }
     }
 }

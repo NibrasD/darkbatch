@@ -1,7 +1,9 @@
 """
-DarkBatch Zcash Ironwood Node Simulator
-Simulates consensus rules, block mining, nullifier double-spend prevention,
-and the Incremental Note Commitment Tree for the Ironwood shielded pool.
+DarkBatch LOCAL SIMULATOR ONLY.
+
+This module does not implement Zebra, Zcash consensus validation, or real mining.
+It is a deterministic test double for the FBA and settlement API. Nothing it
+"mines" is a Zcash block, and its anchors/nullifier set are not network state.
 """
 
 from dataclasses import dataclass, field
@@ -23,8 +25,7 @@ class SimulatedBlock:
 
 class ZcashNodeSimulator:
     """
-    Simulates a consensus-verifying Zcash Ironwood node conforming to Zebra NU6.3 validator rules.
-    Official Testnet activation height for NU6.3 per ZIP 258 is 4,134,000.
+    Local test double only. It must never be represented as a Zebra node or Testnet.
     """
     def __init__(self, initial_height: int = 4134010):
         self.height = initial_height
@@ -111,11 +112,11 @@ class ZcashNodeSimulator:
         return True, block_hash
 
     def get_blockchain_info(self) -> Dict[str, Any]:
-        """Returns standard Zcash RPC getblockchaininfo response conforming to Zebra validator."""
+        """Returns a demo-shaped status payload for UI/tests; not a real Zcash RPC response."""
         return {
             "chain": "test",
-            "subversion": "/Zebra:1.9.0/NU6.3-Ironwood/",
-            "validator": "Zebra (Official NU6.3 Full Validator)",
+            "subversion": "/DarkBatchSimulator:0.1/",
+            "validator": "DarkBatch Local Simulator (not Zebra; not a Zcash full node)",
             "blocks": self.height,
             "headers": self.height,
             "bestblockhash": self.blocks[-1].hash,
