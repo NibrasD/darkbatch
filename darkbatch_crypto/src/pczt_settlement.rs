@@ -518,7 +518,7 @@ pub fn build_fba_pczt_from_files(input_json_path: &str, pczt_output_path: &str, 
     }
     let (pczt, mut report) = build_pczt(&request)?;
     report.status = "FBA_PCZT_READY_FOR_LOCAL_PARTICIPANT_SIGNATURES".into();
-    report.warning = "Built from supplied FBA buyer outputs and per-owner seller fills. Input notes/witnesses must be real/current; transaction is not broadcast or confirmed. USDC/quote-leg settlement is not implemented. PCZT data is sensitive and must remain local.".into();
+    report.warning = "Built from supplied FBA buyer outputs and per-owner seller fills. Input notes/witnesses must be real/current; transaction is not broadcast or confirmed. USDC transactions are not automatically executed. Keep the complete original PCZT private; only distribute per-participant redacted copies.".into();
     let pczt_bytes = pczt.serialize().map_err(|e| format!("PCZT serialization failed: {e:?}"))?;
     write_private_file(pczt_output_path, &pczt_bytes)?;
     let report_bytes = serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?;
@@ -655,6 +655,9 @@ fn sign_pczt_value(pczt: Pczt, action_index: usize, key: &SpendingKey) -> Result
     redact_signed_contribution(signer.finish())
 }
 pub fn sign_pczt_from_local_key_file(pczt_input_path: &str, spending_key_file_path: &str, action_index: usize, pczt_output_path: &str) -> Result<(), String> {
+    if std::path::Path::new(pczt_output_path).exists() {
+        return Err(format!("refusing to overwrite signed PCZT contribution: {pczt_output_path}"));
+    }
     let key = parse_spending_key_file(spending_key_file_path)?;
     let bytes = fs::read(pczt_input_path).map_err(|e| format!("could not read PCZT: {e}"))?;
     let pczt = Pczt::parse(&bytes).map_err(|e| format!("input is not a valid PCZT: {e:?}"))?;
@@ -906,10 +909,13 @@ mod tests {
         assert!(participant_pczt.ironwood().actions().iter()
             .all(|action| action.spend().witness().is_none()));
         let participant_bytes = participant_pczt.clone().serialize().expect("serialize redacted contribution");
+        assert_ne!(participant_bytes, encoded, "participant copy must differ from the full private PCZT");
         assert!(Pczt::parse(&participant_bytes).is_ok());
 
         let signed = sign_pczt_value(participant_pczt, action_index, &sk)
             .expect("sign local spend from redacted PCZT");
+        let signed_bytes = signed.clone().serialize().expect("serialize signed redacted contribution");
+        assert!(signed_bytes.len() < encoded.len(), "signed contribution must omit private note openings");
         assert!(signed.ironwood().anchor().is_none());
         assert!(signed.ironwood().actions().iter()
             .all(|action| action.spend().witness().is_none()));
