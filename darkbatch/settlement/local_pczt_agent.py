@@ -678,6 +678,14 @@ def _settle_usdc_after_zec_confirmation(
     # Keep the non-secret oracle receipts locally so a later finalization-only recovery can
     # reuse the exact release transaction hash instead of submitting a second release.
     oracle_artifact = plan_path.parent / "usdc-oracle-result.json"
+    previous_oracle: Dict[str, Any] = {}
+    if oracle_artifact.is_file():
+        try:
+            loaded_previous = json.loads(oracle_artifact.read_text(encoding="utf-8"))
+            if isinstance(loaded_previous, dict):
+                previous_oracle = loaded_previous
+        except (OSError, json.JSONDecodeError):
+            previous_oracle = {}
     _write_private_json(oracle_artifact, oracle)
     result: Dict[str, Any] = {"oracle": oracle, "epoch_settled": False}
     if oracle.get("status") != "USDC_RELEASED":
@@ -690,11 +698,8 @@ def _settle_usdc_after_zec_confirmation(
 
     release = oracle.get("release_transaction")
     release_txid = str(release.get("transaction_hash", "")).strip() if isinstance(release, dict) else ""
-    if not release_txid and oracle_artifact.is_file():
-        try:
-            saved_oracle = json.loads(oracle_artifact.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            saved_oracle = {}
+    if not release_txid:
+        saved_oracle = previous_oracle
         saved_zec = saved_oracle.get("zec") if isinstance(saved_oracle, dict) else None
         saved_batch = str(saved_oracle.get("batch_id", "")).lower().removeprefix("0x") if isinstance(saved_oracle, dict) else ""
         saved_epoch = saved_oracle.get("epoch_id") if isinstance(saved_oracle, dict) else None
