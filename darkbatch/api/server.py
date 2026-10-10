@@ -6,9 +6,10 @@ SQLite/WebSocket order handling is not independently privacy-audited; real settl
 import asyncio
 from contextlib import asynccontextmanager
 import os
+import secrets
 import time
 from typing import Dict, List, Optional, Any
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -21,6 +22,8 @@ from darkbatch.core.repo import (
     mark_intents_settled,
     get_active_epoch_id,
     record_epoch_clear,
+    record_epoch_zec_pending,
+    record_epoch_zec_confirmed,
     get_epoch_history,
     update_wallet_balance
 )
@@ -40,6 +43,13 @@ class IntentSubmitRequest(BaseModel):
     zec_amount: float
     limit_price_usd: float
     shielded_address: str
+
+class RawV6SettlementRequest(BaseModel):
+    epoch_id: int
+    txid: str
+    raw_tx_hex: str
+    build_report: Dict[str, Any]
+    proof_report: Dict[str, Any]
 
 class ConnectionManager:
     def __init__(self):
@@ -82,9 +92,9 @@ async def lifespan(app: FastAPI):
             })
             if remaining <= 0.0:
                 if pending:
-                    # Collect wallet IVKs to encrypt receipts to individual recipient viewing keys
-                    all_wallets = {w["unified_address"]: get_wallet(w["alias"]).ivk for w in list_wallets() if get_wallet(w["alias"])}
-                    res = SOLVER.run_epoch_settlement(epoch_id, pending, wallets_ivk_map=all_wallets)
+                    # The public coordinator never injects mock wallet keys into settlement.
+                    # A real PCZT is prepared by the trusted local settlement agent.
+                    res = SOLVER.run_epoch_settlement(epoch_id, pending)
                     if res.get("status") in {"SETTLED_AND_MINED", "CONFIRMED"}:
                         record_epoch_clear(
                             epoch_id=epoch_id,
@@ -219,8 +229,9 @@ async def clear_current_epoch():
     if not pending:
         return {"status": "EMPTY", "message": "No pending orders to clear."}
 
-    all_wallets = {w["unified_address"]: get_wallet(w["alias"]).ivk for w in list_wallets() if get_wallet(w["alias"])}
-    res = SOLVER.run_epoch_settlement(epoch_id, pending, wallets_ivk_map=all_wallets)
+    # Keep matching independent from the demonstration-wallet IVKs. Fills remain in
+    # process memory and are accessible only via the token-protected local agent endpoint.
+    res = SOLVER.run_epoch_settlement(epoch_id, pending)
 
     if res.get("status") in {"SETTLED_AND_MINED", "CONFIRMED"}:
         # Only confirmed on-chain settlement may update the durable epoch and order state.
@@ -375,7 +386,9 @@ def get_testnet_status():
         "live_rpc_connected": live_rpc,
         "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else None,
         "fba_live_broadcast_enabled": bool(live_rpc and bundle_builder_is_live_safe),
+        "local_pczt_agent_required": True,
         "local_raw_v6_submission_available": True,
+        "quote_leg_settlement_implemented": False,
         "live_broadcast_block_reason": None if bundle_builder_is_live_safe else (
             "Legacy assembler is not certified for live broadcast; valid participant spend inputs, "
             "cooperative PCZT authorization, and matching Halo 2 proofs are not implemented."
@@ -385,11 +398,189 @@ def get_testnet_status():
         "total_tracked_transactions": len(TESTNET_ADAPTER.broadcast_history)
     }
 
+
+def _require_local_settlement_token(token: Optional[str]) -> None:
+    configured = os.getenv("DARKBATCH_SETTLEMENT_TOKEN", "").strip()
+    if not configured:
+        raise HTTPException(
+            status_code=503,
+            detail="The trusted local PCZT agent is not configured; set DARKBATCH_SETTLEMENT_TOKEN on the coordinator.",
+        )
+    if not token or not secrets.compare_digest(token, configured):
+        raise HTTPException(status_code=401, detail="Invalid local settlement token")
+
+
+@app.get("/api/v1/settlement/local-plan/{epoch_id}")
+def get_local_pczt_plan(
+    epoch_id: int,
+    x_darkbatch_settlement_token: Optional[str] = Header(default=None),
+):
+    """Private order-level data for the trusted local PCZT process only."""
+    _require_local_settlement_token(x_darkbatch_settlement_token)
+    plan = SOLVER.local_settlement_plans.get(epoch_id)
+    if not plan:
+        pending = get_pending_intents(epoch_id)
+        if not pending:
+            raise HTTPException(status_code=404, detail="No pending intents or in-memory FBA plan for this epoch")
+        result = SOLVER.run_epoch_settlement(epoch_id, pending)
+        if result.get("status") != "LOCAL_PCZT_REQUIRED":
+            raise HTTPException(status_code=409, detail=f"Epoch is not awaiting local PCZT: {result.get('status')}")
+        plan = SOLVER.local_settlement_plans.get(epoch_id)
+    if not plan:
+        raise HTTPException(status_code=503, detail="Local FBA plan was not retained")
+    if plan.get("status") != "LOCAL_PCZT_REQUIRED":
+        raise HTTPException(status_code=409, detail="Epoch plan is not awaiting local PCZT")
+    # Do not log or broadcast this response: it contains participant addresses and trade amounts.
+    return plan
+
+
+@app.post("/api/v1/settlement/raw-v6")
+def submit_local_pczt_transaction(
+    req: RawV6SettlementRequest,
+    x_darkbatch_settlement_token: Optional[str] = Header(default=None),
+):
+    """Accept only an extracted official V6 transaction from the trusted local agent."""
+    _require_local_settlement_token(x_darkbatch_settlement_token)
+    plan = SOLVER.local_settlement_plans.get(req.epoch_id)
+    if not plan or plan.get("status") != "LOCAL_PCZT_REQUIRED":
+        raise HTTPException(status_code=409, detail="No outstanding local PCZT plan exists for this epoch")
+    if req.epoch_id != get_active_epoch_id():
+        raise HTTPException(status_code=409, detail="Epoch is no longer active for settlement")
+    if req.proof_report.get("status") != "PROOF_GENERATED_AND_TRANSACTION_EXTRACTED":
+        raise HTTPException(status_code=422, detail="Local proof report does not confirm official PCZT proof and transaction extraction")
+    if req.proof_report.get("network") != "Zcash Testnet" or req.proof_report.get("transaction_version") != 6:
+        raise HTTPException(status_code=422, detail="Only official V6 transactions built for Zcash Testnet are accepted")
+    if str(req.proof_report.get("consensus_branch_id", "")).lower() != "0x37a5165b":
+        raise HTTPException(status_code=422, detail="Proof report does not use Testnet NU6.3 consensus branch 0x37a5165b")
+    if req.proof_report.get("network_confirmed") is not False or req.proof_report.get("broadcast_ready") is not True:
+        raise HTTPException(status_code=422, detail="Proof report readiness/confirmation fields are inconsistent")
+    reported_txid = str(req.proof_report.get("txid", "")).lower()
+    if not reported_txid or reported_txid != req.txid.strip().lower():
+        raise HTTPException(status_code=422, detail="Submitted TXID does not match the official transaction-extraction report")
+
+    raw_hex = "".join(req.raw_tx_hex.split()).lower()
+    if not raw_hex or len(raw_hex) % 2 or any(ch not in "0123456789abcdef" for ch in raw_hex):
+        raise HTTPException(status_code=422, detail="Raw transaction must be non-empty even-length hex")
+    raw_len = len(raw_hex) // 2
+    if raw_len != req.proof_report.get("raw_transaction_bytes"):
+        raise HTTPException(status_code=422, detail="Raw transaction byte length does not match the extraction report")
+
+    buy_fills = plan.get("buy_fills", [])
+    sell_fills = plan.get("sell_fills", [])
+    total_buys = sum(int(fill.get("filled_zat", 0)) for fill in buy_fills)
+    total_sells = sum(int(fill.get("filled_zat", 0)) for fill in sell_fills)
+    if total_buys <= 0 or total_buys != total_sells:
+        raise HTTPException(status_code=409, detail="FBA buy/sell fill totals are not balanced")
+    build = req.build_report
+    if build.get("status") != "FBA_PCZT_READY_FOR_LOCAL_PARTICIPANT_SIGNATURES":
+        raise HTTPException(status_code=422, detail="Build report is not from the FBA PCZT builder")
+    if build.get("network") != "Zcash Testnet" or build.get("broadcast_ready") is not False:
+        raise HTTPException(status_code=422, detail="Build report network or staged-build fields are invalid")
+    try:
+        input_total = int(build["input_total_zat"])
+        recipient_total = int(build["recipient_total_zat"])
+        fee_zat = int(build["fee_zat"])
+        change_zat = int(build["change_zat"])
+        seller_fill_total = int(build["seller_fill_total_zat"])
+        input_count = int(build["input_count"])
+        recipient_count = int(build["recipient_output_count"])
+        change_count = int(build["change_output_count"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Build report is missing numeric transaction-balance fields")
+    if (
+        recipient_total != total_buys
+        or seller_fill_total != total_sells
+        or recipient_count != len(buy_fills)
+        or input_count < len({str(fill.get("shielded_address", "")) for fill in sell_fills})
+        or change_count <= 0
+        or fee_zat <= 0
+        or change_zat <= 0
+        or input_total != recipient_total + fee_zat + change_zat
+    ):
+        raise HTTPException(status_code=422, detail="Build report does not balance against the FBA fill plan")
+    if int(build.get("target_height", 0)) < 4_134_000:
+        raise HTTPException(status_code=422, detail="PCZT target height predates Testnet NU6.3 activation")
+
+    # Broadcast only the raw transaction. Never send PCZT data, note openings or keys to Zebra.
+    try:
+        record = TESTNET_ADAPTER.broadcast_raw_transaction(raw_hex)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Zebra Testnet rejected or could not accept the transaction: {exc}")
+    actual_txid = str(record.get("txid", "")).lower()
+    if actual_txid != reported_txid:
+        record["association_status"] = "TXID_MISMATCH_NOT_ASSOCIATED_WITH_EPOCH"
+        return {
+            "status": "BROADCAST_TXID_MISMATCH",
+            "transaction": record,
+            "epoch_settled": False,
+            "quote_leg_status": "NOT_SETTLED",
+        }
+
+    metadata = {
+        "epoch_id": req.epoch_id,
+        "clearing_price_usd": plan["clearing_price_usd"],
+        "total_cleared_zec": plan["total_cleared_zec"],
+        "total_cleared_usd": plan["total_cleared_usd"],
+        "intent_ids": plan["intent_ids"],
+        "build_report_input_total_zat": input_total,
+        "build_report_recipient_total_zat": recipient_total,
+        "build_report_fee_zat": fee_zat,
+        "build_report_change_zat": change_zat,
+        "build_report_input_count": input_count,
+        "build_report_recipient_output_count": recipient_count,
+    }
+    record.update(metadata)
+    record["quote_leg_status"] = "NOT_SETTLED"
+    record["epoch_settled"] = False
+    record["association_status"] = "ASSOCIATED_WITH_FBA_EPOCH"
+    try:
+        record_epoch_zec_pending(
+            epoch_id=req.epoch_id,
+            clearing_price_usd=float(plan["clearing_price_usd"]),
+            total_cleared_zec=float(plan["total_cleared_zec"]),
+            total_cleared_usd=float(plan["total_cleared_usd"]),
+            tx_id=actual_txid,
+            intent_ids=list(plan["intent_ids"]),
+        )
+    except Exception as exc:
+        # The network broadcast already happened; keep its TXID tracked and return an explicit
+        # reconciliation warning instead of pretending the broadcast never happened.
+        record["association_status"] = "BROADCAST_BUT_DB_RECONCILIATION_REQUIRED"
+        record["db_error"] = str(exc)
+        return {
+            "status": "BROADCAST_REQUIRES_RECONCILIATION",
+            "transaction": record,
+            "epoch_settled": False,
+            "quote_leg_status": "NOT_SETTLED",
+        }
+    SOLVER.local_settlement_plans.pop(req.epoch_id, None)
+    return {
+        "status": "BROADCAST_PENDING_CONFIRMATION",
+        "transaction": record,
+        "epoch_settled": False,
+        "quote_leg_status": "NOT_SETTLED",
+        "message": "ZEC leg broadcast. Await a real Testnet block confirmation; USDC/quote settlement is still not implemented.",
+    }
+
+
 @app.get("/api/v1/settlement/tx/{txid}")
 def get_testnet_tx(txid: str):
     tx = TESTNET_ADAPTER.get_transaction(txid)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction is not tracked by the live settlement adapter")
+    if tx.get("status") == "CONFIRMED" and tx.get("epoch_id") is not None and tx.get("block_hash"):
+        try:
+            record_epoch_zec_confirmed(
+                epoch_id=int(tx["epoch_id"]),
+                tx_id=str(tx["txid"]),
+                block_hash=str(tx["block_hash"]),
+            )
+            tx["epoch_status"] = "ZEC_CONFIRMED_QUOTE_PENDING"
+            tx["quote_leg_status"] = "NOT_SETTLED"
+            tx["epoch_settled"] = False
+            tx["note"] = "ZEC transaction is confirmed on Testnet. The USDC/quote leg is not integrated and the FBA trade is not fully settled."
+        except Exception as exc:
+            tx["epoch_finalization_error"] = str(exc)
     return tx
 
 @app.get("/", response_class=HTMLResponse)
