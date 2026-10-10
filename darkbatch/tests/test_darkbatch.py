@@ -121,7 +121,7 @@ def test_fba_clearing_never_rounds_marginal_fills_above_volume():
     result = BatchAuctionSolver().solve(11, buyers + sellers)
     buy_total = sum(fill.filled_zat for fill in result.buy_fills)
     sell_total = sum(fill.filled_zat for fill in result.sell_fills)
-    assert buy_total == result.total_cleared_zec * 100_000_000
+    assert round(result.total_cleared_zec * 100_000_000) == buy_total
     assert sell_total == buy_total
     assert buy_total == 2
 

@@ -89,11 +89,18 @@ Example of a single seller's allocation:
 
 The builder rejects the plan unless total buyer ZEC outputs equal total seller fill ZEC, each seller fill is covered by that owner's input notes, every input owner has a change allocation, the ownership/address check passes, each witness resolves to the shared anchor, and the final outputs plus network fee balance the input value. The ZIP 317 network fee is allocated deterministically over sellers' residual value; if an owner cannot cover their share or would receive zero change, use different input notes rather than silently shifting their change to another wallet.
 
-Before invoking the command, buyer receiver addresses must be resolved to actual 43-byte Ironwood receiver encodings and the seller input notes and witnesses must be taken from a trusted local wallet/scanner. The supplied fill file is not trusted blindly: the builder verifies buyer-output totals equal seller-fill totals and enforces input/change/network-fee conservation.
+Before invoking the command, buyer receiver addresses must be resolved to actual 43-byte Ironwood receiver encodings and the seller input notes and witnesses must be taken from a trusted local wallet/scanner. The local preparer solves the pending orders in the local SQLite epoch when no fill JSON is supplied, maps buyer intent IDs to the raw receivers supplied in the private wallet file, groups seller fills by FVK, and allocates the configured solver fee to its explicit receiver. It requires the wallet file to supply real spendable notes and current witnesses. The Rust builder then verifies that buyer outputs plus solver-fee output equal seller fills plus the solver fee and enforces input/change/network-fee conservation.
 
 Run it with:
 
 ~~~bash
+# Read the current local SQLite FBA epoch, or supply a local JSON fill result explicitly.
+python -m darkbatch.settlement.prepare_fba_pczt --wallet-data private-wallet-notes.json --request-output private-fba-settlement.json --pczt-output unsigned-fba.pczt --report-output fba-pczt-report.json
+
+# To use an already exported local result instead:
+python -m darkbatch.settlement.prepare_fba_pczt --fills-json local-fba-fills.json --wallet-data private-wallet-notes.json --request-output private-fba-settlement.json --pczt-output unsigned-fba.pczt --report-output fba-pczt-report.json
+
+# Lower-level builder command if the request JSON has already been prepared:
 target/release/darkbatch_crypto build-fba-pczt-local private-fba-settlement.json unsigned-fba.pczt fba-pczt-report.json
 ~~~
 
