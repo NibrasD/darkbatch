@@ -437,14 +437,29 @@ mod address_tests {
         let request = serde_json::json!({
             "network": "testnet",
             "spending_key_hex": hex::encode([0u8; 32]),
-            "address_index": 0
+            "address_index": 0,
+            "scope": "external"
         });
         let result = derive_ironwood_address_json(&request.to_string()).unwrap();
         assert_eq!(result["status"], "DERIVED_TESTNET_ADDRESS");
         assert_eq!(result["network"], "testnet");
+        assert_eq!(result["scope"], "external");
         assert!(result["unified_address"].as_str().unwrap().len() > 20);
         assert_eq!(result["raw_ironwood_receiver_hex"].as_str().unwrap().len(), 86);
         assert!(result.get("spending_key_hex").is_none());
         assert!(result.get("ivk_hex").is_none());
+
+        let internal_request = serde_json::json!({
+            "network": "testnet",
+            "spending_key_hex": hex::encode([0u8; 32]),
+            "address_index": 1,
+            "scope": "internal"
+        });
+        let internal = derive_ironwood_address_json(&internal_request.to_string()).unwrap();
+        assert_eq!(internal["scope"], "internal");
+        assert_ne!(
+            result["raw_ironwood_receiver_hex"],
+            internal["raw_ironwood_receiver_hex"]
+        );
     }
 }
