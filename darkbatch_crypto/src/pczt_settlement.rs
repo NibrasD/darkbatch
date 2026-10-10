@@ -569,8 +569,10 @@ fn prove_and_extract(pczt: Pczt) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("TransactionExtractor rejected the transaction: {e:?}"))?;
     let txid = tx.txid().to_string();
     let branch_id = u32::from(tx.consensus_branch_id());
-    if branch_id != 0x37A5165B {
-        return Err(format!("extracted transaction has unexpected consensus branch 0x{branch_id:08x}"));
+    if !matches!(branch_id, TESTNET_NU6_3_BRANCH_ID | TESTNET_NU7_BRANCH_ID) {
+        return Err(format!(
+            "extracted transaction has unsupported Testnet consensus branch 0x{branch_id:08x}"
+        ));
     }
     let mut raw = Vec::new();
     tx.write(&mut raw).map_err(|e| format!("transaction serialization failed: {e}"))?;
