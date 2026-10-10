@@ -8,7 +8,7 @@
 use std::fs;
 
 use orchard::{
-    keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
+    keys::{Diversifier, FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
     note::{ExtractedNoteCommitment, Note, NoteVersion, RandomSeed, Rho},
     tree::{Anchor, MerkleHashOrchard, MerklePath},
     value::NoteValue,
@@ -43,7 +43,14 @@ pub struct PcztBuildRequest {
     pub ironwood_anchor_hex: String,
     pub inputs: Vec<PcztSpendInput>,
     pub outputs: Vec<PcztRecipient>,
+    /// Explicit per-owner change outputs are required for multi-participant settlements.
+    /// Each change note must return to the FVK that owned the corresponding input note.
+    #[serde(default)]
+    pub change_outputs: Vec<PcztChangeOutput>,
+    /// Legacy single-owner change fallback. Must match the one input owner when change_outputs is empty.
+    #[serde(default)]
     pub change_fvk_hex: String,
+    #[serde(default)]
     pub change_address_raw_hex: String,
 }
 #[derive(Debug, Deserialize)]
@@ -67,6 +74,13 @@ pub struct PcztRecipient {
     #[serde(default)]
     pub memo_hex: String,
 }
+#[derive(Debug, Deserialize)]
+pub struct PcztChangeOutput {
+    /// FullViewingKey belonging to the input owner receiving this change.
+    pub fvk_hex: String,
+    pub address_raw_hex: String,
+    pub value_zat: u64,
+}
 #[derive(Clone)]
 struct PreparedSpend {
     fvk: FullViewingKey,
@@ -79,6 +93,22 @@ struct PreparedOutput {
     address: Address,
     value_zat: u64,
     memo: Vec<u8>,
+}
+#[derive(Clone)]
+struct PreparedChange {
+    fvk: FullViewingKey,
+    address: Address,
+    value_zat: Option<u64>,
+}
+fn ensure_fvk_owns_address(fvk: &FullViewingKey, raw_address: &[u8; 43], field: &str) -> Result<(), String> {
+    let diversifier_bytes: [u8; 11] = raw_address[..11].try_into()
+        .map_err(|_| format!("{field}: address diversifier has invalid size"))?;
+    let external = fvk.address(Diversifier::from_bytes(diversifier_bytes), Scope::External).to_raw_address_bytes();
+    let internal = fvk.address(Diversifier::from_bytes(diversifier_bytes), Scope::Internal).to_raw_address_bytes();
+    if external != *raw_address && internal != *raw_address {
+        return Err(format!("{field} does not belong to the supplied FullViewingKey"));
+    }
+    Ok(())
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct PcztBuildReport {
@@ -124,6 +154,7 @@ fn prepare_spend(input: &PcztSpendInput, anchor: Anchor) -> Result<PreparedSpend
     let address_bytes = decode_array::<43>(&input.raw_address_hex, "input.raw_address_hex")?;
     let address = Address::from_raw_address_bytes(&address_bytes).into_option()
         .ok_or_else(|| "input.raw_address_hex is not a valid raw Ironwood address".to_string())?;
+    ensure_fvk_owns_address(&fvk, &address_bytes, "input.raw_address_hex")?;
     let rho_bytes = decode_array::<32>(&input.rho_hex, "input.rho_hex")?;
     let rho = Rho::from_bytes(&rho_bytes).into_option()
         .ok_or_else(|| "input.rho_hex is not a canonical Orchard rho".to_string())?;
@@ -174,23 +205,51 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         .ok_or_else(|| "ironwood_anchor_hex is not a canonical Orchard anchor".to_string())?;
     let spends: Vec<PreparedSpend> = request.inputs.iter().map(|i| prepare_spend(i, anchor)).collect::<Result<_,_>>()?;
     let outputs: Vec<PreparedOutput> = request.outputs.iter().enumerate().map(|(i,o)| prepare_output(o,i)).collect::<Result<_,_>>()?;
-    let change_fvk_bytes = decode_array::<96>(&request.change_fvk_hex, "change_fvk_hex")?;
-    let change_fvk = FullViewingKey::from_bytes(&change_fvk_bytes).into_option()
-        .ok_or_else(|| "change_fvk_hex is not a valid FullViewingKey".to_string())?;
-    let change_address_bytes = decode_array::<43>(&request.change_address_raw_hex, "change_address_raw_hex")?;
-    let change_address = Address::from_raw_address_bytes(&change_address_bytes).into_option()
-        .ok_or_else(|| "change_address_raw_hex is not a valid Ironwood address".to_string())?;
-    let change_ovk = change_fvk.to_ovk(Scope::Internal);
-
+    let mut change_templates: Vec<PreparedChange> = Vec::new();
+    if !request.change_outputs.is_empty() {
+        for (index, change) in request.change_outputs.iter().enumerate() {
+            let fvk_bytes = decode_array::<96>(&change.fvk_hex, &format!("change_outputs[{index}].fvk_hex"))?;
+            let fvk = FullViewingKey::from_bytes(&fvk_bytes).into_option()
+                .ok_or_else(|| format!("change_outputs[{index}].fvk_hex is not a valid FullViewingKey"))?;
+            if !spends.iter().any(|spend| spend.fvk.to_bytes() == fvk.to_bytes()) {
+                return Err(format!("change_outputs[{index}] belongs to no owner of an input note"));
+            }
+            let address_bytes = decode_array::<43>(&change.address_raw_hex, &format!("change_outputs[{index}].address_raw_hex"))?;
+            let address = Address::from_raw_address_bytes(&address_bytes).into_option()
+                .ok_or_else(|| format!("change_outputs[{index}] has an invalid Ironwood address"))?;
+            ensure_fvk_owns_address(&fvk, &address_bytes, &format!("change_outputs[{index}].address_raw_hex"))?;
+            zatoshis(change.value_zat, &format!("change_outputs[{index}].value_zat"))?;
+            change_templates.push(PreparedChange { fvk, address, value_zat: Some(change.value_zat) });
+        }
+    } else {
+        // A shared change output is only safe for a single distinct input owner.
+        let mut owners: Vec<[u8; 96]> = spends.iter().map(|spend| spend.fvk.to_bytes()).collect();
+        owners.sort();
+        owners.dedup();
+        if owners.len() != 1 {
+            return Err("multi-owner settlement requires change_outputs with one change output per owner; refusing to send seller change to a shared wallet".into());
+        }
+        let fvk_bytes = decode_array::<96>(&request.change_fvk_hex, "change_fvk_hex")?;
+        let fvk = FullViewingKey::from_bytes(&fvk_bytes).into_option()
+            .ok_or_else(|| "change_fvk_hex is not a valid FullViewingKey".to_string())?;
+        if fvk.to_bytes() != owners[0] {
+            return Err("single-owner change_fvk_hex must match the owner of the input note".into());
+        }
+        let address_bytes = decode_array::<43>(&request.change_address_raw_hex, "change_address_raw_hex")?;
+        let address = Address::from_raw_address_bytes(&address_bytes).into_option()
+            .ok_or_else(|| "change_address_raw_hex is not a valid Ironwood address".to_string())?;
+        ensure_fvk_owns_address(&fvk, &address_bytes, "change_address_raw_hex")?;
+        change_templates.push(PreparedChange { fvk, address, value_zat: None });
+    }
     let input_total = spends.iter().try_fold(0u64, |sum, input| sum.checked_add(input.value_zat).ok_or_else(|| "input sum overflowed".to_string()))?;
     let output_total = outputs.iter().try_fold(0u64, |sum, output| sum.checked_add(output.value_zat).ok_or_else(|| "output sum overflowed".to_string()))?;
     zatoshis(input_total, "input total")?;
     zatoshis(output_total, "recipient output total")?;
 
-    // Probe and final transaction use identical action counts, including the change action.
-    // Consequently the standard ZIP 317 fee must remain unchanged when the change value is replaced.
+    // Probe and final transaction use identical action counts. For multiple input owners,
+    // every change output remains with its original owner; no common-wallet fallback is allowed.
     macro_rules! make_builder {
-        ($change_value:expr) => {{
+        ($change_values:expr) => {{
             let mut builder = Builder::new(
                 Network::TestNetwork,
                 BlockHeight::from_u32(request.target_height),
@@ -210,21 +269,47 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
                 builder.add_ironwood_output::<zip317::FeeRule>(None, output.address.clone(), zatoshis(output.value_zat, "recipient amount")?, memo_bytes(&output.memo)?)
                     .map_err(|e| format!("invalid Ironwood recipient: {e:?}"))?;
             }
-            builder.add_ironwood_output::<zip317::FeeRule>(Some(change_ovk.clone()), change_address.clone(), zatoshis($change_value, "change amount")?, MemoBytes::empty())
-                .map_err(|e| format!("invalid Ironwood change output: {e:?}"))?;
+            for (i, change_output) in change_templates.iter().enumerate() {
+                let amount = $change_values[i];
+                builder.add_ironwood_output::<zip317::FeeRule>(
+                    Some(change_output.fvk.to_ovk(Scope::Internal)),
+                    change_output.address.clone(),
+                    zatoshis(amount, &format!("change_outputs[{i}].value_zat"))?,
+                    MemoBytes::empty(),
+                ).map_err(|e| format!("invalid Ironwood change output: {e:?}"))?;
+            }
             builder
         }};
     }
 
-    let fee = make_builder!(1u64).get_fee(&zip317::FeeRule::standard())
+    let probe_change_values = vec![1u64; change_templates.len()];
+    let fee = make_builder!(&probe_change_values).get_fee(&zip317::FeeRule::standard())
         .map_err(|e| format!("ZIP 317 fee calculation failed: {e:?}"))?.into_u64();
-    let change = input_total.checked_sub(output_total.checked_add(fee).ok_or_else(|| "fee sum overflowed".to_string())?)
+    let change_total = input_total.checked_sub(output_total.checked_add(fee).ok_or_else(|| "fee sum overflowed".to_string())?)
         .ok_or_else(|| format!("insufficient input: {input_total} zat in, {output_total} zat to recipients, ZIP 317 fee {fee} zat"))?;
-    if change == 0 { return Err("change output would be zero; adjust inputs or recipient values".into()); }
-    let builder = make_builder!(change);
+    if change_total == 0 { return Err("change output would be zero; adjust inputs or recipient values".into()); }
+
+    let change_values: Vec<u64> = if change_templates.iter().all(|change| change.value_zat.is_none()) {
+        if change_templates.len() != 1 {
+            return Err("automatic change calculation is supported only for a single-owner transaction".into());
+        }
+        vec![change_total]
+    } else {
+        if change_templates.iter().any(|change| change.value_zat.is_none()) {
+            return Err("cannot mix automatic and explicit change outputs".into());
+        }
+        let values: Vec<u64> = change_templates.iter().map(|change| change.value_zat.unwrap()).collect();
+        let sum = values.iter().try_fold(0u64, |total, value| total.checked_add(*value).ok_or_else(|| "change sum overflowed".to_string()))?;
+        if sum != change_total {
+            return Err(format!("explicit per-owner change outputs sum to {sum} zat, but must sum to {change_total} zat after fees"));
+        }
+        values
+    };
+    let builder = make_builder!(&change_values);
     let final_fee = builder.get_fee(&zip317::FeeRule::standard())
         .map_err(|e| format!("final ZIP 317 fee calculation failed: {e:?}"))?.into_u64();
-    if fee != final_fee || output_total + change + fee != input_total {
+    let change_sum = change_values.iter().try_fold(0u64, |total, value| total.checked_add(*value).ok_or_else(|| "change sum overflowed".to_string()))?;
+    if fee != final_fee || output_total.checked_add(change_sum).and_then(|v| v.checked_add(fee)) != Some(input_total) {
         return Err("transaction value balance or fee invariant failed".into());
     }
 
@@ -253,7 +338,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         input_total_zat: input_total,
         recipient_total_zat: output_total,
         fee_zat: fee,
-        change_zat: change,
+        change_zat: change_sum,
         ironwood_spend_action_indexes: ironwood_spend_action_indexes,
         pczt_bytes_len,
         broadcast_ready: false,
@@ -372,6 +457,7 @@ mod tests {
             }],
             change_fvk_hex: hex::encode(fvk.to_bytes()),
             change_address_raw_hex: hex::encode(address_raw),
+            change_outputs: Vec::new(),
         };
         let (pczt, report) = build_pczt(&request).expect("official PCZT build");
         assert_eq!(report.input_count, 1);
