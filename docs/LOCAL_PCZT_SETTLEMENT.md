@@ -89,13 +89,15 @@ Example of a single seller's allocation:
 
 The builder rejects the plan unless total buyer ZEC outputs equal total seller fill ZEC, each seller fill is covered by that owner's input notes, every input owner has a change allocation, the ownership/address check passes, each witness resolves to the shared anchor, and the final outputs plus network fee balance the input value. The ZIP 317 network fee is allocated deterministically over sellers' residual value; if an owner cannot cover their share or would receive zero change, use different input notes rather than silently shifting their change to another wallet.
 
+Before invoking the command, buyer receiver addresses must be resolved to actual 43-byte Ironwood receiver encodings and the seller input notes and witnesses must be taken from a trusted local wallet/scanner. The supplied fill file is not trusted blindly: the builder verifies buyer-output totals equal seller-fill totals and enforces input/change/network-fee conservation.
+
 Run it with:
 
 ~~~bash
 target/release/darkbatch_crypto build-fba-pczt-local private-fba-settlement.json unsigned-fba.pczt fba-pczt-report.json
 ~~~
 
-This creates the ZEC side only. It does not automatically take the FBA engine's match result, and it does not pay USDC to sellers or collect USDC from buyers. The output PCZT contains transaction-wide Note metadata for all inputs; until a redaction step is implemented and tested, do **not** distribute these PCZT files to a public coordinator or other participants. The official Combiner merges contributions, but that alone does not make their contents private.
+This creates the ZEC side from a supplied FBA fill plan only. It does not automatically invoke the FBA engine or create the fill plan itself, and it does not pay USDC to sellers or collect USDC from buyers. The current engine's solver-fee accounting is not encoded as a separate protocol fee output in this transaction path. The output PCZT contains transaction-wide Note metadata for all inputs; until a redaction step is implemented and tested, do **not** distribute these PCZT files to a public coordinator or other participants. The official Combiner merges contributions, but that alone does not make their contents private.
 
 ## Create, sign, prove, extract
 

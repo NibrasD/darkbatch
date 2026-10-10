@@ -1,10 +1,8 @@
 """
-DarkBatch Frequent Batch Auction (FBA) Solver Engine
-Implements authentic economic market-clearing equilibrium (Budish, Cramton, Shim):
-- Strict Price Priority: Inframarginal orders (Buy price > P*, Sell price < P*) are filled 100%.
-- Marginal Rationing: Pro-rata allocation is applied ONLY to marginal orders sitting at P*.
-- Out-of-the-money orders (Buy price < P*, Sell price > P*) receive 0% fill.
-- MEV immunity: Discrete epoch batching eliminates latency games and sandwiching.
+DarkBatch experimental local Frequent Batch Auction (FBA) matching engine.
+It implements a uniform-price clearing prototype with deterministic largest-remainder
+allocation for integer zatoshis. This is not an audited market mechanism and does not by
+itself establish MEV immunity or settle funds on Zcash.
 """
 
 from dataclasses import dataclass, field

@@ -93,6 +93,54 @@ def test_fba_inframarginal_priority_and_marginal_rationing():
     assert fill_b2.fill_percentage == 50.0
     assert fill_b2.is_marginal is True
 
+def test_fba_exact_zatoshi_pro_rata_conservation():
+    from darkbatch.engine.batch_solver import allocate_exact_pro_rata
+
+    alice = create_intent(OrderDirection.SELL_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_1)
+    bob = create_intent(OrderDirection.SELL_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_2)
+    carol = create_intent(OrderDirection.SELL_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_3)
+
+    allocations = allocate_exact_pro_rata(2, [alice, bob, carol])
+    assert sum(allocations.values()) == 2
+    assert sorted(allocations.values()) == [0, 1, 1]
+    assert allocate_exact_pro_rata(3, [alice, bob, carol]) == {
+        alice.intent_id: 1, bob.intent_id: 1, carol.intent_id: 1
+    }
+
+
+def test_fba_clearing_never_rounds_marginal_fills_above_volume():
+    buyers = [
+        create_intent(OrderDirection.BUY_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_1),
+        create_intent(OrderDirection.BUY_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_2),
+    ]
+    sellers = [
+        create_intent(OrderDirection.SELL_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_1),
+        create_intent(OrderDirection.SELL_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_2),
+        create_intent(OrderDirection.SELL_ZEC, 0.00000001, 42.50, SAMPLE_SHIELDED_ADDR_3),
+    ]
+    result = BatchAuctionSolver().solve(11, buyers + sellers)
+    buy_total = sum(fill.filled_zat for fill in result.buy_fills)
+    sell_total = sum(fill.filled_zat for fill in result.sell_fills)
+    assert buy_total == result.total_cleared_zec * 100_000_000
+    assert sell_total == buy_total
+    assert buy_total == 2
+
+
+def test_fba_clearing_price_tie_uses_an_observed_marginal_price():
+    # At both $41 and $43, 15 ZEC can clear. Averaging tied candidates to $42
+    # incorrectly makes both $45 and $43 buyers inframarginal and fills 20 ZEC.
+    b1 = create_intent(OrderDirection.BUY_ZEC, 10.0, 45.0, SAMPLE_SHIELDED_ADDR_1)
+    b2 = create_intent(OrderDirection.BUY_ZEC, 10.0, 43.0, SAMPLE_SHIELDED_ADDR_2)
+    s1 = create_intent(OrderDirection.SELL_ZEC, 15.0, 41.0, SAMPLE_SHIELDED_ADDR_3)
+    result = BatchAuctionSolver().solve(12, [b1, b2, s1])
+
+    assert result.clearing_price_usd == 43.0
+    assert sum(f.filled_zat for f in result.buy_fills) == 1_500_000_000
+    assert sum(f.filled_zat for f in result.sell_fills) == 1_500_000_000
+    assert next(f for f in result.buy_fills if f.intent_id == b1.intent_id).filled_zat == 1_000_000_000
+    assert next(f for f in result.buy_fills if f.intent_id == b2.intent_id).filled_zat == 500_000_000
+
+
 def test_mev_resistance_and_order_invariance():
     """
     Verifies that the batch auction is immune to front-running.

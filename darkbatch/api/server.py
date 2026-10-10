@@ -1,6 +1,6 @@
 """
-DarkBatch Persistent Coordinator API Server
-Integrated with SQLite and WebSockets for an unaudited sealed-intent prototype; no zero-leak privacy guarantee.
+DarkBatch prototype coordinator API server.
+SQLite/WebSocket order handling is not independently privacy-audited; real settlement remains guarded.
 """
 
 import asyncio

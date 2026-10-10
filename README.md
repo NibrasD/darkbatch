@@ -115,7 +115,7 @@ Trader C (Whale)  ─── Sealed Limit Intent ────┘                 
 ```bash
 cargo test --manifest-path darkbatch_crypto/Cargo.toml --release
 ```
-The Rust tests cover components of the repository; they do not establish that an assembled transaction is accepted by Zebra or spends real ZEC.
+The Rust tests cover components of the repository; they do not establish that an assembled transaction is accepted by Zebra or spends real ZEC. The new official PCZT build/sign/combiner/prove/extract test has not yet been observed running in CI because GitHub did not assign a runner to recent jobs.
 * `test_zip229_consensus_constants`: Verifies `VERSION_GROUP_ID_V6 == 0xD884B698` and branch `0x37A5165B`.
 * `test_orchard_action_exact_820_bytes`: Verifies exact 820-byte serialization per § 7.5.
 * `test_authentic_zcash_note_encryption_roundtrip`: Verifies RFC 8439 580-byte note encryption and IVK decryption.
