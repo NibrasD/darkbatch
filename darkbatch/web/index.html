@@ -430,19 +430,38 @@
                 const res = await fetch('/api/v1/epoch/clear', { method: 'POST' });
                 const data = await res.json();
                 const result = data.result || {};
-                if (data.status === 'SETTLEMENT_BLOCKED' || result.status === 'SETTLEMENT_BLOCKED') {
-                    statusBox.innerText = 'SETTLEMENT BLOCKED — no transaction was broadcast and no funds moved. ' + (result.reason || 'A real Zebra Testnet node and a valid collaborative PCZT transaction are required.');
+                const state = result.status || data.status || 'UNKNOWN';
+
+                if (state === 'LOCAL_PCZT_REQUIRED') {
+                    statusBox.innerText = 'FBA matched locally. No ZEC has moved. A trusted local agent must select real unspent Notes, verify Merkle witnesses, sign each participant input, generate the Halo 2 proof, and extract the V6 transaction. USDC is not settled by this step.';
+                    statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
+                } else if (state === 'SETTLEMENT_BLOCKED') {
+                    statusBox.innerText = 'SETTLEMENT BLOCKED — no transaction was broadcast. ' + (result.reason || 'Check the local Testnet PCZT agent and Zebra status.');
                     statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
-                } else if (result.status === 'SIMULATED_ONLY' || data.status === 'SIMULATED_ONLY') {
+                } else if (state === 'SIMULATED_ONLY') {
                     statusBox.innerText = 'SIMULATION ONLY — no Zcash transaction or confirmation exists.';
                     statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
-                } else if (result.status === 'BROADCAST_PENDING_CONFIRMATION' || result.status === 'MEMPOOL') {
-                    statusBox.innerText = 'Broadcast submitted; awaiting a real block confirmation. This is not settled yet.';
+                } else if (state === 'BROADCAST_PENDING_CONFIRMATION' || state === 'MEMPOOL') {
+                    statusBox.innerText = 'ZEC transaction broadcast; awaiting a real Testnet block confirmation. The USDC/quote leg is still NOT SETTLED.';
                     statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
-                } else if (result.status === 'SETTLED_AND_MINED' || result.status === 'CONFIRMED') {
-                    statusBox.innerText = 'Confirmed settlement reported by the configured adapter.';
-                    statusBox.className = 'p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 text-xs text-emerald-300';
-                    document.getElementById('res-price').innerText = '
+                } else if (state === 'ZEC_CONFIRMED_QUOTE_PENDING' || state === 'CONFIRMED') {
+                    statusBox.innerText = 'ZEC leg confirmed on Testnet. USDC/quote leg is not integrated; the complete FBA trade is NOT SETTLED.';
+                    statusBox.className = 'p-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200';
+                } else if (state === 'SETTLED_AND_MINED') {
+                    statusBox.innerText = 'Local simulator result only. It is not a real Testnet settlement.';
+                    statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
+                } else {
+                    statusBox.innerText = 'No completed settlement. Status: ' + state;
+                    statusBox.className = 'p-3 rounded-xl border border-slate-700 bg-slate-900 text-xs text-slate-300';
+                }
+            } catch (error) {
+                statusBox.innerText = 'Could not check settlement status: ' + error.message;
+                statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
+            }
+            fetchEpoch();
+            fetchWallets();
+        }
+
         async function decryptMemo() {
             const hex = document.getElementById('input-memo-hex').value.trim();
             if (!hex) return;
