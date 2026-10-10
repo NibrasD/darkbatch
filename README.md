@@ -13,11 +13,11 @@
 >
 > The FBA matching engine and cryptographic experiments are a prototype. The built-in wallets, balances, notes, anchors and mined blocks are local simulation data; the local simulator is **not Zebra** and does not verify Zcash consensus.
 >
-> The legacy FBA assembler still produces experimental transaction-shaped data and is blocked from live broadcast. A separate Rust tool now uses the official Zcash transaction builder and PCZT roles to construct a V6 PCZT from supplied real notes, Merkle witnesses, recipient outputs and per-owner change outputs; it can apply signatures locally, create an Ironwood Halo 2 proof, and extract raw V6 transaction bytes. This tool is not integrated with epoch clearing, does not scan for unspent notes, and includes an official PCZT contribution combiner, but participant PCZT files have not been redacted to remove other owners' Note metadata, so this is not yet a privacy-preserving distributed protocol.
+> The legacy FBA assembler still produces experimental transaction-shaped data and is blocked from live broadcast. A separate Rust tool uses the official Zcash transaction builder and PCZT roles to construct a V6 PCZT from supplied real notes, Merkle witnesses, buyer outputs and per-owner change outputs. The local workflow now supports participant-specific redacted PCZT copies: other spends' note openings, witnesses, output wallet metadata and value-commitment randomness are removed from a participant contribution, and the full private original is required locally to restore proof data. This is a manual local workflow, not an automatic FBA settlement service or independently audited multiparty protocol.
 >
 > Passing unit tests demonstrates the tested local logic only; it is not evidence that a transaction is accepted by Zebra or can spend real ZEC. Do not use this prototype for real funds.
 >
-> The API deliberately refuses to claim FBA settlement until automatic spendable-note selection, a privacy-preserving/redacted participant contribution flow, automatic wiring from epoch clearing to the FBA PCZT builder, activated Zebra submission/confirmation, and the quote-asset (USDC) settlement leg are integrated and tested. A separate local raw-V6 submitter can send a manually extracted transaction to Zebra, but it does not record an FBA epoch.
+> The API deliberately does not treat matching as a completed FBA settlement. Automatic spendable-note discovery and the handoff from epoch clearing to PCZT construction remain unimplemented; the local Rust CLI requires real current notes/witnesses and explicit participant signatures. A token-protected route can submit a manually extracted V6 transaction to activated Zebra Testnet and track confirmation, but the entire PCZT/epoch pipeline has not been observed passing CI or a real Testnet run. USDC escrow/release verification is present, but automatic quote-transaction execution is not.
 
 ## 1. Executive Summary & Design Philosophy
 
@@ -143,7 +143,7 @@ The Python unit and end-to-end tests exercise local simulation. They are not liv
 
 ## 5. Local Demo (not a live Testnet settlement)
 
-The official-library PCZT builder/signing/combiner/proving path, the FBA buyer-output/seller-change mapping tool, and the local raw-V6 Testnet submitter are documented in [docs/LOCAL_PCZT_SETTLEMENT.md](docs/LOCAL_PCZT_SETTLEMENT.md). The workflow still requires real spendable notes and current Merkle witnesses supplied by a trusted local wallet/scanner; it does not auto-discover notes or settle the USDC leg. The legacy FBA API remains blocked from live settlement.
+The official-library PCZT builder, participant redaction/signing, Combiner, proof/extraction, FBA buyer-output/seller-change mapping tool, and local raw-V6 Testnet submitter are documented in [docs/LOCAL_PCZT_SETTLEMENT.md](docs/LOCAL_PCZT_SETTLEMENT.md). The workflow still requires real spendable notes and current Merkle witnesses from a trusted local wallet/scanner; it does not auto-discover notes or automatically run the PCZT stages from epoch clearing. The legacy FBA assembler API remains blocked from live settlement.
 
 ### 1. Start Coordinator API
 ```bash
