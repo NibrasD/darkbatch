@@ -76,10 +76,10 @@ def create_intent(
     zec_amount: float,
     limit_price_usd: float,
     shielded_address: str,
-    quote_address: Optional[str] = None,
     current_height: int = 4134010,
     validity_blocks: int = 120,
-    private_key: Optional[ed25519.Ed25519PrivateKey] = None
+    private_key: Optional[ed25519.Ed25519PrivateKey] = None,
+    quote_address: Optional[str] = None
 ) -> SwapOrderIntent:
     """Helper factory to instantiate and cryptographically sign a SwapOrderIntent."""
     base_amount_zat = int(round(zec_amount * 100_000_000))
