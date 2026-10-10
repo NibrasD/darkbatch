@@ -524,7 +524,11 @@ def _retry_with_more_notes(binary: Path, workdir: Path, request: Dict[str, Any],
 
 def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
               workdir: Path, token: str, max_age: int, max_tip_lag: int,
-              broadcast: bool, quote_batch_id: str | None = None) -> Dict[str, Any]:
+              broadcast: bool, quote_batch_id: str | None = None,
+              wait_for_confirmation: int = 0, poll_interval: float = 3.0) -> Dict[str, Any]:
+    api_base = _validated_api_base(api_base)
+    if wait_for_confirmation < 0 or poll_interval <= 0:
+        raise AgentError("confirmation timeout must be non-negative and poll interval must be positive")
     api_base = _validated_api_base(api_base)
     _private_workdir(workdir)
     snapshot = json.loads(inventory_path.read_text(encoding="utf-8"))
@@ -538,10 +542,6 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
         raise AgentError("API did not return the expected private FBA PCZT plan")
     if plan.get("status") != "LOCAL_PCZT_REQUIRED":
         raise AgentError(f"epoch is not ready for local PCZT: {plan.get('status')}")
-    # Keep the canonical plan as a private artifact for the escrow registrar. Never publish
-    # it publicly: it includes participant addresses, fills, and individual quote amounts.
-    plan_artifact = workdir / "fba-plan.json"
-    _write_private_json(plan_artifact, plan)
     if broadcast and not quote_batch_id:
         raise AgentError("--broadcast requires --quote-batch-id for a pre-funded USDC escrow batch")
     if broadcast and plan.get("quote_escrow_ready") is not True:
@@ -559,6 +559,10 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
         if str(preflight.get("quote_plan_hash", "")).lower() != str(plan.get("quote_plan_hash", "")).lower():
             raise AgentError("funded USDC escrow commitment does not match this FBA plan")
 
+    # Keep the canonical plan as a private artifact for later safe submission/resume.
+    # Write it only after any escrow preflight succeeds, so an unfunded batch can retry cleanly.
+    plan_artifact = workdir / "fba-plan.json"
+    _write_private_json(plan_artifact, plan)
     request, signing_rows = _build_request(plan, wallets, anchor_hex, target_height)
     reports, raw_tx_hex = _run_full_pczt(binary, workdir, request, signing_rows)
     build_report, proof_report = reports["build_report"], reports["proof_report"]
@@ -608,6 +612,26 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
     result["broadcast"] = response
     result["status"] = response.get("status", "BROADCAST_SUBMITTED")
     result["broadcast_requested"] = True
+    if wait_for_confirmation > 0 and result.get("transaction_id"):
+        deadline = time.monotonic() + wait_for_confirmation
+        while time.monotonic() < deadline:
+            latest = _json_http(
+                api_base.rstrip("/") + f"/api/v1/settlement/tx/{result['transaction_id']}",
+                token=token,
+                timeout=5.0,
+            )
+            if latest.get("status") == "CONFIRMED" and int(latest.get("confirmations", 0)) >= 1:
+                result["status"] = "ZEC_CONFIRMED_QUOTE_RELEASE_PENDING"
+                result["transaction_status"] = "CONFIRMED"
+                result["confirmations"] = latest.get("confirmations")
+                result["block_hash"] = latest.get("block_hash")
+                result["quote_leg_status"] = latest.get("quote_leg_status", "NOT_SETTLED")
+                result["message"] = "ZEC is confirmed on Testnet; USDC release and final epoch settlement remain separate."
+                break
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        else:
+            result["status"] = "BROADCAST_PENDING_CONFIRMATION"
+            result["message"] = "No block confirmation was observed before timeout; the FBA epoch remains unsettled."
     return result
 
 
@@ -791,7 +815,7 @@ def main() -> int:
             result = run_agent(
                 api_base, args.epoch_id, args.wallet_inventory, args.rust_binary.resolve(),
                 args.workdir.resolve(), token, args.max_inventory_age, args.max_tip_lag, args.broadcast,
-                args.quote_batch_id,
+                args.quote_batch_id, args.wait_for_confirmation, args.poll_interval,
             )
         print(json.dumps(result, indent=2))
         return 0
