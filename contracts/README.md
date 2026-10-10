@@ -38,3 +38,16 @@ No contract is deployed by the repository changes. The coordinator can set `DARK
 The oracle is a major trust boundary: the EVM contract cannot prove that a shielded Zcash transaction is confirmed or unconfirmed. The oracle service must independently query a trusted, synchronized Zebra node and publish confirmation / expiry attestations. There is currently no deployed oracle or end-to-end key management in this repository. The contract and the whole cross-chain mechanism have not been audited and must not be used with real funds.
 
 The coordinator does not sign, deposit, release, or refund USDC. Contract transactions require the operator, buyers, oracle, or a caller to submit them directly on the selected EVM network.
+
+## Local ZEC confirmation oracle
+
+After the API has associated an exact, real ZEC TXID with the epoch, this tool independently checks Zebra's Testnet identity, the TXID's block/confirmation count, the coordinator's epoch association, and the escrow's plan/payout hashes. Its default is read-only:
+
+```powershell
+$env:DARKBATCH_SETTLEMENT_TOKEN = "<local API token>"
+python -m darkbatch.settlement.quote_oracle --api-base http://127.0.0.1:8000 --epoch-id 12 --quote-batch-id 0x<64-hex-batch-id> --zec-txid <64-hex-zcash-txid> --plan-json .\private\epoch-12\fba-plan.json
+```
+
+To let the local script sign and broadcast the oracle attestation, configure `DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY` **in the trusted local shell only** and add `--submit`. Adding `--release-usdc` explicitly sends a second EVM call to release seller payouts after the oracle attestation is mined. Neither key nor PCZT/note openings are sent to the coordinator. Do not run this against real USDC before audit, and do not trust an oracle key with more funds than the escrow's narrowly scoped role requires.
+
+The oracle requires an associated API record and a synced Testnet Zebra RPC; it refuses to attest solely from a caller-provided TXID. This code has not been run against an actual Zebra node or EVM network in this environment.
