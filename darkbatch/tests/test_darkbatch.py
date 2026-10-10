@@ -258,18 +258,54 @@ def test_broadcast_raw_transaction_requires_v6_and_never_simulates(monkeypatch):
         raise AssertionError(f"Unexpected RPC method {method}")
 
     adapter._rpc_call = fake_rpc
+    monkeypatch.setattr(adapter, "get_live_chain_info", lambda: {"chain": "test", "blocks": 4_134_010})
     not_v6 = "02000000" + ("00" * 1200)
     with pytest.raises(ValueError, match="Transaction V6"):
-        adapter.broadcast_raw_transaction(not_v6)
+        adapter.broadcast_raw_transaction(not_v6, metadata={"target_height": 4_134_011})
     assert calls == []
 
-    v6_hex = "06000080" + ("00" * 1200)
-    record = adapter.broadcast_raw_transaction(v6_hex)
+    # V6 header + NU6.3 branch ID in little-endian wire order + transaction body.
+    v6_hex = "06000080" + "5b16a537" + ("00" * 1196)
+    record = adapter.broadcast_raw_transaction(
+        v6_hex,
+        metadata={"target_height": 4_134_011, "consensus_branch_id": "0x37a5165b"},
+    )
     assert record["status"] == "BROADCAST_PENDING_CONFIRMATION"
     assert record["txid"] == "ab" * 32
     assert record["confirmations"] == 0
     assert record["epoch_settled"] is False
     assert record["simulation_only"] is False
+    assert calls[0][0] == "sendrawtransaction"
+
+
+
+def test_broadcast_raw_transaction_uses_nu7_branch_after_activation(monkeypatch):
+    from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter
+
+    adapter = TestnetSettlementAdapter(rpc_url="http://test-zebra", allow_simulation=False)
+    monkeypatch.setattr(adapter, "is_live_rpc_available", lambda: True)
+    monkeypatch.setattr(adapter, "get_live_chain_info", lambda: {"chain": "test", "blocks": 4_465_030})
+    calls = []
+
+    def fake_rpc(method, params=None, timeout=3.0):
+        calls.append((method, params))
+        if method == "sendrawtransaction":
+            return "cd" * 32
+        raise AssertionError(f"Unexpected RPC method {method}")
+
+    adapter._rpc_call = fake_rpc
+    nu6_tx = "06000080" + "5b16a537" + ("00" * 1196)
+    with pytest.raises(ValueError, match="0x77190ad9"):
+        adapter.broadcast_raw_transaction(nu6_tx, metadata={"target_height": 4_465_031})
+    assert calls == []
+
+    nu7_tx = "06000080" + "d90a1977" + ("00" * 1196)
+    record = adapter.broadcast_raw_transaction(nu7_tx, metadata={
+        "target_height": 4_465_031,
+        "consensus_branch_id": "0x77190ad9",
+    })
+    assert record["status"] == "BROADCAST_PENDING_CONFIRMATION"
+    assert record["txid"] == "cd" * 32
     assert calls[0][0] == "sendrawtransaction"
 
 
