@@ -175,6 +175,35 @@ def _oracle_address_from_contract(cfg: dict[str, Any]) -> str:
     return "0x" + result.removeprefix("0x")[-40:].lower()
 
 
+def _wait_for_evm_receipt(tx_hash: str, cfg: dict[str, Any], wait_seconds: int) -> dict[str, Any]:
+    """Poll one already-submitted transaction; never broadcasts or replaces it."""
+    normalized_hash = _hash32(tx_hash, "EVM transaction hash")
+    if wait_seconds < 0:
+        raise OracleError("EVM receipt wait timeout must not be negative")
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", ["0x" + normalized_hash])
+        if isinstance(receipt, dict):
+            if int(str(receipt.get("status", "0x0")), 16) != 1:
+                raise OracleError(
+                    f"EVM transaction mined but reverted: 0x{normalized_hash}; "
+                    "inspect escrow state before submitting a replacement"
+                )
+            return {
+                "status": "EVM_TRANSACTION_CONFIRMED",
+                "transaction_hash": "0x" + normalized_hash,
+                "block_number": int(str(receipt.get("blockNumber", "0x0")), 16),
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "status": "EVM_TRANSACTION_PENDING",
+                "transaction_hash": "0x" + normalized_hash,
+                "note": "The existing transaction is still without a receipt; no replacement was submitted.",
+            }
+        time.sleep(min(2.0, remaining))
+
+
 def _send_evm_transaction(
     calldata: str,
     private_key: str,
@@ -226,21 +255,12 @@ def _send_evm_transaction(
     if wait_seconds <= 0:
         return result
 
-    deadline = time.monotonic() + wait_seconds
-    receipt = None
-    while time.monotonic() < deadline:
-        receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", ["0x" + normalized_txid])
-        if receipt:
-            break
-        time.sleep(2)
-    if not isinstance(receipt, dict):
-        result["status"] = "EVM_TRANSACTION_PENDING"
-        result["note"] = "The transaction was broadcast, but no receipt arrived before the local wait deadline."
-        return result
-    if int(str(receipt.get("status", "0x0")), 16) != 1:
-        raise OracleError(f"EVM transaction mined but reverted: 0x{normalized_txid}")
-    result["status"] = "EVM_TRANSACTION_CONFIRMED"
-    result["block_number"] = int(str(receipt.get("blockNumber", "0x0")), 16)
+    receipt_result = _wait_for_evm_receipt(normalized_txid, cfg, wait_seconds)
+    result["status"] = receipt_result["status"]
+    if "block_number" in receipt_result:
+        result["block_number"] = receipt_result["block_number"]
+    if "note" in receipt_result:
+        result["note"] = receipt_result["note"]
     return result
 
 
@@ -254,6 +274,7 @@ def run(
     submit: bool,
     release_usdc: bool,
     wait_seconds: int,
+    resume_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     token = os.getenv("DARKBATCH_SETTLEMENT_TOKEN", "").strip()
     if not token:
@@ -296,6 +317,20 @@ def run(
         result["note"] = "Read-only preflight only. No EVM transaction was signed or broadcast."
         return result
 
+    if resume_result is not None:
+        # Local recovery state is only a pointer to already-broadcast EVM transactions.
+        # Bind it to this exact ZEC tx, batch, epoch, and both payout commitments before reuse.
+        saved_zec = resume_result.get("zec")
+        if (
+            int(resume_result.get("epoch_id", -1)) != epoch_id
+            or _batch_id_hex(str(resume_result.get("batch_id", ""))) != _batch_id_hex(batch_id)
+            or not isinstance(saved_zec, dict)
+            or _hash32(saved_zec.get("txid", ""), "saved ZEC TXID") != zec["txid"]
+            or str(resume_result.get("plan_hash", "")).lower().removeprefix("0x") != expected_plan_hash
+            or str(resume_result.get("escrow_data_hash", "")).lower().removeprefix("0x") != expected_data_hash
+        ):
+            raise OracleError("saved EVM recovery state does not match this epoch, ZEC transaction, or USDC payout commitment")
+
     private_key = os.getenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "").strip()
     if not private_key:
         raise OracleError("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY is required only for --submit")
@@ -309,31 +344,61 @@ def run(
         raise OracleError("local EVM signer is not the oracle address configured in the escrow contract")
 
     if batch["status_code"] == STATUS_FUNDED:
-        data = (
+        calldata = (
             "0x" + _selector("markZecConfirmed(bytes32,bytes32,bytes32)")
             + _batch_id_hex(batch_id) + zec["txid"] + zec["block_hash"]
         )
-        result["attestation_transaction"] = _send_evm_transaction(data, private_key, cfg, wait_seconds)
+        prior_attestation = resume_result.get("attestation_transaction") if isinstance(resume_result, dict) else None
+        if (
+            isinstance(prior_attestation, dict)
+            and prior_attestation.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
+            and prior_attestation.get("transaction_hash")
+        ):
+            # Crucial recovery property: poll the persisted TX hash. Do not obtain a new
+            # nonce or submit another markZecConfirmed transaction while this one is pending.
+            receipt_result = _wait_for_evm_receipt(
+                str(prior_attestation["transaction_hash"]), cfg, wait_seconds
+            )
+            result["attestation_transaction"] = {**prior_attestation, **receipt_result}
+        else:
+            result["attestation_transaction"] = _send_evm_transaction(
+                calldata, private_key, cfg, wait_seconds
+            )
         result["broadcast"] = True
         if result["attestation_transaction"]["status"] != "EVM_TRANSACTION_CONFIRMED":
             result["status"] = "ZEC_CONFIRMED_ON_ZEBRA_EVM_ATTESTATION_PENDING"
             return result
         batch = _read_batch(batch_id)
         if batch["status_code"] != STATUS_ZEC_CONFIRMED or batch["zec_txid"] != zec["txid"] or batch["zec_block_hash"] != zec["block_hash"]:
-            raise OracleError("oracle transaction mined, but escrow state does not reflect the expected ZEC confirmation")
+            raise OracleError("oracle transaction receipt is confirmed, but escrow does not reflect the expected ZEC confirmation")
     else:
         result["attestation_transaction"] = {"status": "ALREADY_ATTESTED", "broadcast": False}
 
     if release_usdc and batch["status_code"] != STATUS_RELEASED:
         release_data = "0x" + _selector("releaseBatch(bytes32)") + _batch_id_hex(batch_id)
-        result["release_transaction"] = _send_evm_transaction(release_data, private_key, cfg, wait_seconds)
+        prior_release = resume_result.get("release_transaction") if isinstance(resume_result, dict) else None
+        if (
+            isinstance(prior_release, dict)
+            and prior_release.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
+            and prior_release.get("transaction_hash")
+        ):
+            # Same protection for a pending release: polling is safe; a second release TX
+            # with another nonce is not an acceptable recovery strategy.
+            receipt_result = _wait_for_evm_receipt(
+                str(prior_release["transaction_hash"]), cfg, wait_seconds
+            )
+            result["release_transaction"] = {**prior_release, **receipt_result}
+        else:
+            result["release_transaction"] = _send_evm_transaction(
+                release_data, private_key, cfg, wait_seconds
+            )
         result["broadcast"] = True
         if result["release_transaction"]["status"] != "EVM_TRANSACTION_CONFIRMED":
             result["status"] = "ZEC_ATTESTED_USDC_RELEASE_PENDING"
             return result
         batch = _read_batch(batch_id)
         if batch["status_code"] != STATUS_RELEASED:
-            raise OracleError("release transaction mined, but escrow does not report RELEASED")
+            raise OracleError("release transaction receipt is confirmed, but escrow does not report RELEASED")
     result["onchain_escrow_status"] = batch["status_code"]
     result["status"] = "USDC_RELEASED" if batch["status_code"] == STATUS_RELEASED else "ZEC_CONFIRMED_USDC_LOCKED"
     return result
@@ -350,12 +415,22 @@ def main() -> int:
     parser.add_argument("--wait-seconds", type=int, default=120)
     parser.add_argument("--submit", action="store_true", help="Sign and broadcast the EVM oracle transaction")
     parser.add_argument("--release-usdc", action="store_true", help="After attestation, also call releaseBatch; requires --submit")
+    parser.add_argument(
+        "--resume-result-json", type=Path, default=None,
+        help="Private previous oracle result used to poll existing pending EVM transaction hashes without rebroadcasting",
+    )
     args = parser.parse_args()
 
     try:
         plan = json.loads(args.plan_json.read_text(encoding="utf-8"))
         if not isinstance(plan, dict):
             raise ValueError("plan JSON root must be an object")
+        resume_result = None
+        if args.resume_result_json is not None:
+            loaded_resume = json.loads(args.resume_result_json.read_text(encoding="utf-8"))
+            if not isinstance(loaded_resume, dict):
+                raise ValueError("--resume-result-json must contain a JSON object")
+            resume_result = loaded_resume
         result = run(
             args.api_base,
             args.epoch_id,
@@ -366,6 +441,7 @@ def main() -> int:
             args.submit,
             args.release_usdc,
             args.wait_seconds,
+            resume_result=resume_result,
         )
     except (OSError, json.JSONDecodeError, ValueError, QuoteEscrowError, OracleError) as exc:
         parser.error(str(exc))
