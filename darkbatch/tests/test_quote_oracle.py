@@ -93,3 +93,119 @@ def test_zebra_oracle_accepts_matching_confirmed_transaction(monkeypatch):
     assert result["txid"] == "ab" * 32
     assert result["block_hash"] == "cd" * 32
     assert result["confirmations"] == 2
+
+
+def _install_oracle_resume_mocks(monkeypatch, *, batch_status):
+    from eth_account import Account
+
+    plan = _plan()
+    txid = "ab" * 32
+    block_hash = "cd" * 32
+    batch_id = "12" * 32
+    plan_hash = "55" * 32
+    data_hash = "66" * 32
+    monkeypatch.setenv("DARKBATCH_SETTLEMENT_TOKEN", "test-token")
+    monkeypatch.setenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "0x" + "00" * 31 + "01")
+    monkeypatch.setattr(quote_oracle, "verify_zebra_confirmation", lambda *_: {
+        "txid": txid, "block_hash": block_hash, "confirmations": 2, "block_height": 9,
+        "tip_height": 10, "network": "test", "zebra_subversion": "/Zebra:test/",
+    })
+    monkeypatch.setattr(quote_oracle, "_coordinator_transaction", lambda *_: {})
+    monkeypatch.setattr(quote_oracle, "verify_epoch_association", lambda *_: None)
+    monkeypatch.setattr(quote_oracle, "quote_plan_hash", lambda _plan: plan_hash)
+    monkeypatch.setattr(quote_oracle, "quote_escrow_data_hash", lambda _plan: data_hash)
+    monkeypatch.setattr(quote_oracle, "_config", lambda: {
+        "rpc_url": "https://evm.invalid", "chain_id": 1,
+        "escrow_address": "0x00000000000000000000000000000000000000ee",
+    })
+    monkeypatch.setattr(
+        quote_oracle, "_oracle_address_from_contract",
+        lambda _cfg: Account.from_key("0x" + "00" * 31 + "01").address,
+    )
+    batch = {
+        "status_code": batch_status,
+        "plan_hash": plan_hash,
+        "escrow_data_hash": data_hash,
+        "zec_txid": txid if batch_status in {quote_oracle.STATUS_ZEC_CONFIRMED, quote_oracle.STATUS_RELEASED} else "",
+        "zec_block_hash": block_hash if batch_status in {quote_oracle.STATUS_ZEC_CONFIRMED, quote_oracle.STATUS_RELEASED} else "",
+    }
+    monkeypatch.setattr(quote_oracle, "_read_batch", lambda _batch_id: dict(batch))
+    resume = {
+        "epoch_id": 17,
+        "batch_id": "0x" + batch_id,
+        "plan_hash": plan_hash,
+        "escrow_data_hash": data_hash,
+        "zec": {"txid": txid},
+    }
+    return plan, batch_id, txid, resume
+
+
+def test_resume_pending_attestation_polls_same_tx_without_rebroadcast(monkeypatch):
+    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
+        monkeypatch, batch_status=quote_oracle.STATUS_FUNDED
+    )
+    old_hash = "0x" + "77" * 32
+    resume.update({
+        "status": "ZEC_CONFIRMED_ON_ZEBRA_EVM_ATTESTATION_PENDING",
+        "attestation_transaction": {
+            "status": "EVM_TRANSACTION_PENDING",
+            "transaction_hash": old_hash,
+        },
+    })
+    waited = []
+    monkeypatch.setattr(
+        quote_oracle, "_wait_for_evm_receipt",
+        lambda tx_hash, cfg, wait_seconds: (
+            waited.append((tx_hash, wait_seconds))
+            or {"status": "EVM_TRANSACTION_PENDING", "transaction_hash": tx_hash}
+        ),
+    )
+    monkeypatch.setattr(
+        quote_oracle, "_send_evm_transaction",
+        lambda *_args, **_kwargs: pytest.fail("must not broadcast a replacement attestation"),
+    )
+
+    result = quote_oracle.run(
+        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
+        resume_result=resume,
+    )
+
+    assert result["status"] == "ZEC_CONFIRMED_ON_ZEBRA_EVM_ATTESTATION_PENDING"
+    assert result["attestation_transaction"]["transaction_hash"] == old_hash
+    assert waited == [(old_hash, 20)]
+
+
+def test_resume_pending_usdc_release_polls_same_tx_without_rebroadcast(monkeypatch):
+    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
+        monkeypatch, batch_status=quote_oracle.STATUS_ZEC_CONFIRMED
+    )
+    old_hash = "0x" + "88" * 32
+    resume.update({
+        "status": "ZEC_ATTESTED_USDC_RELEASE_PENDING",
+        "attestation_transaction": {"status": "EVM_TRANSACTION_CONFIRMED", "transaction_hash": "0x" + "99" * 32},
+        "release_transaction": {
+            "status": "EVM_TRANSACTION_PENDING",
+            "transaction_hash": old_hash,
+        },
+    })
+    waited = []
+    monkeypatch.setattr(
+        quote_oracle, "_wait_for_evm_receipt",
+        lambda tx_hash, cfg, wait_seconds: (
+            waited.append((tx_hash, wait_seconds))
+            or {"status": "EVM_TRANSACTION_PENDING", "transaction_hash": tx_hash}
+        ),
+    )
+    monkeypatch.setattr(
+        quote_oracle, "_send_evm_transaction",
+        lambda *_args, **_kwargs: pytest.fail("must not broadcast a replacement USDC release"),
+    )
+
+    result = quote_oracle.run(
+        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
+        resume_result=resume,
+    )
+
+    assert result["status"] == "ZEC_ATTESTED_USDC_RELEASE_PENDING"
+    assert result["release_transaction"]["transaction_hash"] == old_hash
+    assert waited == [(old_hash, 20)]
