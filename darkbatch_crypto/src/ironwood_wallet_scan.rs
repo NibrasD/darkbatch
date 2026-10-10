@@ -345,6 +345,8 @@ pub fn derive_ironwood_address_json(input_json: &str) -> Result<serde_json::Valu
         network: String,
         spending_key_hex: String,
         address_index: u32,
+        #[serde(default)]
+        scope: Option<String>,
     }
     let request: Request = serde_json::from_str(input_json)
         .map_err(|e| format!("Invalid address request JSON: {e}"))?;
@@ -356,7 +358,13 @@ pub fn derive_ironwood_address_json(input_json: &str) -> Result<serde_json::Valu
         .into_option()
         .ok_or_else(|| "Invalid raw Orchard-protocol spending key.".to_owned())?;
     let fvk = FullViewingKey::from(&spending_key);
-    let address = fvk.address_at(request.address_index, Scope::External);
+    let scope_name = request.scope.as_deref().unwrap_or("external");
+    let scope = match scope_name {
+        "external" => Scope::External,
+        "internal" => Scope::Internal,
+        _ => return Err("scope must be either 'external' or 'internal'.".into()),
+    };
+    let address = fvk.address_at(request.address_index, scope);
     let raw_address = address.to_raw_address_bytes();
     let unified_address = zcash_keys::address::UnifiedAddress::from_receivers(
         Some(address),
@@ -371,6 +379,7 @@ pub fn derive_ironwood_address_json(input_json: &str) -> Result<serde_json::Valu
         "status": "DERIVED_TESTNET_ADDRESS",
         "network": "testnet",
         "address_index": request.address_index,
+        "scope": scope_name,
         "unified_address": encoded,
         "raw_ironwood_receiver_hex": hex::encode(raw_address),
         "note": "The Orchard-protocol receiver format is shared; NU6.3 sends to the Ironwood pool in v6 transactions. The spending key was not returned."
