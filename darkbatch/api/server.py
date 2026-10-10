@@ -404,18 +404,30 @@ def get_testnet_status():
     chain_info = TESTNET_ADAPTER.get_live_chain_info()
     live_rpc = TESTNET_ADAPTER.is_live_rpc_available()
     bundle_builder_is_live_safe = bool(LIVE_SETTLEMENT_IMPLEMENTED and getattr(SOLVER.bundle_builder, "live_broadcast_safe", False))
+    try:
+        tip_height = int(chain_info.get("blocks", -1)) if isinstance(chain_info, dict) else -1
+    except (TypeError, ValueError):
+        tip_height = -1
+    branch_id = (
+        "0x77190ad9" if tip_height >= 4_465_026
+        else "0x37a5165b" if tip_height >= 4_134_000
+        else None
+    )
     return {
         "status": "LIVE_TESTNET_RPC_READY" if live_rpc else "RPC_UNAVAILABLE",
         "network": "Zcash Testnet" if live_rpc else None,
         "protocol_version": "ZIP-229 Transaction v6 (0xD884B698)",
-        "consensus_branch_id": "0x37A5165B",
+        "consensus_branch_id": branch_id,
+        "current_testnet_tip_height": tip_height if tip_height >= 0 else None,
         "validator_implementation": "Zebra RPC" if live_rpc else None,
         "testnet_activation_height": 4134000,
         "live_rpc_connected": live_rpc,
         "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else None,
         "fba_live_broadcast_enabled": bool(live_rpc and bundle_builder_is_live_safe),
         "testnet_nu7_activation_height": 4465026,
-        "testnet_nu7_consensus_branch_id": "0x77190AD9",
+        "testnet_nu7_consensus_branch_id": "0x77190ad9",
+        "local_ironwood_wallet_scanner_available": True,
+        "local_spendable_note_selection_available": True,
         "local_pczt_agent_required": True,
         "local_pczt_cli_available": True,
         "participant_pczt_redaction_available": True,
@@ -427,12 +439,14 @@ def get_testnet_status():
             "DARKBATCH_QUOTE_RPC_URL", "DARKBATCH_QUOTE_CHAIN_ID",
             "DARKBATCH_USDC_TOKEN_ADDRESS", "DARKBATCH_USDC_ESCROW_ADDRESS",
         )),
+        "local_opt_in_quote_leg_settlement_available": True,
         "automatic_quote_leg_settlement_available": False,
         "live_broadcast_block_reason": (
-            "Automatic FBA settlement remains disabled. The legacy FBA assembler is not safe to broadcast. "
-            "A separate official-PCZT CLI supports manual build, redacted participant signing, proof/extraction, "
-            "and raw-V6 submission, but still requires real spendable notes/witnesses from a trusted local wallet "
-            "and an explicit token-protected handoff; the API does not scan notes or invoke that workflow automatically."
+            "The legacy FBA assembler is intentionally blocked from live broadcast. The trusted local workflow "
+            "can scan real Ironwood notes, select spendable notes, build/sign/prove/extract an official PCZT, "
+            "broadcast the extracted V6 transaction, and optionally release USDC after Zebra confirmation. "
+            "These local steps are not invoked automatically by the API; a synced wallet, current witnesses, "
+            "a funded matching escrow batch, and explicit operator action are required."
         ),
         "remote_chain_info": chain_info,
         "local_simulation_enabled": TESTNET_ADAPTER.allow_simulation,
@@ -718,12 +732,19 @@ def finalize_quote_leg(
 ):
     """Finalize FILLED status only after confirmed ZEC and successful on-chain USDC release."""
     _require_local_settlement_token(x_darkbatch_settlement_token)
+    try:
+        minimum_confirmations = max(2, int(os.getenv("DARKBATCH_MINIMUM_FINALIZATION_CONFIRMATIONS", "2")))
+    except ValueError:
+        raise HTTPException(status_code=503, detail="DARKBATCH_MINIMUM_FINALIZATION_CONFIRMATIONS must be an integer")
     zec_txid = req.zec_txid.strip().lower()
     record = TESTNET_ADAPTER.get_transaction(zec_txid)
     if not record:
         raise HTTPException(status_code=404, detail="ZEC transaction is not tracked by the settlement adapter")
-    if record.get("status") != "CONFIRMED" or int(record.get("confirmations", 0)) < 1:
-        raise HTTPException(status_code=409, detail="ZEC leg is not confirmed in a real Testnet block")
+    if record.get("status") != "CONFIRMED" or int(record.get("confirmations", 0)) < minimum_confirmations:
+        raise HTTPException(
+            status_code=409,
+            detail=f"ZEC leg does not meet the required {minimum_confirmations} real Testnet confirmations",
+        )
     if int(record.get("epoch_id", -1)) != req.epoch_id:
         raise HTTPException(status_code=409, detail="ZEC transaction does not belong to the requested FBA epoch")
     if str(record.get("quote_batch_id", "")).lower() != req.quote_batch_id.strip().lower():
