@@ -37,6 +37,9 @@ use zcash_protocol::{
 };
 
 const TESTNET_NU6_3_HEIGHT: u32 = 4_134_000;
+const TESTNET_NU7_HEIGHT: u32 = 4_465_026;
+const TESTNET_NU6_3_BRANCH_ID: u32 = 0x37A5_165B;
+const TESTNET_NU7_BRANCH_ID: u32 = 0x7719_0AD9;
 
 #[derive(Debug, Deserialize)]
 pub struct PcztBuildRequest {
@@ -126,6 +129,7 @@ pub struct PcztBuildReport {
     pub network: String,
     pub target_height: u32,
     pub expiry_height: u32,
+    pub consensus_branch_id: String,
     pub ironwood_anchor_hex: String,
     pub input_count: usize,
     pub recipient_output_count: usize,
@@ -242,11 +246,18 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
     }
     let target = BlockHeight::from_u32(request.target_height);
     let branch_id = BranchId::for_height(&Network::TestNetwork, target);
-    if u32::from(branch_id) != 0x37A5165B {
+    let branch_id_u32 = u32::from(branch_id);
+    let expected_branch_id = if request.target_height >= TESTNET_NU7_HEIGHT {
+        TESTNET_NU7_BRANCH_ID
+    } else {
+        TESTNET_NU6_3_BRANCH_ID
+    };
+    if branch_id_u32 != expected_branch_id
+        || !matches!(branch_id_u32, TESTNET_NU6_3_BRANCH_ID | TESTNET_NU7_BRANCH_ID)
+    {
         return Err(format!(
-            "target_height {} selects Testnet consensus branch 0x{:08x}; the current PCZT implementation requires NU6.3 branch 0x37a5165b",
+            "target_height {} selects unsupported Testnet consensus branch 0x{branch_id_u32:08x}",
             request.target_height,
-            u32::from(branch_id),
         ));
     }
     if request.inputs.is_empty() || request.outputs.is_empty() {
@@ -454,6 +465,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         network: "Zcash Testnet".into(),
         target_height: request.target_height,
         expiry_height: request.target_height.saturating_add(40),
+        consensus_branch_id: format!("0x{branch_id_u32:08x}"),
         ironwood_anchor_hex: hex::encode(anchor.to_bytes()),
         input_count: spends.len(),
         recipient_output_count: outputs.len(),
