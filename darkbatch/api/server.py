@@ -386,6 +386,8 @@ def get_testnet_status():
         "live_rpc_connected": live_rpc,
         "rpc_endpoint": TESTNET_ADAPTER.rpc_url if live_rpc else None,
         "fba_live_broadcast_enabled": bool(live_rpc and bundle_builder_is_live_safe),
+        "testnet_nu7_activation_height": 4465026,
+        "testnet_nu7_consensus_branch_id": "0x77190AD9",
         "local_pczt_agent_required": True,
         "local_raw_v6_submission_available": True,
         "quote_leg_settlement_implemented": False,
@@ -450,8 +452,20 @@ def submit_local_pczt_transaction(
         raise HTTPException(status_code=422, detail="Local proof report does not confirm official PCZT proof and transaction extraction")
     if req.proof_report.get("network") != "Zcash Testnet" or req.proof_report.get("transaction_version") != 6:
         raise HTTPException(status_code=422, detail="Only official V6 transactions built for Zcash Testnet are accepted")
-    if str(req.proof_report.get("consensus_branch_id", "")).lower() != "0x37a5165b":
-        raise HTTPException(status_code=422, detail="Proof report does not use Testnet NU6.3 consensus branch 0x37a5165b")
+    try:
+        target_height = int(req.build_report.get("target_height", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Build report target_height is missing or invalid")
+    if target_height < 4_134_000:
+        raise HTTPException(status_code=422, detail="PCZT target height predates Testnet NU6.3 activation")
+    expected_branch = "0x77190ad9" if target_height >= 4_465_026 else "0x37a5165b"
+    reported_branch = str(req.proof_report.get("consensus_branch_id", "")).lower()
+    built_branch = str(req.build_report.get("consensus_branch_id", "")).lower()
+    if reported_branch != expected_branch or built_branch != expected_branch:
+        raise HTTPException(
+            status_code=422,
+            detail=f"PCZT reports must match Testnet consensus branch {expected_branch} for target height {target_height}",
+        )
     if req.proof_report.get("network_confirmed") is not False or req.proof_report.get("broadcast_ready") is not True:
         raise HTTPException(status_code=422, detail="Proof report readiness/confirmation fields are inconsistent")
     reported_txid = str(req.proof_report.get("txid", "")).lower()
@@ -498,12 +512,13 @@ def submit_local_pczt_transaction(
         or input_total != recipient_total + fee_zat + change_zat
     ):
         raise HTTPException(status_code=422, detail="Build report does not balance against the FBA fill plan")
-    if int(build.get("target_height", 0)) < 4_134_000:
-        raise HTTPException(status_code=422, detail="PCZT target height predates Testnet NU6.3 activation")
-
-    # Broadcast only the raw transaction. Never send PCZT data, note openings or keys to Zebra.
+    # Broadcast only raw transaction bytes plus non-secret target/branch metadata. Never send
+    # PCZT data, note openings or keys to Zebra.
     try:
-        record = TESTNET_ADAPTER.broadcast_raw_transaction(raw_hex)
+        record = TESTNET_ADAPTER.broadcast_raw_transaction(raw_hex, metadata={
+            "target_height": target_height,
+            "consensus_branch_id": expected_branch,
+        })
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Zebra Testnet rejected or could not accept the transaction: {exc}")
     actual_txid = str(record.get("txid", "")).lower()
