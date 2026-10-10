@@ -41,6 +41,7 @@ def init_db():
         base_amount_zat INTEGER,
         limit_price_cents INTEGER,
         shielded_address TEXT,
+        quote_address TEXT,
         expiry_height INTEGER,
         value_commitment TEXT,
         bsk_share TEXT,
@@ -51,6 +52,11 @@ def init_db():
         created_at REAL
     )
     """)
+
+    # Safe migration for existing local database files.
+    intent_columns = {row[1] for row in cur.execute("PRAGMA table_info(intents)").fetchall()}
+    if "quote_address" not in intent_columns:
+        cur.execute("ALTER TABLE intents ADD COLUMN quote_address TEXT")
 
     # Epochs
     cur.execute("""
