@@ -11,7 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("DarkBatch Rust Cryptographic Engine v2.0 (Ironwood / Pallas)");
-        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | build-fba-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local]");
+        println!("Usage: darkbatch_crypto [commit | test-memo | build-demo-v6 | build-pczt-local | build-fba-pczt-local | redact-pczt-local | sign-pczt-local | combine-pczts-local | prove-extract-pczt-local]");
         return;
     }
 
@@ -476,13 +476,33 @@ fn main() {
                 Err(e) => { eprintln!("FBA PCZT build failed: {e}"); std::process::exit(1); }
             }
         }
+        "redact-pczt-local" => {
+            let pczt_input = args.get(2).map(String::as_str).unwrap_or("");
+            let action_index: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+            let pczt_output = args.get(4).map(String::as_str).unwrap_or("");
+            if pczt_input.is_empty() || action_index == usize::MAX || pczt_output.is_empty() {
+                eprintln!("Usage: darkbatch_crypto redact-pczt-local <private-unsigned.pczt> <ironwood-action-index> <participant-redacted.pczt>");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::redact_pczt_for_participant_file(
+                pczt_input, action_index, pczt_output
+            ) {
+                Ok(()) => println!("{}", serde_json::json!({
+                    "status":"PARTICIPANT_PCZT_REDACTED",
+                    "ironwood_action_index":action_index,
+                    "output":pczt_output,
+                    "private_note_metadata_shared":false
+                })),
+                Err(e) => { eprintln!("PCZT redaction failed: {e}"); std::process::exit(1); }
+            }
+        }
         "sign-pczt-local" => {
             let pczt_input = args.get(2).map(String::as_str).unwrap_or("");
             let spending_key_file = args.get(3).map(String::as_str).unwrap_or("");
             let action_index: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
             let pczt_output = args.get(5).map(String::as_str).unwrap_or("");
             if pczt_input.is_empty() || spending_key_file.is_empty() || action_index == usize::MAX || pczt_output.is_empty() {
-                eprintln!("Usage: darkbatch_crypto sign-pczt-local <unsigned.pczt> <local-spending-key-file> <ironwood-action-index> <signed.pczt>");
+                eprintln!("Usage: darkbatch_crypto sign-pczt-local <participant-redacted.pczt> <local-spending-key-file> <ironwood-action-index> <signed-redacted.pczt>");
                 std::process::exit(2);
             }
             match darkbatch_crypto::pczt_settlement::sign_pczt_from_local_key_file(pczt_input, spending_key_file, action_index, pczt_output) {
@@ -493,8 +513,8 @@ fn main() {
         "combine-pczts-local" => {
             let output = args.get(2).map(String::as_str).unwrap_or("");
             let inputs: Vec<String> = args.iter().skip(3).cloned().collect();
-            if output.is_empty() || inputs.len() < 2 {
-                eprintln!("Usage: darkbatch_crypto combine-pczts-local <combined.pczt> <signed-a.pczt> <signed-b.pczt> [more signed PCZTs...]");
+            if output.is_empty() || inputs.len() < 3 {
+                eprintln!("Usage: darkbatch_crypto combine-pczts-local <combined.pczt> <private-original-unsigned.pczt> <signed-redacted-a.pczt> <signed-redacted-b.pczt> [more signed-redacted PCZTs...]");
                 std::process::exit(2);
             }
             match darkbatch_crypto::pczt_settlement::combine_pczt_files(&inputs, output) {
