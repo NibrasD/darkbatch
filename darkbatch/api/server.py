@@ -69,6 +69,10 @@ class QuoteFinalizeRequest(BaseModel):
     quote_batch_id: str
     quote_release_txid: str
 
+class QuotePreflightRequest(BaseModel):
+    epoch_id: int
+    quote_batch_id: str
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -478,6 +482,34 @@ def get_local_pczt_plan(
         response["quote_escrow_reason"] = str(exc)
     # Do not log or broadcast this response: it contains participant addresses and trade amounts.
     return response
+
+
+@app.post("/api/v1/settlement/quote-preflight")
+def preflight_quote_batch(
+    req: QuotePreflightRequest,
+    x_darkbatch_settlement_token: Optional[str] = Header(default=None),
+):
+    """Verify the exact USDC escrow batch before spending time generating the Ironwood proof."""
+    _require_local_settlement_token(x_darkbatch_settlement_token)
+    if req.epoch_id != get_active_epoch_id():
+        raise HTTPException(status_code=409, detail="Epoch is no longer active for settlement")
+    plan = SOLVER.local_settlement_plans.get(req.epoch_id)
+    if not plan or plan.get("status") != "LOCAL_PCZT_REQUIRED":
+        raise HTTPException(status_code=409, detail="No pending local PCZT plan exists for this epoch")
+    try:
+        quote_lock = verify_funded_quote_batch(req.quote_batch_id, plan)
+    except QuoteEscrowError as exc:
+        raise HTTPException(status_code=409, detail=f"USDC escrow preflight failed: {exc}")
+    return {
+        "status": "USDC_LOCKED",
+        "epoch_id": req.epoch_id,
+        "quote_batch_id": req.quote_batch_id,
+        "quote_plan_hash": quote_plan_hash(plan),
+        "quote_total_micro": int(plan["quote_total_micro"]),
+        "chain_id": int(quote_lock["chain_id"]),
+        "deadline": int(quote_lock["deadline"]),
+        "note": "Read-only check only. This route does not send or release USDC."
+    }
 
 
 @app.post("/api/v1/settlement/raw-v6")
