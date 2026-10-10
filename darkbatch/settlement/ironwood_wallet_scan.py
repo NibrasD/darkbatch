@@ -170,6 +170,7 @@ def derive_testnet_ironwood_address(
     spending_key_hex: str,
     *,
     address_index: int = 0,
+    scope: str = "external",
     binary_path: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -182,6 +183,8 @@ def derive_testnet_ironwood_address(
         raise RuntimeError("This initial address tool requires a raw 32-byte Orchard-protocol SpendingKey.")
     if address_index < 0:
         raise RuntimeError("address_index cannot be negative.")
+    if scope not in {"external", "internal"}:
+        raise RuntimeError("scope must be either 'external' or 'internal'.")
     binary = binary_path or _default_binary_path()
     if not os.path.isfile(binary):
         raise RuntimeError(
@@ -191,6 +194,7 @@ def derive_testnet_ironwood_address(
         "network": "testnet",
         "spending_key_hex": key,
         "address_index": int(address_index),
+        "scope": scope,
     }, separators=(",", ":"))
     try:
         completed = subprocess.run(
@@ -570,11 +574,13 @@ def create_wallet_inventory(
             "network": "testnet",
             "spending_key_hex": key_hex.lower(),
             "address_index": address_index,
+            "scope": "external",
         }, binary_path)
         change_result = _run_rust_json("derive-ironwood-address-stdin", {
             "network": "testnet",
             "spending_key_hex": key_hex.lower(),
             "address_index": change_index,
+            "scope": "internal",
         }, binary_path)
         if address_result.get("status") != "DERIVED_TESTNET_ADDRESS" or change_result.get("status") != "DERIVED_TESTNET_ADDRESS":
             raise RuntimeError(f"Rust address derivation failed for {label!r}.")
@@ -646,6 +652,7 @@ def _cli() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     address = sub.add_parser("address", help="Derive a Testnet Unified Address from a raw 32-byte spending key.")
     address.add_argument("--index", type=int, default=0)
+    address.add_argument("--scope", choices=("external", "internal"), default="external")
     init = sub.add_parser("init", help="Initialize a canonical Ironwood tree checkpoint.")
     init.add_argument("--state", required=True)
     init.add_argument("--height", type=int, default=None)
@@ -666,10 +673,10 @@ def _cli() -> int:
     try:
         if args.command == "address":
             key = getpass.getpass("Raw 32-byte Orchard-protocol SpendingKey hex (hidden; never saved): ").strip()
-            result = derive_testnet_ironwood_address(key, address_index=args.index)
+            result = derive_testnet_ironwood_address(key, address_index=args.index, scope=args.scope)
             print(json.dumps({
                 "status": result["status"], "network": result["network"],
-                "address_index": result["address_index"], "unified_address": result["unified_address"],
+                "address_index": result["address_index"], "scope": result.get("scope", args.scope), "unified_address": result["unified_address"],
                 "raw_ironwood_receiver_hex": result["raw_ironwood_receiver_hex"], "note": result["note"],
             }, indent=2))
             return 0
