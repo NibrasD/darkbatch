@@ -733,8 +733,10 @@ mod tests {
         // A participant returns only their signed PCZT. The official Combiner merges it
         // with the unsigned transaction skeleton without pretending the signature is a proof.
         let combined = Combiner::new(vec![decoded, signed]).combine().expect("combine signed PCZT contribution");
-        let raw = prove_and_extract(combined).expect("prove and extract real v6 transaction");
+        let (raw, txid, branch_id) = prove_and_extract(combined).expect("prove and extract real v6 transaction");
         assert!(raw.len() > 1_000);
+        assert_eq!(branch_id, TESTNET_NU7_BRANCH_ID);
+        assert!(!txid.is_empty());
         assert_eq!(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), 0x8000_0006);
     }
 }
