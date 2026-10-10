@@ -22,6 +22,9 @@ from darkbatch.node.simulator import ZcashNodeSimulator
 
 logger = logging.getLogger("darkbatch.settlement.adapter")
 TESTNET_NU63_ACTIVATION_HEIGHT = 4_134_000
+TESTNET_NU7_ACTIVATION_HEIGHT = 4_465_026
+TESTNET_NU63_BRANCH_ID = 0x37A5165B
+TESTNET_NU7_BRANCH_ID = 0x77190AD9
 # Deliberately hard-disabled until real-note selection, PCZT composition, spend authorization,
 # and a matching multi-action proof are integrated and independently validated.
 LIVE_SETTLEMENT_IMPLEMENTED = False
@@ -250,11 +253,27 @@ class TestnetSettlementAdapter:
             )
         if int.from_bytes(raw[:4], "little") != 0x80000006:
             raise ValueError("raw transaction header is not Zcash Transaction V6 (0x80000006)")
+        chain_info = self.get_live_chain_info()
+        if not chain_info:
+            raise RuntimeError("Could not fetch live Testnet tip before selecting a consensus branch")
+        try:
+            current_height = int(chain_info.get("blocks", -1))
+            requested_target_height = int((metadata or {}).get("target_height", current_height + 1))
+        except (TypeError, ValueError):
+            raise ValueError("Invalid Testnet height metadata")
+        if current_height < TESTNET_NU63_ACTIVATION_HEIGHT:
+            raise RuntimeError("The connected Testnet node is below NU6.3 activation")
+        inclusion_height = max(current_height + 1, requested_target_height)
+        expected_branch_id = (
+            TESTNET_NU7_BRANCH_ID
+            if inclusion_height >= TESTNET_NU7_ACTIVATION_HEIGHT
+            else TESTNET_NU63_BRANCH_ID
+        )
         branch_id = int.from_bytes(raw[4:8], "little")
-        if branch_id != 0x37A5165B:
+        if branch_id != expected_branch_id:
             raise ValueError(
                 f"raw transaction consensus branch ID is 0x{branch_id:08x}; "
-                "expected NU6.3 Testnet branch 0x37a5165b"
+                f"expected 0x{expected_branch_id:08x} for Testnet inclusion height {inclusion_height}"
             )
 
         txid = self._rpc_call("sendrawtransaction", [normalized], timeout=15.0)
