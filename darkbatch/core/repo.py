@@ -89,7 +89,7 @@ def save_intent(intent: SwapOrderIntent, epoch_id: int):
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         intent.intent_id, intent.direction.value, intent.base_amount_zat,
-        intent.limit_price_cents, intent.shielded_address, intent.expiry_height,
+        intent.limit_price_cents, intent.shielded_address, intent.quote_address, intent.expiry_height,
         intent.value_commitment, hex(intent.bsk_share), intent.auth_pubkey_hex,
         intent.signature_hex, epoch_id, "PENDING", intent.created_at_timestamp
     ))
