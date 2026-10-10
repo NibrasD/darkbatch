@@ -163,8 +163,8 @@ contract DarkBatchQuoteEscrowTest {
         vm.prank(BUYER_B);
         escrow.fundBuyer(batchId, 1);
 
-        vm.prank(address(0xBAD));
         vm.expectRevert(DarkBatchQuoteEscrow.Unauthorized.selector);
+        vm.prank(address(0xBAD));
         escrow.markZecConfirmed(batchId, keccak256("tx"), keccak256("block"));
     }
 
