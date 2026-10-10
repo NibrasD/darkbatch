@@ -30,6 +30,9 @@ class SwapOrderIntent(BaseModel):
     base_amount_zat: int = Field(gt=0, description="Amount in Zatoshis (1 ZEC = 100,000,000 zat)")
     limit_price_cents: int = Field(gt=0, description="Limit price in cents (e.g. 4250 = $42.50 / ZEC)")
     shielded_address: str = Field(description="Zcash Unified Address with Ironwood receiver")
+    # EVM-compatible wallet that pays/receives the quote asset (e.g. USDC). Optional only for
+    # matching-only demos; real FBA-to-USDC settlement must reject intents without it.
+    quote_address: Optional[str] = Field(default=None, description="EVM address for the quote asset leg")
     expiry_height: int = Field(description="Block height deadline")
     created_at_timestamp: float = Field(default_factory=time.time)
     
@@ -54,7 +57,7 @@ class SwapOrderIntent(BaseModel):
 
     def get_digest(self) -> bytes:
         """Computes deterministic Blake2b digest of intent terms for signing."""
-        payload = f"{self.direction.value}:{self.base_amount_zat}:{self.limit_price_cents}:{self.shielded_address}:{self.expiry_height}:{self.value_commitment}".encode()
+        payload = f"{self.direction.value}:{self.base_amount_zat}:{self.limit_price_cents}:{self.shielded_address}:{self.quote_address or ''}:{self.expiry_height}:{self.value_commitment}".encode()
         return blake2b_digest(payload, personalization=b"DarkBatchIntent")
 
     def verify_signature(self) -> bool:
@@ -73,6 +76,7 @@ def create_intent(
     zec_amount: float,
     limit_price_usd: float,
     shielded_address: str,
+    quote_address: Optional[str] = None,
     current_height: int = 4134010,
     validity_blocks: int = 120,
     private_key: Optional[ed25519.Ed25519PrivateKey] = None
@@ -103,6 +107,7 @@ def create_intent(
         base_amount_zat=base_amount_zat,
         limit_price_cents=limit_price_cents,
         shielded_address=shielded_address,
+        quote_address=quote_address,
         expiry_height=expiry_height,
         blinding_scalar=blinding_scalar,
         value_commitment=value_commitment,
@@ -121,6 +126,7 @@ def create_intent(
         base_amount_zat=base_amount_zat,
         limit_price_cents=limit_price_cents,
         shielded_address=shielded_address,
+        quote_address=quote_address,
         expiry_height=expiry_height,
         blinding_scalar=blinding_scalar,
         value_commitment=value_commitment,
