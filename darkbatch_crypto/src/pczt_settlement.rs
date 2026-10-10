@@ -85,6 +85,9 @@ pub struct PcztChangeOutput {
     /// Amount of the owner's input ZEC committed to buyer fills in an FBA build.
     #[serde(default)]
     pub seller_fill_zat: u64,
+    /// Optional encrypted receipt memo for the seller's change output.
+    #[serde(default)]
+    pub memo_hex: String,
 }
 #[derive(Clone)]
 struct PreparedSpend {
@@ -105,6 +108,7 @@ struct PreparedChange {
     address: Address,
     value_zat: Option<u64>,
     seller_fill_zat: u64,
+    memo: Vec<u8>,
 }
 fn ensure_fvk_owns_address(fvk: &FullViewingKey, raw_address: &[u8; 43], field: &str) -> Result<(), String> {
     let diversifier_bytes: [u8; 11] = raw_address[..11].try_into()
@@ -129,6 +133,8 @@ pub struct PcztBuildReport {
     pub recipient_total_zat: u64,
     pub fee_zat: u64,
     pub change_zat: u64,
+    pub change_output_count: usize,
+    pub seller_fill_total_zat: u64,
     pub ironwood_spend_action_indexes: Vec<usize>,
     pub pczt_bytes_len: usize,
     pub broadcast_ready: bool,
@@ -267,8 +273,19 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
             if let Some(value) = change.value_zat {
                 zatoshis(value, &format!("change_outputs[{index}].value_zat"))?;
             }
+            let memo = if change.memo_hex.trim().is_empty() {
+                Vec::new()
+            } else {
+                let bytes = hex::decode(change.memo_hex.trim())
+                    .map_err(|e| format!("change_outputs[{index}].memo_hex is invalid hex: {e}"))?;
+                if bytes.len() > 512 {
+                    return Err(format!("change_outputs[{index}].memo_hex exceeds 512 bytes"));
+                }
+                bytes
+            };
             change_templates.push(PreparedChange {
-                fvk, address, value_zat: change.value_zat, seller_fill_zat: change.seller_fill_zat,
+                fvk, address, value_zat: change.value_zat,
+                seller_fill_zat: change.seller_fill_zat, memo,
             });
         }
     } else {
@@ -289,7 +306,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         let address = Address::from_raw_address_bytes(&address_bytes).into_option()
             .ok_or_else(|| "change_address_raw_hex is not a valid Ironwood address".to_string())?;
         ensure_fvk_owns_address(&fvk, &address_bytes, "change_address_raw_hex")?;
-        change_templates.push(PreparedChange { fvk, address, value_zat: None, seller_fill_zat: 0 });
+        change_templates.push(PreparedChange { fvk, address, value_zat: None, seller_fill_zat: 0, memo: Vec::new() });
     }
     let input_total = spends.iter().try_fold(0u64, |sum, input| sum.checked_add(input.value_zat).ok_or_else(|| "input sum overflowed".to_string()))?;
     let output_total = outputs.iter().try_fold(0u64, |sum, output| sum.checked_add(output.value_zat).ok_or_else(|| "output sum overflowed".to_string()))?;
@@ -325,7 +342,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
                     Some(change_output.fvk.to_ovk(Scope::Internal)),
                     change_output.address.clone(),
                     zatoshis(amount, &format!("change_outputs[{i}].value_zat"))?,
-                    MemoBytes::empty(),
+                    memo_bytes(&change_output.memo)?,
                 ).map_err(|e| format!("invalid Ironwood change output: {e:?}"))?;
             }
             builder
@@ -444,6 +461,10 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         recipient_total_zat: output_total,
         fee_zat: fee,
         change_zat: change_sum,
+        change_output_count: change_values.len(),
+        seller_fill_total_zat: change_templates.iter().try_fold(0u64, |sum, item| {
+            sum.checked_add(item.seller_fill_zat).ok_or_else(|| "seller fill report sum overflowed".to_string())
+        })?,
         ironwood_spend_action_indexes: ironwood_spend_action_indexes,
         pczt_bytes_len,
         broadcast_ready: false,
@@ -622,6 +643,7 @@ mod tests {
                 address_raw_hex: hex::encode(address_raw),
                 value_zat: None,
                 seller_fill_zat: 970_000,
+                memo_hex: String::new(),
             }],
         };
         let (pczt, report) = build_pczt(&request).expect("balanced FBA PCZT");
