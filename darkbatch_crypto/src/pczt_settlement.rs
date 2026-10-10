@@ -93,7 +93,7 @@ pub struct PcztChangeOutput {
     pub address_raw_hex: String,
     /// Explicit change value for generic PCZT builds. Use null for FBA auto-allocation.
     pub value_zat: Option<u64>,
-    /// Amount of the owner's input ZEC committed to buyer fills in an FBA build.
+    /// Amount of the owner's input ZEC allocated to matched seller fills plus any solver-fee share.
     #[serde(default)]
     pub seller_fill_zat: u64,
     /// Optional encrypted receipt memo for the seller's change output.
@@ -151,6 +151,7 @@ pub struct PcztBuildReport {
     pub fee_zat: u64,
     pub change_zat: u64,
     pub change_output_count: usize,
+    /// Aggregate seller-side ZEC debit allocation, including any solver-fee shares.
     pub seller_fill_total_zat: u64,
     pub ironwood_spend_action_indexes: Vec<usize>,
     pub pczt_bytes_len: usize,
@@ -461,7 +462,7 @@ fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), Str
         }
         if seller_fill_total != output_total {
             return Err(format!(
-                "FBA buy outputs total {output_total} zat but seller fills total {seller_fill_total} zat; refusing unbalanced batch"
+                "FBA recipient outputs total {output_total} zat but seller-side debit allocations total {seller_fill_total} zat; refusing unbalanced batch"
             ));
         }
         let weights_total = weights.iter().try_fold(0u64, |total, value| total.checked_add(*value)

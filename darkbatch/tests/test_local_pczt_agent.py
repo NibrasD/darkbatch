@@ -72,6 +72,7 @@ def test_local_agent_builds_separate_solver_fee_output_and_seller_allocation(tmp
     assert [o["value_zat"] for o in request["outputs"]] == [100000, 1000]
     assert request["solver_fee_output_zat"] == 1000
     assert request["solver_fee_output_index"] == 1
+    assert request["solver_fee_output_address_raw_hex"] == "77" * 43
     assert request["change_outputs"][0]["seller_fill_zat"] == 101000
     assert len(request["inputs"]) == len(signing_rows) == 1
     assert sum(o["value_zat"] for o in request["outputs"]) == sum(

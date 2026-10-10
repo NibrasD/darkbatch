@@ -97,3 +97,16 @@ def test_fba_request_rejects_missing_private_spendable_notes():
     wallet["inputs"] = []
     with pytest.raises(ValueError, match="real spendable note inputs"):
         build_pczt_request(_fills(), wallet)
+
+
+
+def test_zero_solver_fee_has_no_fee_output_or_destination():
+    fills = _fills()
+    fills["solver_fee_zat"] = 0
+    request = build_pczt_request(fills, _wallet_data())
+
+    assert len(request["outputs"]) == 1
+    assert request["solver_fee_output_zat"] == 0
+    assert request["solver_fee_output_index"] is None
+    assert request["solver_fee_output_address_raw_hex"] == ""
+    assert request["change_outputs"][0]["seller_fill_zat"] == 100_000
