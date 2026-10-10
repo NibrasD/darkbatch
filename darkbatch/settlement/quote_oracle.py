@@ -351,6 +351,15 @@ def run(
         prior_attestation = resume_result.get("attestation_transaction") if isinstance(resume_result, dict) else None
         if (
             isinstance(prior_attestation, dict)
+            and prior_attestation.get("status") == "EVM_TRANSACTION_CONFIRMED"
+            and prior_attestation.get("transaction_hash")
+        ):
+            raise OracleError(
+                "saved attestation receipt is confirmed but escrow still reports FUNDED; "
+                "inspect the contract and saved TX before any retry"
+            )
+        if (
+            isinstance(prior_attestation, dict)
             and prior_attestation.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
             and prior_attestation.get("transaction_hash")
         ):
@@ -377,6 +386,15 @@ def run(
     if release_usdc and batch["status_code"] != STATUS_RELEASED:
         release_data = "0x" + _selector("releaseBatch(bytes32)") + _batch_id_hex(batch_id)
         prior_release = resume_result.get("release_transaction") if isinstance(resume_result, dict) else None
+        if (
+            isinstance(prior_release, dict)
+            and prior_release.get("status") == "EVM_TRANSACTION_CONFIRMED"
+            and prior_release.get("transaction_hash")
+        ):
+            raise OracleError(
+                "saved release receipt is confirmed but escrow does not report RELEASED; "
+                "inspect the contract and saved TX before any retry"
+            )
         if (
             isinstance(prior_release, dict)
             and prior_release.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
