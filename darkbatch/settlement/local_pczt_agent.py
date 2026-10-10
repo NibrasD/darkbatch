@@ -92,7 +92,15 @@ def _write_private_json(path: Path, value: Dict[str, Any]) -> None:
 
 
 def _private_workdir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if not path.is_dir():
+            raise AgentError(f"private workdir is not a directory: {path}")
+        if any(path.iterdir()):
+            raise AgentError(
+                f"private workdir must be empty to avoid mixing old signatures/PCZTs with a new epoch: {path}"
+            )
+    else:
+        path.mkdir(parents=True, exist_ok=False)
     try:
         os.chmod(path, 0o700)
     except OSError:
@@ -431,18 +439,44 @@ def _run_full_pczt(binary: Path, workdir: Path, request: Dict[str, Any],
     if int(build_report.get("seller_fill_total_zat", -1)) != sum(int(c["seller_fill_zat"]) for c in request["change_outputs"]):
         raise AgentError("PCZT builder report does not match seller fill totals")
 
-    current_pczt = unsigned_pczt
-    for index, ((owner, key_path), action_index) in enumerate(zip(signing_rows, build_report.get("ironwood_spend_action_indexes", []))):
-        signed_path = workdir / f"signed-{index:04d}.pczt"
-        _run_cli(binary, ["sign-pczt-local", str(current_pczt), str(key_path), str(int(action_index)), str(signed_path)],
-                 cwd=workdir)
-        current_pczt = signed_path
-
-    if len(build_report.get("ironwood_spend_action_indexes", [])) != len(signing_rows):
+    action_indexes = build_report.get("ironwood_spend_action_indexes", [])
+    if not isinstance(action_indexes, list) or len(action_indexes) != len(signing_rows):
         raise AgentError("PCZT builder spend/action index count does not match the selected real Notes")
+    if not action_indexes:
+        raise AgentError("PCZT contains no real spend actions to authorize")
+
+    # IMPORTANT: each participant signs an independent view derived from the same original
+    # unsigned PCZT. sign-pczt-local now redacts the participant's signed copy, so chaining
+    # one participant's output into the next signer would drop the witness/opening fields
+    # needed by other signers. Keep the full original private and combine all contributions
+    # against it after every local signature has been generated.
+    signed_contributions: List[Path] = []
+    for index, ((owner, key_path), action_index) in enumerate(zip(signing_rows, action_indexes)):
+        redacted_path = workdir / f"participant-{index:04d}-redacted.pczt"
+        signed_path = workdir / f"participant-{index:04d}-signed-redacted.pczt"
+        _run_cli(
+            binary,
+            ["redact-pczt-local", str(unsigned_pczt), str(int(action_index)), str(redacted_path)],
+            cwd=workdir,
+        )
+        _run_cli(
+            binary,
+            ["sign-pczt-local", str(redacted_path), str(key_path), str(int(action_index)), str(signed_path)],
+            cwd=workdir,
+        )
+        signed_contributions.append(signed_path)
+
+    combined_pczt = workdir / "combined.pczt"
+    _run_cli(
+        binary,
+        ["combine-pczts-local", str(combined_pczt), str(unsigned_pczt),
+         *[str(path) for path in signed_contributions]],
+        cwd=workdir,
+    )
+
     tx_hex_path = workdir / "raw-transaction.hex"
     proof_report_path = workdir / "proof-report.json"
-    _run_cli(binary, ["prove-extract-pczt-local", str(current_pczt), str(tx_hex_path), str(proof_report_path)],
+    _run_cli(binary, ["prove-extract-pczt-local", str(combined_pczt), str(tx_hex_path), str(proof_report_path)],
              cwd=workdir, timeout=1800)
     proof_report = json.loads(proof_report_path.read_text(encoding="utf-8"))
     raw_tx_hex = tx_hex_path.read_text(encoding="ascii").strip()
@@ -499,6 +533,18 @@ def run_agent(api_base: str, epoch_id: int, inventory_path: Path, binary: Path,
         raise AgentError("--broadcast requires --quote-batch-id for a pre-funded USDC escrow batch")
     if broadcast and plan.get("quote_escrow_ready") is not True:
         raise AgentError("the signed quote plan is incomplete; cannot broadcast ZEC without exact USDC obligations")
+    if broadcast:
+        # Read-only on-chain USDC check before the expensive local Halo 2 proving stage.
+        preflight = _json_http(
+            api_base.rstrip("/") + "/api/v1/settlement/quote-preflight",
+            method="POST",
+            token=token,
+            body={"epoch_id": epoch_id, "quote_batch_id": quote_batch_id},
+        )
+        if preflight.get("status") != "USDC_LOCKED":
+            raise AgentError("USDC quote escrow did not report a fully funded batch")
+        if str(preflight.get("quote_plan_hash", "")).lower() != str(plan.get("quote_plan_hash", "")).lower():
+            raise AgentError("funded USDC escrow commitment does not match this FBA plan")
 
     request, signing_rows = _build_request(plan, wallets, anchor_hex, target_height)
     reports, raw_tx_hex = _run_full_pczt(binary, workdir, request, signing_rows)
