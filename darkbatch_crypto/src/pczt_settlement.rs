@@ -31,7 +31,7 @@ use zcash_primitives::transaction::{
     fees::zip317,
 };
 use zcash_protocol::{
-    consensus::{BlockHeight, Network},
+    consensus::{BlockHeight, BranchId, Network},
     memo::MemoBytes,
     value::Zatoshis,
 };
@@ -233,6 +233,15 @@ fn allocate_pro_rata(total: u64, weights: &[u64]) -> Result<Vec<u64>, String> {
 fn build_pczt(request: &PcztBuildRequest) -> Result<(Pczt, PcztBuildReport), String> {
     if request.target_height < TESTNET_NU6_3_HEIGHT {
         return Err(format!("target_height must be >= Testnet NU6.3 activation height {TESTNET_NU6_3_HEIGHT}"));
+    }
+    let target = BlockHeight::from_u32(request.target_height);
+    let branch_id = BranchId::for_height(&Network::TestNetwork, target);
+    if u32::from(branch_id) != 0x37A5165B {
+        return Err(format!(
+            "target_height {} selects Testnet consensus branch 0x{:08x}; the current PCZT implementation requires NU6.3 branch 0x37a5165b",
+            request.target_height,
+            u32::from(branch_id),
+        ));
     }
     if request.inputs.is_empty() || request.outputs.is_empty() {
         return Err("at least one real spend input and recipient output are required".into());
@@ -525,26 +534,33 @@ fn prove_and_extract(pczt: Pczt) -> Result<Vec<u8>, String> {
         .finish();
     let tx = TransactionExtractor::new(proved).extract(&mut rng)
         .map_err(|e| format!("TransactionExtractor rejected the transaction: {e:?}"))?;
+    let txid = tx.txid().to_string();
+    let branch_id = u32::from(tx.consensus_branch_id());
+    if branch_id != 0x37A5165B {
+        return Err(format!("extracted transaction has unexpected consensus branch 0x{branch_id:08x}"));
+    }
     let mut raw = Vec::new();
     tx.write(&mut raw).map_err(|e| format!("transaction serialization failed: {e}"))?;
     if raw.len() < 1_000 { return Err(format!("extracted transaction is unexpectedly short: {} bytes", raw.len())); }
     let version = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
     if version != 0x8000_0006 { return Err(format!("expected transaction v6, got 0x{version:08x}")); }
-    Ok(raw)
+    Ok((raw, txid, branch_id))
 }
 pub fn prove_extract_pczt_to_hex_file(pczt_input_path: &str, tx_hex_output_path: &str, report_output_path: &str) -> Result<(), String> {
     let bytes = fs::read(pczt_input_path).map_err(|e| format!("could not read signed PCZT: {e}"))?;
     let pczt = Pczt::parse(&bytes).map_err(|e| format!("input is not a valid PCZT: {e:?}"))?;
-    let raw = prove_and_extract(pczt)?;
+    let (raw, txid, branch_id) = prove_and_extract(pczt)?;
     fs::write(tx_hex_output_path, hex::encode(&raw)).map_err(|e| format!("could not write raw transaction hex: {e}"))?;
     let report = serde_json::json!({
         "status": "PROOF_GENERATED_AND_TRANSACTION_EXTRACTED",
         "network": "Zcash Testnet",
         "transaction_version": 6,
+        "consensus_branch_id": format!("0x{branch_id:08x}"),
+        "txid": txid,
         "raw_transaction_bytes": raw.len(),
         "broadcast_ready": true,
         "network_confirmed": false,
-        "warning": "This is a V6 transaction extracted by official Zcash Rust libraries. This tool has not proved the note remains unspent or that Zebra will accept the transaction. Broadcast to activated Testnet Zebra and verify its txid and block confirmation before recording an FBA epoch."
+        "warning": "This V6 transaction was extracted by official Zcash Rust libraries after proof/signature validation. This tool has not proved the notes remain unspent or that Zebra accepts the transaction. Broadcast to activated Testnet Zebra and verify its txid and block confirmation before recording an FBA epoch."
     });
     fs::write(report_output_path, serde_json::to_vec_pretty(&report).map_err(|e| format!("report serialization failed: {e}"))?)
         .map_err(|e| format!("could not write transaction report: {e}"))?;
