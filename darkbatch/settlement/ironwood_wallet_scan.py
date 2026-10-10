@@ -1,5 +1,5 @@
 """
-Local Ironwood Testnet wallet scanner and transaction workflow.
+Local Ironwood Testnet wallet scanner and private PCZT-inventory exporter.
 
 Run this module locally, near the wallet and Zebra RPC. The spending key is entered
 with a hidden prompt and passed only to the Rust process through stdin. It is never
