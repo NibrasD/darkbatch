@@ -245,11 +245,16 @@ def record_epoch_zec_confirmed(epoch_id: int, tx_id: str, block_hash: str):
     cur.execute(
         """
         UPDATE epochs
-        SET status='ZEC_CONFIRMED_QUOTE_PENDING', tx_id=?, block_hash=?
-        WHERE epoch_id=? AND status IN ('ZEC_LEG_PENDING', 'ZEC_CONFIRMED_QUOTE_PENDING')
+        SET status='ZEC_CONFIRMED_QUOTE_PENDING', block_hash=?
+        WHERE epoch_id=? AND tx_id=?
+          AND status IN ('ZEC_LEG_PENDING', 'ZEC_CONFIRMED_QUOTE_PENDING')
         """,
-        (tx_id, block_hash, epoch_id),
+        (block_hash, epoch_id, tx_id),
     )
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise RuntimeError("epoch does not match the exact broadcast TXID or is not awaiting ZEC confirmation")
     cur.execute(
         """
         UPDATE intents
