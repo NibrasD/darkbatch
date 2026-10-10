@@ -84,9 +84,9 @@ def save_intent(intent: SwapOrderIntent, epoch_id: int):
     cur.execute("""
     INSERT OR REPLACE INTO intents (
         intent_id, direction, base_amount_zat, limit_price_cents,
-        shielded_address, expiry_height, value_commitment, bsk_share,
+        shielded_address, quote_address, expiry_height, value_commitment, bsk_share,
         auth_pubkey_hex, signature_hex, epoch_id, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         intent.intent_id, intent.direction.value, intent.base_amount_zat,
         intent.limit_price_cents, intent.shielded_address, intent.expiry_height,
@@ -116,6 +116,7 @@ def get_pending_intents(epoch_id: Optional[int] = None) -> List[SwapOrderIntent]
             base_amount_zat=r["base_amount_zat"],
             limit_price_cents=r["limit_price_cents"],
             shielded_address=r["shielded_address"],
+            quote_address=r["quote_address"] if "quote_address" in r.keys() else None,
             expiry_height=r["expiry_height"],
             created_at_timestamp=r["created_at"],
             blinding_scalar=1,  # deserialized
