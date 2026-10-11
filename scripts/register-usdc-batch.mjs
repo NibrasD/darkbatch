@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { AbiCoder, Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
 
 const required = ["DARKBATCH_QUOTE_RPC_URL","DARKBATCH_QUOTE_CHAIN_ID","DARKBATCH_USDC_TOKEN_ADDRESS","DARKBATCH_USDC_ESCROW_ADDRESS","DARKBATCH_QUOTE_COORDINATOR_PRIVATE_KEY","DARKBATCH_USDC_BATCH_DEADLINE_SECONDS"];
 for (const key of required) if (!process.env[key]) throw new Error("Missing environment variable " + key);
-const planPath = process.argv[2] || "../private-work/fba-plan.json";
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const planPath = path.resolve(process.argv[2] || path.join(repoRoot, "private-work", "fba-plan.json"));
 const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
 if (plan.schema !== "darkbatch.fba-local-pczt-plan.v1" || plan.quote_escrow_ready !== true) throw new Error("File is not a complete private DarkBatch FBA quote plan");
 if (!/^[0-9a-fA-F]{64}$/.test(String(plan.quote_plan_hash || ""))) throw new Error("Plan must include quote_plan_hash from the API");
