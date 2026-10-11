@@ -255,3 +255,46 @@ def test_usdc_release_pending_does_not_finalize_epoch(tmp_path, monkeypatch):
     assert result["status"] == "ZEC_CONFIRMED_USDC_RELEASE_PENDING"
     assert api_calls == []
 
+
+
+
+def test_usdc_release_finality_pending_does_not_finalize_epoch(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    plan_path = tmp_path / "fba-plan.json"
+    plan_path.write_text(
+        json.dumps({"schema": "darkbatch.fba-local-pczt-plan.v1", "epoch_id": 9}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "configured-locally")
+    monkeypatch.setattr(
+        "darkbatch.settlement.local_pczt_agent.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "status": "USDC_RELEASED_FINALITY_PENDING",
+                "onchain_escrow_status": 4,
+                "release_transaction": {
+                    "status": "EVM_TRANSACTION_PENDING",
+                    "transaction_hash": "0x" + "66" * 32,
+                    "confirmations": 1,
+                    "required_confirmations": 2,
+                },
+            }),
+            stderr="",
+        ),
+    )
+    api_calls = []
+    monkeypatch.setattr(
+        "darkbatch.settlement.local_pczt_agent._json_http",
+        lambda *args, **kwargs: api_calls.append(args) or {},
+    )
+
+    result = _settle_usdc_after_zec_confirmation(
+        "https://coordinator.example", 9, "0x" + "77" * 32, "88" * 32,
+        plan_path, "token", minimum_zec_confirmations=2, evm_wait_seconds=30,
+    )
+
+    assert result["epoch_settled"] is False
+    assert result["status"] == "USDC_RELEASED_FINALITY_PENDING"
+    assert api_calls == []
