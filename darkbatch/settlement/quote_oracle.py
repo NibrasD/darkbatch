@@ -539,15 +539,6 @@ def run(
                 "saved attestation receipt is confirmed but escrow still reports FUNDED; "
                 "inspect the contract and saved TX before any retry"
             )
-        if (
-            isinstance(prior_attestation, dict)
-            and prior_attestation.get("status") == "EVM_TRANSACTION_CONFIRMED"
-            and prior_attestation.get("transaction_hash")
-        ):
-            raise OracleError(
-                "saved attestation receipt is confirmed but escrow still reports FUNDED; "
-                "inspect the contract and saved TX before any retry"
-            )
         saved_attestation = (
             saved_state["transactions"].get("attestation")
             if isinstance(saved_state, dict) else None
