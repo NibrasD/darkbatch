@@ -7,6 +7,7 @@ The EVM contract remains a trust boundary; this tool does not replace a security
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import base64
 import json
 import os
@@ -697,24 +698,31 @@ def run(
             release_hash = str(saved_release.get("transaction_hash", "")).strip()
         if not release_hash and isinstance(previous_release, dict):
             release_hash = str(previous_release.get("transaction_hash", "")).strip()
-        if release_hash:
-            receipt_state = _wait_for_evm_receipt(release_hash, cfg, wait_seconds)
-            if receipt_state.get("status") != "EVM_TRANSACTION_CONFIRMED":
-                result["status"] = "USDC_RELEASED_FINALITY_PENDING"
-                result["release_transaction"] = {
-                    **(saved_release or {}),
-                    **(previous_release or {}),
-                    **receipt_state,
-                }
-                result["onchain_escrow_status"] = batch["status_code"]
-                result["message"] = "Escrow reports RELEASED, but the saved release receipt has not reached the required EVM confirmation depth."
-                return result
-            recovered_release = {
+        if not release_hash:
+            result["status"] = "USDC_RELEASED_FINALITY_PENDING"
+            result["onchain_escrow_status"] = batch["status_code"]
+            result["message"] = (
+                "Escrow reports RELEASED, but no saved release transaction hash is available. "
+                "Refusing to finalize the coordinator epoch without the exact receipt."
+            )
+            return result
+        receipt_state = _wait_for_evm_receipt(release_hash, cfg, wait_seconds)
+        if receipt_state.get("status") != "EVM_TRANSACTION_CONFIRMED":
+            result["status"] = "USDC_RELEASED_FINALITY_PENDING"
+            result["release_transaction"] = {
                 **(saved_release or {}),
                 **(previous_release or {}),
                 **receipt_state,
             }
-            result["release_transaction"] = recovered_release
+            result["onchain_escrow_status"] = batch["status_code"]
+            result["message"] = "Escrow reports RELEASED, but the saved release receipt has not reached the required EVM confirmation depth."
+            return result
+        recovered_release = {
+            **(saved_release or {}),
+            **(previous_release or {}),
+            **receipt_state,
+        }
+        result["release_transaction"] = recovered_release
         # Preserve attestation reference where available for the audit record.
         saved_attestation = saved_transactions.get("attestation") if isinstance(saved_transactions, dict) else None
         previous_attestation = resume_result.get("attestation_transaction") if isinstance(resume_result, dict) else None
