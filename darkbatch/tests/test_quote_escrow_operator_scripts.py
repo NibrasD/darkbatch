@@ -34,6 +34,8 @@ def test_operator_scripts_match_the_canonical_escrow_contract_abi():
     assert "minimumZecConfirmations < 2" in release
     assert "minimumEvmConfirmations < 2" in release
     assert "signPersistThenBroadcast" in release
+    assert "DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY" in release
+    assert "DARKBATCH_SETTLEMENT_ORACLE_PRIVATE_KEY" not in release
 
 
 def test_escrow_refund_transition_is_oracle_gated_and_limitation_is_documented():
