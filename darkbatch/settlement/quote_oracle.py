@@ -548,32 +548,36 @@ def run(
                 "saved attestation receipt is confirmed but escrow still reports FUNDED; "
                 "inspect the contract and saved TX before any retry"
             )
-        if (
-            isinstance(prior_attestation, dict)
-            and prior_attestation.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
-            and prior_attestation.get("transaction_hash")
-            and transaction_state_path is None
-        ):
-            # Legacy recovery without the signed-byte state can only poll; it must never create a replacement.
-            receipt_result = _wait_for_evm_receipt(
-                str(prior_attestation["transaction_hash"]), cfg, wait_seconds
-            )
-            result["attestation_transaction"] = {**prior_attestation, **receipt_result}
-        elif transaction_state_path is not None:
-            saved = saved_state["transactions"].get("attestation")
-            if isinstance(prior_attestation, dict) and prior_attestation.get("transaction_hash") and saved:
-                if str(saved.get("transaction_hash", "")).lower() != str(prior_attestation["transaction_hash"]).lower():
+        saved_attestation = (
+            saved_state["transactions"].get("attestation")
+            if isinstance(saved_state, dict) else None
+        )
+        if isinstance(prior_attestation, dict) and prior_attestation.get("transaction_hash"):
+            if saved_attestation:
+                if str(saved_attestation.get("transaction_hash", "")).lower() != str(prior_attestation["transaction_hash"]).lower():
                     raise OracleError("saved attestation hash differs between result and signed-byte state")
+                if transaction_state_path is not None:
+                    result["attestation_transaction"] = _recover_or_submit_signed_evm_transaction(
+                        "attestation", calldata, private_key, cfg, wait_seconds,
+                        transaction_state_path, transaction_context,
+                    )
+                else:
+                    receipt_result = _wait_for_evm_receipt(
+                        str(prior_attestation["transaction_hash"]), cfg, wait_seconds
+                    )
+                    result["attestation_transaction"] = {**prior_attestation, **receipt_result}
+            else:
+                # A previous result hash without matching signed bytes is poll-only. Never
+                # construct a replacement because the prior transaction may still be pending.
+                receipt_result = _wait_for_evm_receipt(
+                    str(prior_attestation["transaction_hash"]), cfg, wait_seconds
+                )
+                result["attestation_transaction"] = {**prior_attestation, **receipt_result}
+        elif transaction_state_path is not None:
             result["attestation_transaction"] = _recover_or_submit_signed_evm_transaction(
                 "attestation", calldata, private_key, cfg, wait_seconds,
                 transaction_state_path, transaction_context,
             )
-        elif isinstance(prior_attestation, dict) and prior_attestation.get("transaction_hash"):
-            # Without signed bytes, recover only the known hash; never create another transaction.
-            receipt_result = _wait_for_evm_receipt(
-                str(prior_attestation["transaction_hash"]), cfg, wait_seconds
-            )
-            result["attestation_transaction"] = {**prior_attestation, **receipt_result}
         else:
             result["attestation_transaction"] = _send_evm_transaction(
                 calldata, private_key, cfg, wait_seconds
@@ -609,30 +613,36 @@ def run(
                 "saved release receipt is confirmed but escrow does not report RELEASED; "
                 "inspect the contract and saved TX before any retry"
             )
-        if (
-            isinstance(prior_release, dict)
-            and prior_release.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
-            and prior_release.get("transaction_hash")
-            and transaction_state_path is None
-        ):
-            receipt_result = _wait_for_evm_receipt(
-                str(prior_release["transaction_hash"]), cfg, wait_seconds
-            )
-            result["release_transaction"] = {**prior_release, **receipt_result}
-        elif transaction_state_path is not None:
-            saved = saved_state["transactions"].get("release")
-            if isinstance(prior_release, dict) and prior_release.get("transaction_hash") and saved:
-                if str(saved.get("transaction_hash", "")).lower() != str(prior_release["transaction_hash"]).lower():
+        saved_release = (
+            saved_state["transactions"].get("release")
+            if isinstance(saved_state, dict) else None
+        )
+        if isinstance(prior_release, dict) and prior_release.get("transaction_hash"):
+            if saved_release:
+                if str(saved_release.get("transaction_hash", "")).lower() != str(prior_release["transaction_hash"]).lower():
                     raise OracleError("saved release hash differs between result and signed-byte state")
+                if transaction_state_path is not None:
+                    result["release_transaction"] = _recover_or_submit_signed_evm_transaction(
+                        "release", release_data, private_key, cfg, wait_seconds,
+                        transaction_state_path, transaction_context,
+                    )
+                else:
+                    result["release_transaction"] = {
+                        **prior_release,
+                        **_wait_for_evm_receipt(str(prior_release["transaction_hash"]), cfg, wait_seconds),
+                    }
+            else:
+                # A previous result hash without matching signed bytes is poll-only. Never
+                # construct a replacement because the prior release may still be pending.
+                result["release_transaction"] = {
+                    **prior_release,
+                    **_wait_for_evm_receipt(str(prior_release["transaction_hash"]), cfg, wait_seconds),
+                }
+        elif transaction_state_path is not None:
             result["release_transaction"] = _recover_or_submit_signed_evm_transaction(
                 "release", release_data, private_key, cfg, wait_seconds,
                 transaction_state_path, transaction_context,
             )
-        elif isinstance(prior_release, dict) and prior_release.get("transaction_hash"):
-            result["release_transaction"] = {
-                **prior_release,
-                **_wait_for_evm_receipt(str(prior_release["transaction_hash"]), cfg, wait_seconds),
-            }
         else:
             result["release_transaction"] = _send_evm_transaction(
                 release_data, private_key, cfg, wait_seconds
