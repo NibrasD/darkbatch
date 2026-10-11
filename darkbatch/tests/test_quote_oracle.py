@@ -262,10 +262,23 @@ def test_released_escrow_recovery_preserves_original_release_hash(monkeypatch):
 def _signed_state_fixture(tmp_path):
     from eth_account import Account
 
-    raw = bytes.fromhex("01020304")
-    tx_hash = "0x" + quote_oracle._keccak256_hex(raw)
-    signer = Account.from_key("0x" + "00" * 31 + "01").address.lower()
+    private_key = "0x" + "00" * 31 + "01"
+    signer = Account.from_key(private_key).address.lower()
     escrow = "0x00000000000000000000000000000000000000ee"
+    signed = Account.sign_transaction({
+        "chainId": 1,
+        "nonce": 0,
+        "to": escrow,
+        "value": 0,
+        "data": bytes.fromhex("1234"),
+        "gas": 30000,
+        "gasPrice": 1,
+    }, private_key)
+    raw_value = getattr(signed, "raw_transaction", None)
+    if raw_value is None:
+        raw_value = signed.rawTransaction
+    raw = bytes(raw_value)
+    tx_hash = "0x" + quote_oracle._keccak256_hex(raw)
     context = {
         "epoch_id": 17,
         "batch_id": "0x" + "11" * 32,
@@ -301,8 +314,6 @@ def _signed_state_fixture(tmp_path):
 def test_signed_evm_recovery_polls_existing_mempool_tx_without_new_nonce(tmp_path, monkeypatch):
     from eth_account import Account
     monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
-    signer = Account.from_key("0x" + "00" * 31 + "01").address
-    monkeypatch.setattr(Account, "recover_transaction", lambda _raw: signer)
     state_path, context, tx_hash, raw_hex = _signed_state_fixture(tmp_path)
     calls = []
     def fake_rpc(url, method, params):
@@ -338,10 +349,7 @@ def test_signed_evm_recovery_polls_existing_mempool_tx_without_new_nonce(tmp_pat
 
 
 def test_signed_evm_recovery_rebroadcasts_only_the_exact_saved_bytes(tmp_path, monkeypatch):
-    from eth_account import Account
     monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
-    signer = Account.from_key("0x" + "00" * 31 + "01").address
-    monkeypatch.setattr(Account, "recover_transaction", lambda _raw: signer)
     state_path, context, tx_hash, raw_hex = _signed_state_fixture(tmp_path)
     calls = []
     def fake_rpc(url, method, params):
@@ -396,11 +404,7 @@ def test_oracle_refuses_new_evm_broadcast_without_durable_signed_state(monkeypat
 
 
 def test_signed_evm_recovery_rejects_changed_call_before_rpc_broadcast(tmp_path, monkeypatch):
-    from eth_account import Account
-
     state_path, context, _tx_hash, _raw_hex = _signed_state_fixture(tmp_path)
-    signer = Account.from_key("0x" + "00" * 31 + "01").address
-    monkeypatch.setattr(Account, "recover_transaction", lambda _raw: signer)
     calls = []
     monkeypatch.setattr(
         quote_oracle, "_rpc",
