@@ -249,21 +249,34 @@ def _config() -> Dict[str, Any]:
     escrow = os.getenv("DARKBATCH_USDC_ESCROW_ADDRESS", "").strip()
     token = os.getenv("DARKBATCH_USDC_TOKEN_ADDRESS", "").strip()
     chain_id = os.getenv("DARKBATCH_QUOTE_CHAIN_ID", "").strip()
-    if not rpc_url or not _ADDRESS_RE.fullmatch(escrow) or not _ADDRESS_RE.fullmatch(token) or not chain_id:
+    deployment_block = os.getenv("DARKBATCH_QUOTE_DEPLOYMENT_BLOCK", "").strip()
+    if (
+        not rpc_url
+        or not _ADDRESS_RE.fullmatch(escrow)
+        or not _ADDRESS_RE.fullmatch(token)
+        or not chain_id
+        or not deployment_block
+    ):
         raise QuoteEscrowError(
             "USDC escrow verification is not configured; set DARKBATCH_QUOTE_RPC_URL, "
-            "DARKBATCH_QUOTE_CHAIN_ID, DARKBATCH_USDC_TOKEN_ADDRESS, and "
-            "DARKBATCH_USDC_ESCROW_ADDRESS after deploying the escrow contract."
+            "DARKBATCH_QUOTE_CHAIN_ID, DARKBATCH_QUOTE_DEPLOYMENT_BLOCK, "
+            "DARKBATCH_USDC_TOKEN_ADDRESS, and DARKBATCH_USDC_ESCROW_ADDRESS after deployment."
         )
     try:
         parsed_chain_id = int(chain_id, 0)
+        parsed_deployment_block = int(deployment_block, 0)
     except ValueError as exc:
-        raise QuoteEscrowError("DARKBATCH_QUOTE_CHAIN_ID must be a decimal or 0x-prefixed integer") from exc
+        raise QuoteEscrowError(
+            "DARKBATCH_QUOTE_CHAIN_ID and DARKBATCH_QUOTE_DEPLOYMENT_BLOCK must be decimal or 0x-prefixed integers"
+        ) from exc
+    if parsed_chain_id <= 0 or parsed_deployment_block < 0:
+        raise QuoteEscrowError("configured EVM chain ID must be positive and deployment block non-negative")
     return {
         "rpc_url": rpc_url,
         "escrow_address": escrow.lower(),
         "token_address": token.lower(),
         "chain_id": parsed_chain_id,
+        "deployment_block": parsed_deployment_block,
     }
 
 
@@ -308,11 +321,69 @@ def _read_batch(batch_id: str) -> Dict[str, Any]:
         "chain_id": actual_chain,
         "escrow_address": cfg["escrow_address"],
         "expected_token_address": cfg["token_address"],
+        "deployment_block": cfg["deployment_block"],
+    }
+
+
+def _verify_funded_event_finality(batch_id: str, expected_plan_hash: str, deployment_block: int,
+                                rpc_url: str, escrow_address: str) -> Dict[str, Any]:
+    """Require a canonical BatchFullyFunded event with the configured EVM confirmation depth."""
+    try:
+        minimum_confirmations = int(os.getenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2"))
+    except ValueError as exc:
+        raise QuoteEscrowError("DARKBATCH_QUOTE_MIN_CONFIRMATIONS must be an integer >= 2") from exc
+    if minimum_confirmations < 2:
+        raise QuoteEscrowError("DARKBATCH_QUOTE_MIN_CONFIRMATIONS cannot be lower than two confirmations")
+
+    event_topic = "0x" + _keccak256_hex(b"BatchFullyFunded(bytes32,bytes32)")
+    batch_topic = "0x" + _batch_id_hex(batch_id)
+    logs = _rpc(rpc_url, "eth_getLogs", [{
+        "address": escrow_address,
+        "fromBlock": hex(deployment_block),
+        "toBlock": "latest",
+        "topics": [event_topic, batch_topic],
+    }])
+    if not isinstance(logs, list):
+        raise QuoteEscrowError("EVM RPC did not return a log list for BatchFullyFunded")
+    matches = []
+    for log in logs:
+        if not isinstance(log, dict) or log.get("removed") is True:
+            continue
+        topics = log.get("topics", [])
+        data = str(log.get("data", "")).lower().removeprefix("0x")
+        if (
+            str(log.get("address", "")).lower() == escrow_address.lower()
+            and len(topics) >= 2
+            and str(topics[0]).lower() == event_topic
+            and str(topics[1]).lower() == batch_topic
+        ):
+            if data != expected_plan_hash.lower().removeprefix("0x"):
+                raise QuoteEscrowError("BatchFullyFunded event plan hash does not match the committed FBA plan")
+            matches.append(log)
+    if len(matches) != 1:
+        raise QuoteEscrowError(
+            f"Expected exactly one canonical BatchFullyFunded event for the escrow batch; found {len(matches)}"
+        )
+    try:
+        funded_block = int(str(matches[0]["blockNumber"]), 16)
+        chain_tip = int(str(_rpc(rpc_url, "eth_blockNumber", [])), 16)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise QuoteEscrowError("EVM funding event or chain tip has an invalid block number") from exc
+    confirmations = chain_tip - funded_block + 1
+    if funded_block < deployment_block or confirmations < minimum_confirmations:
+        raise QuoteEscrowError(
+            f"USDC funding event has {max(0, confirmations)} EVM confirmation(s); "
+            f"{minimum_confirmations} required before ZEC broadcast"
+        )
+    return {
+        "funding_event_block": funded_block,
+        "funding_event_confirmations": confirmations,
+        "minimum_evm_confirmations": minimum_confirmations,
     }
 
 
 def verify_funded_quote_batch(batch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
-    """Refuse ZEC broadcast unless every USDC buyer has locked the exact committed amount."""
+    """Refuse ZEC broadcast unless USDC funding matches the plan and its event is sufficiently final."""
     expected_hash = quote_plan_hash(plan)
     expected_data_hash = quote_escrow_data_hash(plan)
     expected_total = int(plan["quote_total_micro"])
@@ -334,9 +405,15 @@ def verify_funded_quote_batch(batch_id: str, plan: Dict[str, Any]) -> Dict[str, 
         raise QuoteEscrowError("deployed escrow uses a different token than configured USDC")
     if batch["deadline"] <= int(time.time()):
         raise QuoteEscrowError("USDC escrow deadline has expired")
+    finality = _verify_funded_event_finality(
+        batch_id, expected_hash, int(batch["deployment_block"]),
+        str(batch["rpc_url"]) if "rpc_url" in batch else _config()["rpc_url"],
+        str(batch["escrow_address"]),
+    )
     return {
         "status": "USDC_LOCKED",
         **batch,
+        **finality,
         "plan_hash": expected_hash,
         "quote_total_micro": expected_total,
         "escrow_data_hash": expected_data_hash,
@@ -407,8 +484,8 @@ def verify_released_quote_batch_by_hash(
         chain_tip = int(_rpc(cfg["rpc_url"], "eth_blockNumber", []), 16)
     except (ValueError, TypeError):
         raise QuoteEscrowError("EVM release receipt has no usable block number or confirmation configuration")
-    if minimum_confirmations < 1 or receipt_height <= 0 or chain_tip < receipt_height:
-        raise QuoteEscrowError("EVM release receipt block/confirmation configuration is invalid")
+    if minimum_confirmations < 2 or receipt_height <= 0 or chain_tip < receipt_height:
+        raise QuoteEscrowError("EVM release confirmation configuration must require at least two confirmations")
     if chain_tip - receipt_height + 1 < minimum_confirmations:
         raise QuoteEscrowError(
             f"USDC release has {chain_tip - receipt_height + 1} EVM confirmation(s); "
