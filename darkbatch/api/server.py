@@ -29,6 +29,7 @@ from darkbatch.core.repo import (
     record_epoch_quote_settled,
     get_epoch_history,
     get_epoch_by_txid,
+    get_epoch_by_id,
     update_wallet_balance
 )
 from darkbatch.core.wallet import ShieldedWallet
@@ -39,6 +40,9 @@ from darkbatch.settlement.testnet_adapter import TestnetSettlementAdapter, LIVE_
 from darkbatch.settlement.quote_escrow import (
     QuoteEscrowError,
     quote_plan_hash,
+    quote_escrow_data_hash,
+    _abi_word_uint,
+    _keccak256_hex,
     verify_funded_quote_batch,
     verify_released_quote_batch_by_hash,
 )
@@ -72,6 +76,11 @@ class QuoteFinalizeRequest(BaseModel):
     quote_release_txid: str
 
 class QuotePreflightRequest(BaseModel):
+    epoch_id: int
+    quote_batch_id: str
+
+
+class QuoteRefundPreflightRequest(BaseModel):
     epoch_id: int
     quote_batch_id: str
 
@@ -726,6 +735,61 @@ def submit_local_pczt_transaction(
         "epoch_settled": False,
         "quote_leg_status": "NOT_SETTLED",
         "message": "ZEC leg broadcast. Await a real Testnet block confirmation; the USDC escrow is checked, but this API does not submit the EVM release transaction.",
+    }
+
+
+
+
+@app.post("/api/v1/settlement/refund-preflight")
+def preflight_expired_quote_refund(
+    req: QuoteRefundPreflightRequest,
+    x_darkbatch_settlement_token: Optional[str] = Header(default=None),
+):
+    """Read-only gate for oracle-only refund of an expired batch with no associated ZEC TX."""
+    _require_local_settlement_token(x_darkbatch_settlement_token)
+    if req.epoch_id != get_active_epoch_id():
+        raise HTTPException(status_code=409, detail="Only the currently active epoch can be considered for refund")
+    epoch_record = get_epoch_by_id(req.epoch_id)
+    if epoch_record:
+        if str(epoch_record.get("status", "")).upper() != "ACTIVE" or str(epoch_record.get("tx_id") or "").strip():
+            raise HTTPException(status_code=409, detail="Epoch already has a settlement lifecycle or tracked ZEC TX; refund is refused")
+    for tracked in TESTNET_ADAPTER.broadcast_history.values():
+        if int(tracked.get("epoch_id", -1)) == req.epoch_id:
+            raise HTTPException(status_code=409, detail="Settlement adapter has a tracked ZEC transaction for this epoch; refund is refused")
+
+    plan = SOLVER.local_settlement_plans.get(req.epoch_id)
+    if not plan:
+        pending = get_pending_intents(req.epoch_id)
+        if not pending:
+            raise HTTPException(status_code=404, detail="Cannot reconstruct the active epoch's FBA plan for refund preflight")
+        result = SOLVER.run_epoch_settlement(req.epoch_id, pending)
+        if result.get("status") != "LOCAL_PCZT_REQUIRED":
+            raise HTTPException(status_code=409, detail="Epoch is not awaiting local PCZT and cannot be refunded via this path")
+        plan = SOLVER.local_settlement_plans.get(req.epoch_id)
+    if not plan or plan.get("status") != "LOCAL_PCZT_REQUIRED":
+        raise HTTPException(status_code=409, detail="No refundable local FBA plan exists for this epoch")
+    try:
+        plan_hash = quote_plan_hash(plan)
+        payout_hash = quote_escrow_data_hash(plan)
+        # Must match register-usdc-batch.mjs: keccak256(abi.encode(uint256 epochId, bytes32 planHash)).
+        expected_batch = "0x" + _keccak256_hex(_abi_word_uint(req.epoch_id) + bytes.fromhex(plan_hash))
+        requested_batch = "0x" + str(req.quote_batch_id).strip().lower().removeprefix("0x")
+        if len(requested_batch) != 66 or not re.fullmatch(r"0x[0-9a-f]{64}", requested_batch):
+            raise QuoteEscrowError("quote_batch_id must be 32-byte hexadecimal text")
+        if requested_batch != expected_batch:
+            raise HTTPException(status_code=409, detail="Requested escrow batch ID does not match this epoch and signed FBA plan")
+    except QuoteEscrowError as exc:
+        raise HTTPException(status_code=409, detail=f"FBA plan is not refund-preflight eligible: {exc}")
+    return {
+        "status": "REFUND_PREFLIGHT_PASSED",
+        "epoch_id": req.epoch_id,
+        "quote_batch_id": expected_batch,
+        "quote_plan_hash": plan_hash,
+        "quote_escrow_data_hash": payout_hash,
+        "epoch_status": "ACTIVE",
+        "epoch_has_tracked_zec_tx": False,
+        "operator_no_broadcast_attestation_required": True,
+        "warning": "This coordinator cannot prove global ZEC non-inclusion. The configured oracle/operator must verify there is no broadcast or unresolved ZEC transaction before authorizing refund.",
     }
 
 
