@@ -645,14 +645,48 @@ def run(
         batch = _read_batch(batch_id)
         if batch["status_code"] != STATUS_RELEASED:
             raise OracleError("release transaction receipt is confirmed, but escrow does not report RELEASED")
-    if batch["status_code"] == STATUS_RELEASED and isinstance(resume_result, dict):
-        # Preserve the receipt hash needed by coordinator finalization when the escrow was
-        # already released before this recovery attempt. Do not overwrite the only local
-        # reference with a fresh status response that has no release_transaction field.
-        for field in ("attestation_transaction", "release_transaction"):
-            saved_tx = resume_result.get(field)
-            if isinstance(saved_tx, dict) and saved_tx.get("transaction_hash"):
-                result[field] = saved_tx
+    if batch["status_code"] == STATUS_RELEASED:
+        # A released contract state is not enough for coordinator finalization: recover the
+        # exact release TXID from saved signed-byte state and require the configured EVM depth.
+        recovered_release = None
+        saved_transactions = saved_state.get("transactions", {}) if isinstance(saved_state, dict) else {}
+        saved_release = saved_transactions.get("release") if isinstance(saved_transactions, dict) else None
+        previous_release = resume_result.get("release_transaction") if isinstance(resume_result, dict) else None
+        release_hash = ""
+        if isinstance(saved_release, dict):
+            release_hash = str(saved_release.get("transaction_hash", "")).strip()
+        if not release_hash and isinstance(previous_release, dict):
+            release_hash = str(previous_release.get("transaction_hash", "")).strip()
+        if release_hash:
+            receipt_state = _wait_for_evm_receipt(release_hash, cfg, wait_seconds)
+            if receipt_state.get("status") != "EVM_TRANSACTION_CONFIRMED":
+                result["status"] = "USDC_RELEASED_FINALITY_PENDING"
+                result["release_transaction"] = {
+                    **(saved_release or {}),
+                    **(previous_release or {}),
+                    **receipt_state,
+                }
+                result["onchain_escrow_status"] = batch["status_code"]
+                result["message"] = "Escrow reports RELEASED, but the saved release receipt has not reached the required EVM confirmation depth."
+                return result
+            recovered_release = {
+                **(saved_release or {}),
+                **(previous_release or {}),
+                **receipt_state,
+            }
+            result["release_transaction"] = recovered_release
+        # Preserve attestation reference where available for the audit record.
+        saved_attestation = saved_transactions.get("attestation") if isinstance(saved_transactions, dict) else None
+        previous_attestation = resume_result.get("attestation_transaction") if isinstance(resume_result, dict) else None
+        if isinstance(saved_attestation, dict) and saved_attestation.get("transaction_hash"):
+            result["attestation_transaction"] = saved_attestation
+        elif isinstance(previous_attestation, dict) and previous_attestation.get("transaction_hash"):
+            result["attestation_transaction"] = previous_attestation
+        elif isinstance(saved_release, dict) and not recovered_release:
+            result["status"] = "USDC_RELEASED_FINALITY_PENDING"
+            result["message"] = "Escrow reports RELEASED but a recoverable release receipt hash is missing."
+            result["onchain_escrow_status"] = batch["status_code"]
+            return result
     result["onchain_escrow_status"] = batch["status_code"]
     result["status"] = "USDC_RELEASED" if batch["status_code"] == STATUS_RELEASED else "ZEC_CONFIRMED_USDC_LOCKED"
     return result
@@ -683,6 +717,9 @@ def main() -> int:
         plan = json.loads(args.plan_json.read_text(encoding="utf-8"))
         if not isinstance(plan, dict):
             raise ValueError("plan JSON root must be an object")
+        if args.submit and args.transaction_state_json is None:
+            # Even direct CLI use must persist raw signed bytes before any EVM broadcast.
+            args.transaction_state_json = args.plan_json.expanduser().resolve().parent / "usdc-oracle-signed-txs.json"
         resume_result = None
         if args.resume_result_json is not None:
             loaded_resume = json.loads(args.resume_result_json.read_text(encoding="utf-8"))
