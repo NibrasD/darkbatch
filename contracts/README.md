@@ -35,7 +35,7 @@ forge test --root contracts -vv
 
 No contract is deployed by the repository changes. The coordinator can set `DARKBATCH_QUOTE_MIN_CONFIRMATIONS` (default `2`) to require additional EVM block confirmations for USDC release receipts. The finalization route requires at least two Zebra confirmations by default; operators may increase but cannot lower that floor through `DARKBATCH_MINIMUM_FINALIZATION_CONFIRMATIONS`. Before any value is used, choose a target EVM network; verify its canonical USDC token address and six-decimal amount convention; deploy the contract with distinct operator and oracle accounts; fund only test tokens first; and independently test refund and payout paths. Configure the coordinator with `DARKBATCH_QUOTE_RPC_URL`, `DARKBATCH_QUOTE_CHAIN_ID`, `DARKBATCH_QUOTE_DEPLOYMENT_BLOCK` (the deployment transaction's confirmed block number), `DARKBATCH_USDC_TOKEN_ADDRESS`, and `DARKBATCH_USDC_ESCROW_ADDRESS`. The coordinator refuses ZEC broadcast unless it finds the matching `BatchFullyFunded(batchId, planHash)` event and that event has at least two EVM confirmations. Set the deployment block accurately so the log query does not scan from genesis or skip the event.
 
-The oracle is a major trust boundary: the EVM contract cannot prove that a shielded Zcash transaction is confirmed or unconfirmed. The bundled Python oracle implements the confirmation-and-release path; it does **not** currently provide an automated expiry/refund attestation command. The contract refund transition is restricted to the configured oracle, so expired batches must not be described as automatically refundable by this repository until that path is implemented and tested. There is currently no deployed oracle or end-to-end key management in this repository. The contract and the whole cross-chain mechanism have not been audited and must not be used with real funds.
+The oracle is a major trust boundary: the EVM contract cannot prove Zcash consensus or global non-inclusion of a pending shielded transaction. The repository now provides an explicit expiry/refund attestation command, but it does not remove that trust assumption. Before running it, the operator must independently verify that no ZEC transaction for the epoch was broadcast or remains unresolved, then explicitly pass `--confirm-no-zec-broadcast`. The tool requires the active epoch to have no ZEC transaction tracked by the coordinator, checks that the batch/plan/payout commitments match, and enforces at least a 24-hour grace period after the escrow deadline. It cannot cryptographically prove that a transaction has not been broadcast outside the coordinator; an incorrect oracle attestation could refund USDC even if a ZEC transaction later confirms. After the batch becomes REFUNDABLE, each depositing buyer must run the claim command to recover their own deposit. If no buyer ever deposited, the contract transitions directly to REFUNDED. There is no deployed oracle or end-to-end key management in this repository. The contract and the whole cross-chain mechanism have not been audited and must not be used with real funds.
 
 The coordinator does not sign, deposit, release, or refund USDC. Contract transactions require the operator, buyers, oracle, or a caller to submit them directly on the selected EVM network.
 
@@ -65,3 +65,24 @@ npm install
 ~~~
 
 The release helper requires at least two Zebra confirmations and at least two EVM confirmations by default. It saves signed EVM transaction hashes before broadcasting and resumes polling those hashes instead of automatically creating replacement transactions. Keep its state file private. The helper still depends on the configured oracle key and trusted Zebra RPC; it does not remove the oracle trust assumption.
+
+
+## Expired USDC refund (oracle + buyer claims)
+
+Run only when the epoch is still active, its plan and batch ID match, the batch is OPEN/FUNDED, the deadline passed by at least 24 hours, and an operator has verified that no ZEC transaction was broadcast or remains unresolved. Refund attestation is a trust-sensitive transaction; it must never be used merely because a ZEC transaction has not yet confirmed.
+
+From the `scripts/` directory, with the EVM chain, escrow and API environment variables configured:
+
+```bash
+npm run escrow:refund:attest -- --confirm-no-zec-broadcast
+```
+
+The tool verifies the connected chain ID, configured escrow oracle key, USDC token, current batch status, zero ZEC references, exact coordinator epoch/plan/payout commitments, and the 24-hour grace period. It persists the exact signed EVM transaction bytes and hash before broadcast so a pending operation can be recovered without manufacturing a new nonce. The oracle transaction marks the batch REFUNDABLE; it does not transfer money to buyers by itself.
+
+Each buyer who funded a row uses that same buyer wallet and batch ID to claim only their own deposit:
+
+```bash
+npm run escrow:refund:claim
+```
+
+The claim tool verifies that the connected wallet funded a row that is not already refunded, submits `refundBuyer(batchId, buyerIndex)`, waits for the configured EVM confirmation depth, and verifies the exact USDC balance increase. Never share private keys or refund-state files.
