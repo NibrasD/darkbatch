@@ -15,7 +15,7 @@ DarkBatch separates matching from custody-sensitive transaction construction and
 1. **Match a batch.** The FBA solver evaluates the intents in an epoch and calculates a uniform clearing price. Marginal fills use deterministic integer-zatoshi allocation; the plan must balance buyer and seller fills.
 2. **Prepare with actual wallet state.** A local Zebra Testnet scanner maintains Ironwood notes and Merkle witnesses. A private inventory exporter checks wallet-derived addresses, wallet tip/root consistency, and witness freshness. Sensitive notes and key material stay local.
 3. **Build a Zcash transaction.** The official-library Rust/PCZT path constructs participant spends and recipient/change outputs, gathers signatures over redacted PCZT contributions, performs proof generation, and extracts raw V6 bytes. The coordinator does not build a spend from simulated notes.
-4. **Gate the USDC leg.** The configured escrow must already hold the exact USDC amounts for the matching plan, with payout arrays and plan commitments checked before ZEC broadcast.
+4. **Gate the USDC leg.** The configured escrow must already hold the exact USDC amounts for the matching plan. Before ZEC broadcast, the coordinator compares the plan/payout commitments and also requires the canonical `BatchFullyFunded` event to have at least two EVM confirmations.
 5. **Confirm and release.** The local oracle verifies the ZEC transaction and confirmation depth against Zebra and the coordinator's epoch/batch association, attests that transaction to the escrow, releases USDC, then asks the coordinator to finalize only after the matching release receipt is verified.
 6. **Recover without duplicate payment transactions.** If an EVM receipt is delayed, the local workflow persists the submitted hash and polls that same transaction on retry instead of intentionally broadcasting a replacement. Uncertain states remain pending, not settled.
 
@@ -101,6 +101,7 @@ Do not include API tokens, EVM private keys, spending keys, wallet inventory, no
 - **Not an audited protocol.** The FBA design, PCZT participant coordination, wallet implementation and contract require independent review before any mainnet use.
 - **Oracle trust.** The configured oracle can attest to Zcash observations; the EVM contract does not independently verify Zebra consensus or shielded transaction validity.
 - **Trusted local workflow.** The current local agent orchestrates private PCZT files and reads local key files. The participant-redaction flow is not a claim of a fully decentralized, independently audited multi-party signing service.
+- **Refund tooling gap.** The contract restricts the refund transition to the configured oracle, but the bundled oracle CLI does not yet provide the expiry/refund-attestation path. Expired batches are not automatically refundable through the current tooling.
 - **No mainnet funds.** Do not use this prototype to custody or exchange real assets.
 
 ## Source and workflow
