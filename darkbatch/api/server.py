@@ -754,7 +754,11 @@ def preflight_expired_quote_refund(
         if str(epoch_record.get("status", "")).upper() != "ACTIVE" or str(epoch_record.get("tx_id") or "").strip():
             raise HTTPException(status_code=409, detail="Epoch already has a settlement lifecycle or tracked ZEC TX; refund is refused")
     for tracked in TESTNET_ADAPTER.broadcast_history.values():
-        if int(tracked.get("epoch_id", -1)) == req.epoch_id:
+        try:
+            tracked_epoch = int(tracked.get("epoch_id", -1))
+        except (TypeError, ValueError):
+            continue
+        if tracked_epoch == req.epoch_id:
             raise HTTPException(status_code=409, detail="Settlement adapter has a tracked ZEC transaction for this epoch; refund is refused")
 
     plan = SOLVER.local_settlement_plans.get(req.epoch_id)
