@@ -176,6 +176,9 @@ def test_opt_in_usdc_release_runs_oracle_then_finalizes_epoch(tmp_path, monkeypa
         assert "--submit" in command and "--release-usdc" in command
         assert str(plan_path) == command[command.index("--plan-json") + 1]
         assert command[command.index("--minimum-zec-confirmations") + 1] == "2"
+        assert command[command.index("--transaction-state-json") + 1] == str(
+            plan_path.parent / "usdc-oracle-signed-txs.json"
+        )
         return SimpleNamespace(
             returncode=0,
             stdout=json.dumps({
