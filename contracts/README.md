@@ -33,9 +33,9 @@ forge test --root contracts -vv
 
 ## Deployment prerequisites
 
-No contract is deployed by the repository changes. The coordinator can set `DARKBATCH_QUOTE_MIN_CONFIRMATIONS` (default `1`) to require additional EVM block confirmations for USDC release receipts. Before any value is used, choose a target EVM network; verify its canonical USDC token address and six-decimal amount convention; deploy the contract with distinct operator and oracle accounts; fund only test tokens first; and independently test refund and payout paths. Configure the coordinator with `DARKBATCH_QUOTE_RPC_URL`, `DARKBATCH_QUOTE_CHAIN_ID`, `DARKBATCH_USDC_TOKEN_ADDRESS`, and `DARKBATCH_USDC_ESCROW_ADDRESS`.
+No contract is deployed by the repository changes. The coordinator can set `DARKBATCH_QUOTE_MIN_CONFIRMATIONS` (default `2`) to require additional EVM block confirmations for USDC release receipts. The finalization route requires at least two Zebra confirmations by default; operators may increase but cannot lower that floor through `DARKBATCH_MINIMUM_FINALIZATION_CONFIRMATIONS`. Before any value is used, choose a target EVM network; verify its canonical USDC token address and six-decimal amount convention; deploy the contract with distinct operator and oracle accounts; fund only test tokens first; and independently test refund and payout paths. Configure the coordinator with `DARKBATCH_QUOTE_RPC_URL`, `DARKBATCH_QUOTE_CHAIN_ID`, `DARKBATCH_USDC_TOKEN_ADDRESS`, and `DARKBATCH_USDC_ESCROW_ADDRESS`.
 
-The oracle is a major trust boundary: the EVM contract cannot prove that a shielded Zcash transaction is confirmed or unconfirmed. The oracle service must independently query a trusted, synchronized Zebra node and publish confirmation / expiry attestations. There is currently no deployed oracle or end-to-end key management in this repository. The contract and the whole cross-chain mechanism have not been audited and must not be used with real funds.
+The oracle is a major trust boundary: the EVM contract cannot prove that a shielded Zcash transaction is confirmed or unconfirmed. The bundled Python oracle implements the confirmation-and-release path; it does **not** currently provide an automated expiry/refund attestation command. The contract refund transition is restricted to the configured oracle, so expired batches must not be described as automatically refundable by this repository until that path is implemented and tested. There is currently no deployed oracle or end-to-end key management in this repository. The contract and the whole cross-chain mechanism have not been audited and must not be used with real funds.
 
 The coordinator does not sign, deposit, release, or refund USDC. Contract transactions require the operator, buyers, oracle, or a caller to submit them directly on the selected EVM network.
 
@@ -51,3 +51,17 @@ python -m darkbatch.settlement.quote_oracle --api-base http://127.0.0.1:8000 --e
 To let the local script sign and broadcast the oracle attestation, configure `DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY` **in the trusted local shell only** and add `--submit`. Adding `--release-usdc` explicitly sends a second EVM call to release seller payouts after the oracle attestation is mined. Neither key nor PCZT/note openings are sent to the coordinator. Do not run this against real USDC before audit, and do not trust an oracle key with more funds than the escrow's narrowly scoped role requires.
 
 The oracle requires an associated API record and a synced Testnet Zebra RPC; it refuses to attest solely from a caller-provided TXID. This code has not been run against an actual Zebra node or EVM network in this environment.
+
+
+## Operator scripts
+
+The scripts under `scripts/` target the canonical contract compiled from `contracts/src/DarkBatchQuoteEscrow.sol`. They share its exact ABI, including the eleventh `escrowDataHash` return value. The buyer deposit script looks up the buyer row through `buyerAt(batchId,index)`; do not deploy an older contract copy with different methods.
+
+Install the Node dependencies:
+
+~~~bash
+cd scripts
+npm install
+~~~
+
+The release helper requires at least two Zebra confirmations and at least two EVM confirmations by default. It saves signed EVM transaction hashes before broadcasting and resumes polling those hashes instead of automatically creating replacement transactions. Keep its state file private. The helper still depends on the configured oracle key and trusted Zebra RPC; it does not remove the oracle trust assumption.
