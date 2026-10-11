@@ -80,6 +80,16 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Inspect the reported settle
 
 ## Build and test
 
+Install runtime dependencies for the demo, or install the development set before running tests:
+
+~~~bash
+python -m pip install -r requirements.txt
+# For the full Python test suite:
+python -m pip install -r requirements-dev.txt
+~~~
+
+Then run:
+
 ~~~bash
 cargo build --release --manifest-path darkbatch_crypto/Cargo.toml
 cargo test --release --manifest-path darkbatch_crypto/Cargo.toml
