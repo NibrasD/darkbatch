@@ -111,6 +111,34 @@ def init_db():
     )
     """)
 
+    # Settlement Attestations
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS settlement_attestations (
+        batch_id TEXT PRIMARY KEY,
+        zcash_txid TEXT,
+        attestation_hash TEXT,
+        signature_hex TEXT,
+        clearing_price REAL,
+        total_zec REAL,
+        total_usd REAL,
+        evm_tx_hash TEXT,
+        status TEXT DEFAULT 'PENDING',
+        created_at REAL,
+        updated_at REAL
+    )
+    """)
+
+    # Released Batches (Double-Release Prevention)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS released_batches (
+        batch_id TEXT PRIMARY KEY,
+        zcash_txid TEXT,
+        evm_tx_hash TEXT,
+        released_at REAL,
+        total_usd REAL
+    )
+    """)
+
     conn.commit()
     conn.close()
 

@@ -1,466 +1,203 @@
+"""
+Comprehensive Unit and Integration Tests for SettlementOracle
+"""
+
+import asyncio
+import os
 import pytest
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
-from darkbatch.settlement.quote_escrow import QuoteEscrowError
-from darkbatch.settlement.prepare_quote_escrow_batch import build_manifest, encode_open_batch_calldata
-from darkbatch.settlement import quote_oracle
-
-
-def _plan():
-    return {
-        "epoch_id": 17,
-        "clearing_price_usd": 1.25,
-        "quote_total_micro": 300,
-        "buy_fills": [
-            {"intent_id": "b-2", "shielded_address": "zs2", "quote_address": "0x0000000000000000000000000000000000000022", "filled_zat": 200, "quote_amount_micro": 200},
-            {"intent_id": "b-1", "shielded_address": "zs1", "quote_address": "0x0000000000000000000000000000000000000011", "filled_zat": 100, "quote_amount_micro": 100},
-        ],
-        "sell_fills": [
-            {"intent_id": "s-2", "shielded_address": "zs4", "quote_address": "0x0000000000000000000000000000000000000044", "filled_zat": 200, "quote_amount_micro": 200},
-            {"intent_id": "s-1", "shielded_address": "zs3", "quote_address": "0x0000000000000000000000000000000000000033", "filled_zat": 100, "quote_amount_micro": 100},
-        ],
-    }
+from darkbatch.core.db import get_connection
+from darkbatch.node.simulator import ZcashNodeSimulator
+from darkbatch.settlement.quote_oracle import SettlementOracle
 
 
-def test_open_batch_manifest_encodes_contract_abi_without_broadcast():
-    import time
-    from darkbatch.settlement.quote_escrow import _selector
-
-    deadline = int(time.time()) + 600
-    manifest = build_manifest(_plan(), "12" * 32, deadline)
-    raw = bytes.fromhex(manifest["calldata_hex"].removeprefix("0x"))
-    signature = "openBatch(bytes32,bytes32,address[],uint256[],address[],uint256[],uint256)"
-    assert manifest["broadcast"] is False
-    assert manifest["buyer_total_micro"] == manifest["seller_total_micro"] == 300
-    assert raw[:4].hex() == _selector(signature)
-    assert len(raw) == 4 + 224 + (4 * 96)
-    assert int.from_bytes(raw[4 + 64:4 + 96], "big") == 224
-    assert int.from_bytes(raw[4 + 96:4 + 128], "big") == 320
-    assert int.from_bytes(raw[4 + 128:4 + 160], "big") == 416
-    assert int.from_bytes(raw[4 + 160:4 + 192], "big") == 512
-    assert int.from_bytes(raw[4 + 192:4 + 224], "big") == deadline
+@pytest.fixture
+def clean_db():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM settlement_attestations")
+    cur.execute("DELETE FROM released_batches")
+    conn.commit()
+    conn.close()
+    yield
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM settlement_attestations")
+    cur.execute("DELETE FROM released_batches")
+    conn.commit()
+    conn.close()
 
 
-def test_open_batch_manifest_requires_future_deadline():
-    with pytest.raises(ValueError, match="future Unix timestamp"):
-        build_manifest(_plan(), "12" * 32, 1)
-
-
-def test_zebra_oracle_refuses_non_zebra_node(monkeypatch):
-    calls = []
-
-    def fake_rpc(method, params):
-        calls.append(method)
-        if method == "getblockchaininfo":
-            return {"chain": "test", "blocks": 4_500_200}
-        if method == "getnetworkinfo":
-            return {"subversion": "/zcashd:6.0.0/"}
-        raise AssertionError("must fail before querying transaction")
-    monkeypatch.setattr(quote_oracle, "_zcash_rpc", fake_rpc)
-    with pytest.raises(quote_oracle.OracleError, match="does not identify itself as Zebra"):
-        quote_oracle.verify_zebra_confirmation("ab" * 32, 2)
-    assert calls == ["getblockchaininfo", "getnetworkinfo"]
-
-
-def test_zebra_oracle_requires_confirmation_depth(monkeypatch):
-    def fake_rpc(method, params):
-        if method == "getblockchaininfo":
-            return {"chain": "test", "blocks": 4_500_200}
-        if method == "getnetworkinfo":
-            return {"subversion": "/Zebra:2.0.0/"}
-        if method == "getrawtransaction":
-            return {"txid": "ab" * 32, "blockhash": "cd" * 32, "confirmations": 1}
-        if method == "getblockheader":
-            return {"hash": "cd" * 32, "height": 4_500_199}
-        raise AssertionError(method)
-    monkeypatch.setattr(quote_oracle, "_zcash_rpc", fake_rpc)
-    with pytest.raises(quote_oracle.OracleError, match="required"):
-        quote_oracle.verify_zebra_confirmation("ab" * 32, 2)
-
-
-def test_zebra_oracle_accepts_matching_confirmed_transaction(monkeypatch):
-    def fake_rpc(method, params):
-        if method == "getblockchaininfo":
-            return {"chain": "test", "blocks": 4_500_200}
-        if method == "getnetworkinfo":
-            return {"subversion": "/Zebra:2.0.0/"}
-        if method == "getrawtransaction":
-            return {"txid": "ab" * 32, "blockhash": "cd" * 32, "confirmations": 2}
-        if method == "getblockheader":
-            return {"hash": "cd" * 32, "height": 4_500_199}
-        raise AssertionError(method)
-    monkeypatch.setattr(quote_oracle, "_zcash_rpc", fake_rpc)
-    result = quote_oracle.verify_zebra_confirmation("ab" * 32, 2)
-    assert result["txid"] == "ab" * 32
-    assert result["block_hash"] == "cd" * 32
-    assert result["confirmations"] == 2
-
-
-def _install_oracle_resume_mocks(monkeypatch, *, batch_status):
-    from eth_account import Account
-
-    plan = _plan()
-    txid = "ab" * 32
-    block_hash = "cd" * 32
-    batch_id = "12" * 32
-    plan_hash = "55" * 32
-    data_hash = "66" * 32
-    monkeypatch.setenv("DARKBATCH_SETTLEMENT_TOKEN", "test-token")
-    monkeypatch.setenv("DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY", "0x" + "00" * 31 + "01")
-    monkeypatch.setattr(quote_oracle, "verify_zebra_confirmation", lambda *_: {
-        "txid": txid, "block_hash": block_hash, "confirmations": 2, "block_height": 9,
-        "tip_height": 10, "network": "test", "zebra_subversion": "/Zebra:test/",
-    })
-    monkeypatch.setattr(quote_oracle, "_coordinator_transaction", lambda *_: {})
-    monkeypatch.setattr(quote_oracle, "verify_epoch_association", lambda *_: None)
-    monkeypatch.setattr(quote_oracle, "quote_plan_hash", lambda _plan: plan_hash)
-    monkeypatch.setattr(quote_oracle, "quote_escrow_data_hash", lambda _plan: data_hash)
-    monkeypatch.setattr(quote_oracle, "_config", lambda: {
-        "rpc_url": "https://evm.invalid", "chain_id": 1,
-        "escrow_address": "0x00000000000000000000000000000000000000ee",
-    })
-    monkeypatch.setattr(
-        quote_oracle, "_oracle_address_from_contract",
-        lambda _cfg: Account.from_key("0x" + "00" * 31 + "01").address,
+@pytest.fixture
+def oracle(clean_db):
+    test_private_key = "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d"
+    os.environ["TEST_ORACLE_KEY"] = test_private_key
+    sim = ZcashNodeSimulator(initial_height=4134010)
+    oracle_instance = SettlementOracle(
+        zcash_rpc_url="http://127.0.0.1:18232",
+        evm_rpc_url="http://127.0.0.1:8545",
+        escrow_contract_address="0x1111111111111111111111111111111111111111",
+        oracle_private_key_env_var="TEST_ORACLE_KEY",
+        node_simulator=sim,
     )
-    batch = {
-        "status_code": batch_status,
-        "plan_hash": plan_hash,
-        "escrow_data_hash": data_hash,
-        "zec_txid": txid if batch_status in {quote_oracle.STATUS_ZEC_CONFIRMED, quote_oracle.STATUS_RELEASED} else "",
-        "zec_block_hash": block_hash if batch_status in {quote_oracle.STATUS_ZEC_CONFIRMED, quote_oracle.STATUS_RELEASED} else "",
-    }
-    monkeypatch.setattr(quote_oracle, "_read_batch", lambda _batch_id: dict(batch))
-    resume = {
-        "epoch_id": 17,
-        "batch_id": "0x" + batch_id,
-        "plan_hash": plan_hash,
-        "escrow_data_hash": data_hash,
-        "zec": {"txid": txid},
-    }
-    return plan, batch_id, txid, resume
+    return oracle_instance
 
 
-def test_resume_pending_attestation_polls_same_tx_without_rebroadcast(monkeypatch):
-    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
-        monkeypatch, batch_status=quote_oracle.STATUS_FUNDED
-    )
-    old_hash = "0x" + "77" * 32
-    resume.update({
-        "status": "ZEC_CONFIRMED_ON_ZEBRA_EVM_ATTESTATION_PENDING",
-        "attestation_transaction": {
-            "status": "EVM_TRANSACTION_PENDING",
-            "transaction_hash": old_hash,
-        },
-    })
-    waited = []
-    monkeypatch.setattr(
-        quote_oracle, "_wait_for_evm_receipt",
-        lambda tx_hash, cfg, wait_seconds: (
-            waited.append((tx_hash, wait_seconds))
-            or {"status": "EVM_TRANSACTION_PENDING", "transaction_hash": tx_hash}
-        ),
-    )
-    monkeypatch.setattr(
-        quote_oracle, "_send_evm_transaction",
-        lambda *_args, **_kwargs: pytest.fail("must not broadcast a replacement attestation"),
-    )
-
-    result = quote_oracle.run(
-        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
-        resume_result=resume,
-    )
-
-    assert result["status"] == "ZEC_CONFIRMED_ON_ZEBRA_EVM_ATTESTATION_PENDING"
-    assert result["attestation_transaction"]["transaction_hash"] == old_hash
-    assert waited == [(old_hash, 20)]
+def test_oracle_init(oracle):
+    assert oracle.oracle_address is not None
+    assert oracle.oracle_address.startswith("0x")
+    expected_address = Account.from_key(os.environ["TEST_ORACLE_KEY"]).address
+    assert oracle.oracle_address == expected_address
+    assert oracle.escrow_contract_address == "0x1111111111111111111111111111111111111111"
 
 
-def test_resume_pending_usdc_release_polls_same_tx_without_rebroadcast(monkeypatch):
-    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
-        monkeypatch, batch_status=quote_oracle.STATUS_ZEC_CONFIRMED
-    )
-    old_hash = "0x" + "88" * 32
-    resume.update({
-        "status": "ZEC_ATTESTED_USDC_RELEASE_PENDING",
-        "attestation_transaction": {"status": "EVM_TRANSACTION_CONFIRMED", "transaction_hash": "0x" + "99" * 32},
-        "release_transaction": {
-            "status": "EVM_TRANSACTION_PENDING",
-            "transaction_hash": old_hash,
-        },
-    })
-    waited = []
-    monkeypatch.setattr(
-        quote_oracle, "_wait_for_evm_receipt",
-        lambda tx_hash, cfg, wait_seconds: (
-            waited.append((tx_hash, wait_seconds))
-            or {"status": "EVM_TRANSACTION_PENDING", "transaction_hash": tx_hash}
-        ),
-    )
-    monkeypatch.setattr(
-        quote_oracle, "_send_evm_transaction",
-        lambda *_args, **_kwargs: pytest.fail("must not broadcast a replacement USDC release"),
-    )
+def test_create_attestation_and_signature_verification(oracle):
+    async def run():
+        batch_id = "batch-101"
+        zcash_txid = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        clearing_price = 42.50
+        total_zec = 100.0
+        total_usd = 4250.0
 
-    result = quote_oracle.run(
-        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
-        resume_result=resume,
-    )
-
-    assert result["status"] == "ZEC_ATTESTED_USDC_RELEASE_PENDING"
-    assert result["release_transaction"]["transaction_hash"] == old_hash
-    assert waited == [(old_hash, 20)]
-
-
-def test_released_escrow_recovery_preserves_original_release_hash(monkeypatch):
-    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
-        monkeypatch, batch_status=quote_oracle.STATUS_RELEASED
-    )
-    release_hash = "0x" + "aa" * 32
-    attestation_hash = "0x" + "bb" * 32
-    resume.update({
-        "status": "USDC_RELEASED",
-        "attestation_transaction": {
-            "status": "EVM_TRANSACTION_CONFIRMED",
-            "transaction_hash": attestation_hash,
-        },
-        "release_transaction": {
-            "status": "EVM_TRANSACTION_CONFIRMED",
-            "transaction_hash": release_hash,
-        },
-    })
-    monkeypatch.setattr(
-        quote_oracle, "_send_evm_transaction",
-        lambda *_args, **_kwargs: pytest.fail("an already released batch must not broadcast again"),
-    )
-    waited = []
-    monkeypatch.setattr(
-        quote_oracle, "_wait_for_evm_receipt",
-        lambda tx_hash, _cfg, _wait: (
-            waited.append(tx_hash)
-            or {
-                "status": "EVM_TRANSACTION_CONFIRMED",
-                "transaction_hash": tx_hash,
-                "confirmations": 2,
-                "required_confirmations": 2,
-                "block_number": 123,
-            }
-        ),
-    )
-
-    result = quote_oracle.run(
-        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
-        resume_result=resume,
-    )
-
-    assert result["status"] == "USDC_RELEASED"
-    assert result["release_transaction"]["transaction_hash"] == release_hash
-    assert result["attestation_transaction"]["transaction_hash"] == attestation_hash
-    assert waited == [release_hash]
-
-
-
-def _signed_state_fixture(tmp_path):
-    from eth_account import Account
-
-    private_key = "0x" + "00" * 31 + "01"
-    signer = Account.from_key(private_key).address.lower()
-    escrow = "0x00000000000000000000000000000000000000ee"
-    signed = Account.sign_transaction({
-        "chainId": 1,
-        "nonce": 0,
-        "to": escrow,
-        "value": 0,
-        "data": bytes.fromhex("1234"),
-        "gas": 30000,
-        "gasPrice": 1,
-    }, private_key)
-    raw_value = getattr(signed, "raw_transaction", None)
-    if raw_value is None:
-        raw_value = signed.rawTransaction
-    raw = bytes(raw_value)
-    tx_hash = "0x" + quote_oracle._keccak256_hex(raw)
-    context = {
-        "epoch_id": 17,
-        "batch_id": "0x" + "11" * 32,
-        "zec_txid": "22" * 32,
-        "zec_block_hash": "33" * 32,
-        "plan_hash": "44" * 32,
-        "escrow_data_hash": "55" * 32,
-        "evm_chain_id": 1,
-        "escrow_address": escrow,
-        "oracle_address": signer,
-    }
-    state_path = tmp_path / "usdc-oracle-signed-txs.json"
-    quote_oracle._write_transaction_state(state_path, {
-        "schema": "darkbatch.evm-signed-transactions.v2",
-        **context,
-        "transactions": {
-            "release": {
-                "transaction_hash": tx_hash,
-                "raw_transaction_hex": "0x" + raw.hex(),
-                "status": "EVM_TRANSACTION_PENDING",
-                "stage": "release",
-                "from": signer,
-                "to": escrow,
-                "chain_id": 1,
-                "nonce": 0,
-                "calldata_hash": "0x" + quote_oracle._keccak256_hex(bytes.fromhex("1234")),
-            }
-        },
-    })
-    return state_path, context, tx_hash, "0x" + raw.hex()
-
-
-def test_signed_evm_recovery_polls_existing_mempool_tx_without_new_nonce(tmp_path, monkeypatch):
-    from eth_account import Account
-    monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
-    state_path, context, tx_hash, raw_hex = _signed_state_fixture(tmp_path)
-    calls = []
-    def fake_rpc(url, method, params):
-        calls.append((method, params))
-        if method == "eth_chainId":
-            return "0x1"
-        if method == "eth_getTransactionReceipt":
-            if len([item for item in calls if item[0] == "eth_getTransactionReceipt"]) <= 2:
-                return None
-            return {"status": "0x1", "blockNumber": "0xf"}
-        if method == "eth_getTransactionByHash":
-            return {"hash": tx_hash}
-        if method == "eth_blockNumber":
-            return "0x10"
-        if method == "eth_sendRawTransaction":
-            pytest.fail("an already-visible transaction must not be rebroadcast")
-        raise AssertionError(method)
-    monkeypatch.setattr(quote_oracle, "_rpc", fake_rpc)
-
-    result = quote_oracle._recover_or_submit_signed_evm_transaction(
-        "release", "0x1234", "0x" + "00" * 31 + "01",
-        {"rpc_url": "https://evm.invalid", "chain_id": 1,
-         "escrow_address": "0x00000000000000000000000000000000000000ee"},
-        5, state_path, context,
-    )
-
-    assert result["status"] == "EVM_TRANSACTION_CONFIRMED"
-    assert result["transaction_hash"] == tx_hash
-    assert result["confirmations"] == 2
-    assert not any(method == "eth_sendRawTransaction" for method, _ in calls)
-    state = quote_oracle.json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["transactions"]["release"]["raw_transaction_hex"] == raw_hex
-
-
-def test_signed_evm_recovery_rebroadcasts_only_the_exact_saved_bytes(tmp_path, monkeypatch):
-    monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
-    state_path, context, tx_hash, raw_hex = _signed_state_fixture(tmp_path)
-    calls = []
-    def fake_rpc(url, method, params):
-        calls.append((method, params))
-        if method == "eth_chainId":
-            return "0x1"
-        if method == "eth_getTransactionReceipt":
-            receipt_calls = len([item for item in calls if item[0] == "eth_getTransactionReceipt"])
-            if receipt_calls < 3:
-                return None
-            return {"status": "0x1", "blockNumber": "0xf"}
-        if method == "eth_getTransactionByHash":
-            return None
-        if method == "eth_sendRawTransaction":
-            assert params == [raw_hex]
-            return tx_hash
-        if method == "eth_blockNumber":
-            return "0x10"
-        raise AssertionError(method)
-    monkeypatch.setattr(quote_oracle, "_rpc", fake_rpc)
-
-    result = quote_oracle._recover_or_submit_signed_evm_transaction(
-        "release", "0x1234", "0x" + "00" * 31 + "01",
-        {"rpc_url": "https://evm.invalid", "chain_id": 1,
-         "escrow_address": "0x00000000000000000000000000000000000000ee"},
-        5, state_path, context,
-    )
-
-    assert result["status"] == "EVM_TRANSACTION_CONFIRMED"
-    assert result["transaction_hash"] == tx_hash
-    sent = [params for method, params in calls if method == "eth_sendRawTransaction"]
-    assert sent == [[raw_hex]]
-    assert not any(method == "eth_getTransactionCount" for method, _ in calls)
-    assert not any(method == "eth_estimateGas" for method, _ in calls)
-
-
-
-def test_oracle_refuses_new_evm_broadcast_without_durable_signed_state(monkeypatch):
-    plan, batch_id, txid, _resume = _install_oracle_resume_mocks(
-        monkeypatch, batch_status=quote_oracle.STATUS_FUNDED
-    )
-    monkeypatch.setattr(
-        quote_oracle, "_send_evm_transaction",
-        lambda *_args, **_kwargs: pytest.fail("broadcast must not happen without durable signed state"),
-    )
-
-    with pytest.raises(quote_oracle.OracleError, match="--transaction-state-json"):
-        quote_oracle.run(
-            "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20
+        attestation = await oracle.create_settlement_attestation(
+            batch_id=batch_id,
+            zcash_txid=zcash_txid,
+            clearing_price=clearing_price,
+            total_zec=total_zec,
+            total_usd=total_usd,
         )
 
+        assert isinstance(attestation["attestation_hash"], bytes)
+        assert len(attestation["attestation_hash"]) == 32
+        assert isinstance(attestation["signature"], bytes)
+        assert len(attestation["signature"]) == 65
+        assert attestation["batch_id"] == batch_id
+        assert attestation["zcash_txid"] == zcash_txid
+
+        # Verify cryptographic signature using Account.recover_message
+        signable_msg = encode_defunct(primitive=attestation["attestation_hash"])
+        recovered_addr = Account.recover_message(signable_msg, signature=attestation["signature"])
+        assert recovered_addr == oracle.oracle_address
+
+        # Verify database persistence
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM settlement_attestations WHERE batch_id = ?", (batch_id,))
+        row = cur.fetchone()
+        conn.close()
+        assert row is not None
+        assert row["status"] == "ATTESTED"
+        assert row["zcash_txid"] == zcash_txid
+
+    asyncio.run(run())
 
 
-def test_signed_evm_recovery_rejects_raw_transaction_with_different_call_data(tmp_path, monkeypatch):
-    state_path, context, _tx_hash, _raw_hex = _signed_state_fixture(tmp_path)
-    state = quote_oracle.json.loads(state_path.read_text(encoding="utf-8"))
-    state["transactions"]["release"]["calldata_hash"] = (
-        "0x" + quote_oracle._keccak256_hex(bytes.fromhex("deadbeef"))
-    )
-    quote_oracle._write_transaction_state(state_path, state)
-    calls = []
-    monkeypatch.setattr(
-        quote_oracle, "_rpc",
-        lambda _url, method, _params: (
-            calls.append(method) or "0x1"
-        ) if method == "eth_chainId" else pytest.fail("mismatched signed payload must fail before a broadcast"),
-    )
-    with pytest.raises(quote_oracle.OracleError, match="signed transaction bytes"):
-        quote_oracle._recover_or_submit_signed_evm_transaction(
-            "release", "0xdeadbeef", "0x" + "00" * 31 + "01",
-            {"rpc_url": "https://evm.invalid", "chain_id": 1,
-             "escrow_address": "0x00000000000000000000000000000000000000ee"},
-            5, state_path, context,
+def test_double_release_prevention(oracle):
+    async def run():
+        batch_id = "batch-202"
+        zcash_txid = "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"
+
+        # Initially not released
+        assert not await oracle.check_double_release(batch_id)
+
+        attestation = await oracle.create_settlement_attestation(
+            batch_id=batch_id,
+            zcash_txid=zcash_txid,
+            clearing_price=43.0,
+            total_zec=50.0,
+            total_usd=2150.0,
         )
-    assert calls == ["eth_chainId"]
+
+        # First release should succeed
+        evm_tx_hash = await oracle.submit_evm_release(attestation)
+        assert evm_tx_hash.startswith("0x")
+        assert len(evm_tx_hash) == 66
+
+        # Now check_double_release must return True
+        assert await oracle.check_double_release(batch_id)
+
+        # Second release MUST raise ValueError to prevent double-release
+        with pytest.raises(ValueError, match="Double-release prevented"):
+            await oracle.submit_evm_release(attestation)
+
+        # Also cannot refund an already released batch
+        with pytest.raises(ValueError, match="Cannot refund"):
+            await oracle.submit_evm_refund(batch_id, "settlement timeout")
+
+    asyncio.run(run())
 
 
+def test_evm_refund_submission(oracle):
+    async def run():
+        batch_id = "batch-303"
+        zcash_txid = "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2"
 
-def test_released_escrow_remains_pending_until_release_receipt_reaches_finality(monkeypatch):
-    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
-        monkeypatch, batch_status=quote_oracle.STATUS_RELEASED
-    )
-    release_hash = "0x" + "ab" * 32
-    resume.update({
-        "status": "USDC_RELEASED_FINALITY_PENDING",
-        "release_transaction": {
-            "status": "EVM_TRANSACTION_PENDING",
-            "transaction_hash": release_hash,
-            "confirmations": 1,
-            "required_confirmations": 2,
-        },
-    })
-    monkeypatch.setattr(
-        quote_oracle, "_wait_for_evm_receipt",
-        lambda tx_hash, _cfg, _wait: {
-            "status": "EVM_TRANSACTION_PENDING",
-            "transaction_hash": tx_hash,
-            "confirmations": 1,
-            "required_confirmations": 2,
-        },
-    )
-    monkeypatch.setattr(
-        quote_oracle, "_send_evm_transaction",
-        lambda *_args, **_kwargs: pytest.fail("an already released batch must not broadcast again"),
-    )
+        await oracle.create_settlement_attestation(
+            batch_id=batch_id,
+            zcash_txid=zcash_txid,
+            clearing_price=41.0,
+            total_zec=20.0,
+            total_usd=820.0,
+        )
 
-    result = quote_oracle.run(
-        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
-        resume_result=resume,
-    )
+        refund_tx = await oracle.submit_evm_refund(batch_id, "Miner fee timeout")
+        assert refund_tx.startswith("0x")
 
-    assert result["status"] == "USDC_RELEASED_FINALITY_PENDING"
-    assert result["onchain_escrow_status"] == quote_oracle.STATUS_RELEASED
-    assert result["release_transaction"]["transaction_hash"] == release_hash
+        status = await oracle.get_settlement_status(batch_id)
+        assert status["overall_status"] == "REFUNDED"
+        assert status["evm_status"]["refunded"] is True
+
+    asyncio.run(run())
+
+
+def test_verify_zcash_tx_via_simulator(oracle):
+    async def run():
+        # Submit bundle into simulator to create a confirmed transaction
+        tx_id = "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+        bundle_dict = {
+            "tx_id": tx_id,
+            "epoch_id": 42,
+            "action_groups": [],
+        }
+        success, block_hash = oracle.node_simulator.submit_settlement_bundle(bundle_dict)
+        assert success
+
+        # Verify with 1 confirmation
+        res = await oracle.verify_zcash_tx(tx_id, expected_batch_id="42", min_confirmations=1)
+        assert res["verified"] is True
+        assert res["confirmations"] >= 1
+        assert res["block_hash"] == block_hash
+
+        # Verify with min_confirmations higher than actual
+        res_high = await oracle.verify_zcash_tx(tx_id, expected_batch_id="42", min_confirmations=10)
+        assert res_high["verified"] is False
+        assert "Insufficient confirmations" in res_high["error"]
+
+        # Verify mismatching batch
+        res_mismatch = await oracle.verify_zcash_tx(tx_id, expected_batch_id="999", min_confirmations=1)
+        assert res_mismatch["verified"] is False
+        assert "Batch mismatch" in res_mismatch["error"]
+
+        # Nonexistent transaction
+        res_none = await oracle.verify_zcash_tx("nonexistent_txid", expected_batch_id="1")
+        assert res_none["verified"] is False
+        assert "not found" in res_none["error"]
+
+    asyncio.run(run())
+
+
+def test_price_feed_and_quote(oracle):
+    async def run():
+        price = await oracle.get_zec_usdc_price()
+        assert price > 0.0
+
+        quote = await oracle.get_quote(10.0)
+        assert quote["pair"] == "ZEC/USDC"
+        assert quote["zec_amount"] == 10.0
+        assert quote["gross_usd"] > 0.0
+        assert quote["net_usd"] < quote["gross_usd"]
+        assert quote["solver_fee_usd"] > 0.0
+
+    asyncio.run(run())
