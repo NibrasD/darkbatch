@@ -416,3 +416,42 @@ def test_signed_evm_recovery_rejects_changed_call_before_rpc_broadcast(tmp_path,
             5, state_path, context,
         )
     assert calls == ["eth_chainId"]
+
+
+
+def test_released_escrow_remains_pending_until_release_receipt_reaches_finality(monkeypatch):
+    plan, batch_id, txid, resume = _install_oracle_resume_mocks(
+        monkeypatch, batch_status=quote_oracle.STATUS_RELEASED
+    )
+    release_hash = "0x" + "ab" * 32
+    resume.update({
+        "status": "USDC_RELEASED_FINALITY_PENDING",
+        "release_transaction": {
+            "status": "EVM_TRANSACTION_PENDING",
+            "transaction_hash": release_hash,
+            "confirmations": 1,
+            "required_confirmations": 2,
+        },
+    })
+    monkeypatch.setattr(
+        quote_oracle, "_wait_for_evm_receipt",
+        lambda tx_hash, _cfg, _wait: {
+            "status": "EVM_TRANSACTION_PENDING",
+            "transaction_hash": tx_hash,
+            "confirmations": 1,
+            "required_confirmations": 2,
+        },
+    )
+    monkeypatch.setattr(
+        quote_oracle, "_send_evm_transaction",
+        lambda *_args, **_kwargs: pytest.fail("an already released batch must not broadcast again"),
+    )
+
+    result = quote_oracle.run(
+        "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
+        resume_result=resume,
+    )
+
+    assert result["status"] == "USDC_RELEASED_FINALITY_PENDING"
+    assert result["onchain_escrow_status"] == quote_oracle.STATUS_RELEASED
+    assert result["release_transaction"]["transaction_hash"] == release_hash
