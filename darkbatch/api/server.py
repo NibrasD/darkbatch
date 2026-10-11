@@ -437,6 +437,7 @@ def get_testnet_status():
         "quote_escrow_verification_supported": True,
         "quote_escrow_configured": all(os.getenv(name, "").strip() for name in (
             "DARKBATCH_QUOTE_RPC_URL", "DARKBATCH_QUOTE_CHAIN_ID",
+            "DARKBATCH_QUOTE_DEPLOYMENT_BLOCK",
             "DARKBATCH_USDC_TOKEN_ADDRESS", "DARKBATCH_USDC_ESCROW_ADDRESS",
         )),
         "local_opt_in_quote_leg_settlement_available": True,
