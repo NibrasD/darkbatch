@@ -241,3 +241,105 @@ def test_released_escrow_recovery_preserves_original_release_hash(monkeypatch):
     assert result["status"] == "USDC_RELEASED"
     assert result["release_transaction"]["transaction_hash"] == release_hash
     assert result["attestation_transaction"]["transaction_hash"] == attestation_hash
+
+
+
+def _signed_state_fixture(tmp_path):
+    raw = bytes.fromhex("01020304")
+    tx_hash = "0x" + quote_oracle._keccak256_hex(raw)
+    context = {
+        "epoch_id": 17,
+        "batch_id": "0x" + "11" * 32,
+        "zec_txid": "22" * 32,
+        "zec_block_hash": "33" * 32,
+        "plan_hash": "44" * 32,
+        "escrow_data_hash": "55" * 32,
+    }
+    state_path = tmp_path / "usdc-oracle-signed-txs.json"
+    quote_oracle._write_transaction_state(state_path, {
+        "schema": "darkbatch.evm-signed-transactions.v1",
+        **context,
+        "transactions": {
+            "release": {
+                "transaction_hash": tx_hash,
+                "raw_transaction_hex": "0x" + raw.hex(),
+                "status": "EVM_TRANSACTION_PENDING",
+                "stage": "release",
+            }
+        },
+    })
+    return state_path, context, tx_hash, "0x" + raw.hex()
+
+
+def test_signed_evm_recovery_polls_existing_mempool_tx_without_new_nonce(tmp_path, monkeypatch):
+    monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
+    state_path, context, tx_hash, raw_hex = _signed_state_fixture(tmp_path)
+    calls = []
+    def fake_rpc(url, method, params):
+        calls.append((method, params))
+        if method == "eth_chainId":
+            return "0x1"
+        if method == "eth_getTransactionReceipt":
+            if len([item for item in calls if item[0] == "eth_getTransactionReceipt"]) <= 2:
+                return None
+            return {"status": "0x1", "blockNumber": "0xf"}
+        if method == "eth_getTransactionByHash":
+            return {"hash": tx_hash}
+        if method == "eth_blockNumber":
+            return "0x10"
+        if method == "eth_sendRawTransaction":
+            pytest.fail("an already-visible transaction must not be rebroadcast")
+        raise AssertionError(method)
+    monkeypatch.setattr(quote_oracle, "_rpc", fake_rpc)
+
+    result = quote_oracle._recover_or_submit_signed_evm_transaction(
+        "release", "0x1234", "0x" + "00" * 31 + "01",
+        {"rpc_url": "https://evm.invalid", "chain_id": 1,
+         "escrow_address": "0x00000000000000000000000000000000000000ee"},
+        5, state_path, context,
+    )
+
+    assert result["status"] == "EVM_TRANSACTION_CONFIRMED"
+    assert result["transaction_hash"] == tx_hash
+    assert result["confirmations"] == 2
+    assert not any(method == "eth_sendRawTransaction" for method, _ in calls)
+    state = quote_oracle.json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["transactions"]["release"]["raw_transaction_hex"] == raw_hex
+
+
+def test_signed_evm_recovery_rebroadcasts_only_the_exact_saved_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
+    state_path, context, tx_hash, raw_hex = _signed_state_fixture(tmp_path)
+    calls = []
+    def fake_rpc(url, method, params):
+        calls.append((method, params))
+        if method == "eth_chainId":
+            return "0x1"
+        if method == "eth_getTransactionReceipt":
+            receipt_calls = len([item for item in calls if item[0] == "eth_getTransactionReceipt"])
+            if receipt_calls < 3:
+                return None
+            return {"status": "0x1", "blockNumber": "0xf"}
+        if method == "eth_getTransactionByHash":
+            return None
+        if method == "eth_sendRawTransaction":
+            assert params == [raw_hex]
+            return tx_hash
+        if method == "eth_blockNumber":
+            return "0x10"
+        raise AssertionError(method)
+    monkeypatch.setattr(quote_oracle, "_rpc", fake_rpc)
+
+    result = quote_oracle._recover_or_submit_signed_evm_transaction(
+        "release", "0x1234", "0x" + "00" * 31 + "01",
+        {"rpc_url": "https://evm.invalid", "chain_id": 1,
+         "escrow_address": "0x00000000000000000000000000000000000000ee"},
+        5, state_path, context,
+    )
+
+    assert result["status"] == "EVM_TRANSACTION_CONFIRMED"
+    assert result["transaction_hash"] == tx_hash
+    sent = [params for method, params in calls if method == "eth_sendRawTransaction"]
+    assert sent == [[raw_hex]]
+    assert not any(method == "eth_getTransactionCount" for method, _ in calls)
+    assert not any(method == "eth_estimateGas" for method, _ in calls)
