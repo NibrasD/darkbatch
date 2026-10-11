@@ -3,6 +3,7 @@ import { Contract, JsonRpcProvider, Wallet } from "ethers";
 const required = [
   "DARKBATCH_QUOTE_RPC_URL",
   "DARKBATCH_QUOTE_CHAIN_ID",
+  "DARKBATCH_QUOTE_DEPLOYMENT_BLOCK",
   "DARKBATCH_USDC_ESCROW_ADDRESS",
   "DARKBATCH_USDC_TOKEN_ADDRESS",
   "DARKBATCH_BUYER_PRIVATE_KEY",
@@ -38,6 +39,7 @@ const token = new Contract(tokenAddress, [
   "function decimals() view returns (uint8)"
 ], provider);
 const escrow = new Contract(escrowAddress, [
+  "event BatchMarkedRefundable(bytes32 indexed batchId)",
   "function usdc() view returns (address)",
   "function getBatchStatus(bytes32) view returns (uint8 status,bytes32 planHash,uint256 totalBuyerMicro,uint256 totalSellerMicro,uint256 buyerCount,uint256 paidBuyerCount,uint256 deadline,address tokenAddress,bytes32 zecTxid,bytes32 zecBlockHash,bytes32 escrowDataHash)",
   "function buyerAt(bytes32,uint256) view returns (address recipient,uint256 amount,bool paid,bool refunded)",
@@ -50,6 +52,17 @@ if (Number(await token.decimals()) !== 6) throw new Error("Configured USDC token
 const batch = await escrow.getBatchStatus(batchId);
 if (Number(batch.status) === 6) throw new Error("Batch is already REFUNDED; no further buyer refund is available");
 if (Number(batch.status) !== 5) throw new Error("Batch must be REFUNDABLE (status 5); current status is " + Number(batch.status));
+const deploymentBlock = Number(process.env.DARKBATCH_QUOTE_DEPLOYMENT_BLOCK);
+if (!Number.isSafeInteger(deploymentBlock) || deploymentBlock < 0) {
+  throw new Error("DARKBATCH_QUOTE_DEPLOYMENT_BLOCK must be a confirmed non-negative block number");
+}
+const refundEvents = await escrow.queryFilter(escrow.filters.BatchMarkedRefundable(batchId), deploymentBlock);
+if (!refundEvents.length) throw new Error("No BatchMarkedRefundable event found for this batch from the configured deployment block");
+const latestRefundEvent = refundEvents[refundEvents.length - 1];
+const refundReceipt = await provider.waitForTransaction(latestRefundEvent.transactionHash, minimumConfirmations, 180000);
+if (!refundReceipt || refundReceipt.status !== 1) {
+  throw new Error("Refund status has not been finalized by the required EVM confirmation depth");
+}
 
 let buyerIndex = -1;
 let amountDue = 0n;
