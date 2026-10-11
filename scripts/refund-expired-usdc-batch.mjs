@@ -118,8 +118,8 @@ if (Number(await token.decimals()) !== 6) throw new Error("Configured USDC token
 const preflight = await coordinatorRefundPreflight();
 const batch = await escrow.getBatchStatus(batchId);
 const status = Number(batch.status);
-if (status !== 1 && status !== 2) {
-  throw new Error("Only OPEN or FUNDED batches can be marked refundable; current status is " + status);
+if (![1, 2, 5, 6].includes(status)) {
+  throw new Error("Only OPEN/FUNDED batches or batches already marked REFUNDABLE/REFUNDED are supported; current status is " + status);
 }
 const zero = "0x" + "00".repeat(32);
 if (String(batch.zecTxid).toLowerCase() !== zero || String(batch.zecBlockHash).toLowerCase() !== zero) {
@@ -136,7 +136,7 @@ if (String(batch.tokenAddress).toLowerCase() !== tokenAddress.toLowerCase()) {
 }
 const deadline = Number(batch.deadline);
 const now = Math.floor(Date.now() / 1000);
-if (!Number.isSafeInteger(deadline) || deadline + graceSeconds > now) {
+if ((status === 1 || status === 2) && (!Number.isSafeInteger(deadline) || deadline + graceSeconds > now)) {
   throw new Error("Refund requires the escrow deadline to have passed by the configured safety grace period");
 }
 
