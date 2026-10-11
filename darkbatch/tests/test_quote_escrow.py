@@ -2,6 +2,7 @@ import pytest
 
 from copy import deepcopy
 
+from darkbatch.settlement import quote_escrow
 from darkbatch.settlement.quote_escrow import (
     QuoteEscrowError,
     quote_escrow_batch_arrays,
@@ -77,3 +78,66 @@ def test_escrow_arrays_aggregate_multiple_fills_for_the_same_evm_wallet():
     assert arrays["seller_addresses"] == [shared_seller]
     assert arrays["seller_amounts_micro"] == [300]
     assert len(quote_escrow_data_hash(plan)) == 64
+
+
+
+def test_funded_batch_requires_two_canonical_evm_confirmations(monkeypatch):
+    monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
+    batch_id = "12" * 32
+    plan_hash = "34" * 32
+    event_topic = "56" * 32
+    address = "0x00000000000000000000000000000000000000aa"
+    log = {
+        "address": address,
+        "topics": ["0x" + event_topic, "0x" + batch_id],
+        "data": "0x" + plan_hash,
+        "blockNumber": "0xa",
+        "removed": False,
+    }
+    tip = {"value": "0xb"}
+
+    monkeypatch.setattr(quote_escrow, "_keccak256_hex", lambda _payload: event_topic)
+
+    def fake_rpc(_url, method, params):
+        if method == "eth_getLogs":
+            assert params[0]["fromBlock"] == "0x1"
+            assert params[0]["topics"] == ["0x" + event_topic, "0x" + batch_id]
+            return [log]
+        if method == "eth_blockNumber":
+            return tip["value"]
+        raise AssertionError(method)
+
+    monkeypatch.setattr(quote_escrow, "_rpc", fake_rpc)
+    passed = quote_escrow._verify_funded_event_finality(
+        batch_id, plan_hash, 1, "https://evm.invalid", address
+    )
+    assert passed["funding_event_block"] == 10
+    assert passed["funding_event_confirmations"] == 2
+
+    tip["value"] = "0xa"
+    with pytest.raises(QuoteEscrowError, match="confirmation\(s\)"):
+        quote_escrow._verify_funded_event_finality(
+            batch_id, plan_hash, 1, "https://evm.invalid", address
+        )
+
+
+def test_funded_event_requires_matching_plan_hash(monkeypatch):
+    monkeypatch.setenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2")
+    batch_id = "12" * 32
+    address = "0x00000000000000000000000000000000000000aa"
+    log = {
+        "address": address,
+        "topics": ["0x" + "56" * 32, "0x" + batch_id],
+        "data": "0x" + "99" * 32,
+        "blockNumber": "0xa",
+    }
+    monkeypatch.setattr(quote_escrow, "_keccak256_hex", lambda _payload: "56" * 32)
+    monkeypatch.setattr(
+        quote_escrow,
+        "_rpc",
+        lambda _url, method, _params: [log] if method == "eth_getLogs" else "0xb",
+    )
+    with pytest.raises(QuoteEscrowError, match="plan hash"):
+        quote_escrow._verify_funded_event_finality(
+            batch_id, "34" * 32, 1, "https://evm.invalid", address
+        )
