@@ -232,6 +232,20 @@ def test_released_escrow_recovery_preserves_original_release_hash(monkeypatch):
         quote_oracle, "_send_evm_transaction",
         lambda *_args, **_kwargs: pytest.fail("an already released batch must not broadcast again"),
     )
+    waited = []
+    monkeypatch.setattr(
+        quote_oracle, "_wait_for_evm_receipt",
+        lambda tx_hash, _cfg, _wait: (
+            waited.append(tx_hash)
+            or {
+                "status": "EVM_TRANSACTION_CONFIRMED",
+                "transaction_hash": tx_hash,
+                "confirmations": 2,
+                "required_confirmations": 2,
+                "block_number": 123,
+            }
+        ),
+    )
 
     result = quote_oracle.run(
         "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20,
@@ -241,6 +255,7 @@ def test_released_escrow_recovery_preserves_original_release_hash(monkeypatch):
     assert result["status"] == "USDC_RELEASED"
     assert result["release_transaction"]["transaction_hash"] == release_hash
     assert result["attestation_transaction"]["transaction_hash"] == attestation_hash
+    assert waited == [release_hash]
 
 
 
