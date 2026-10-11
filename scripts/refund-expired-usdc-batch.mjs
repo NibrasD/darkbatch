@@ -181,7 +181,7 @@ async function waitForRefundReceipt(txHash) {
   if (nextStatus !== 5 && nextStatus !== 6) {
     throw new Error("Oracle receipt succeeded but escrow is not REFUNDABLE/REFUNDED; inspect on-chain state before retrying");
   }
-  state.stage = nextStatus === 6 ? "REFUNDED_NO_DEPOSITS" : "REFUNDABLE_BUYERS_CAN_CLAIM";
+  state.stage = nextStatus === 6 ? "USDC_REFUNDS_COMPLETE" : "REFUNDABLE_BUYERS_CAN_CLAIM";
   state.receiptBlock = Number(receipt.blockNumber);
   state.status = nextStatus;
   state.updatedAt = new Date().toISOString();
@@ -200,7 +200,7 @@ if (status === 5 || status === 6) {
       })()
     : await waitForExistingRefundEvent();
   console.log(JSON.stringify({
-    status: status === 6 ? "REFUNDED_NO_DEPOSITS" : "REFUNDABLE_BUYERS_CAN_CLAIM",
+    status: status === 6 ? "USDC_REFUNDS_COMPLETE" : "REFUNDABLE_BUYERS_CAN_CLAIM",
     batchId, epochId, planHash: preflight.quote_plan_hash,
     txHash: receipt.hash,
     evmConfirmationsRequired: minimumEvmConfirmations,
