@@ -109,14 +109,25 @@ def quote_plan_hash(plan: Dict[str, Any]) -> str:
 
 
 def quote_escrow_batch_arrays(plan: Dict[str, Any]) -> Dict[str, list[Any]]:
-    """Canonical payout arrays used by DarkBatchQuoteEscrow.openBatch."""
+    """Canonical escrow arrays, aggregated by EVM address exactly like the deployment script.
+
+    The FBA plan hash commits to individual fills. The escrow contract instead records one
+    deposit/payout row per EVM address, so its escrowDataHash must be computed from aggregated
+    rows or plans with multiple fills for one trader would never pass preflight.
+    """
     data = quote_plan_commitment_data(plan)
 
     def rows(key: str) -> list[dict[str, Any]]:
-        return sorted(
-            data[key],
-            key=lambda row: (row["quote_address"].lower(), int(row["quote_amount_micro"])),
-        )
+        amounts_by_address: Dict[str, int] = {}
+        for row in data[key]:
+            address = str(row["quote_address"]).lower()
+            amounts_by_address[address] = (
+                amounts_by_address.get(address, 0) + int(row["quote_amount_micro"])
+            )
+        return [
+            {"quote_address": address, "quote_amount_micro": amount}
+            for address, amount in sorted(amounts_by_address.items())
+        ]
 
     buyers = rows("buy_fills")
     sellers = rows("sell_fills")
