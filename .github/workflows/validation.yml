@@ -23,7 +23,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pytest fastapi pydantic cryptography pycryptodome eth-account
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
       - name: Build Rust crypto CLI used by Python
         run: cargo build --release --manifest-path darkbatch_crypto/Cargo.toml
       - name: Compile Python sources
@@ -50,3 +52,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Run Rust tests
         run: cargo test --release --manifest-path darkbatch_crypto/Cargo.toml
+
+
+  node-script-checks:
+    name: JavaScript operational script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check all operational scripts parse
+        run: |
+          for script in scripts/*.mjs; do
+            echo "Checking $script"
+            node --check "$script"
+          done
