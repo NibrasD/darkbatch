@@ -29,7 +29,7 @@ The operator/buyer/oracle scripts use private keys from the local environment:
 | Variable | Purpose |
 |---|---|
 | `DARKBATCH_QUOTE_COORDINATOR_PRIVATE_KEY` | Operator account authorized to call `openBatch`. |
-| `DARKBATCH_BUYER_PRIVATE_KEY` | Buyer account depositing its USDC obligation. |
+| `DARKBATCH_BUYER_PRIVATE_KEY` | Buyer account depositing or claiming a USDC refund. |
 | `DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY` | Oracle account configured in the deployed escrow. This is a high-trust secret. |
 
 ## Confirmation requirements
@@ -53,4 +53,4 @@ See [IRONWOOD_LOCAL_WALLET_WORKFLOW.md](IRONWOOD_LOCAL_WALLET_WORKFLOW.md) for s
 
 ## Important limitation
 
-The code and tests are not an audited cross-chain protocol. No funded end-to-end ZEC+USDC Testnet execution has been evidenced in this development session. The bundled oracle implements confirmation and release; automated expiry/refund attestation tooling remains incomplete even though the contract gates the refund transition behind the configured oracle. Do not use real funds or treat this as a production DEX.
+The code and tests are not an audited cross-chain protocol. No funded end-to-end ZEC+USDC Testnet execution has been evidenced in this development session. The repository includes an explicit expiry/refund attestation command and buyer claim command, but the refund oracle remains a trust boundary: it cannot prove global Zcash non-inclusion, so an operator must verify that no transaction was broadcast or remains unresolved. Do not use real funds or treat this as a production DEX.
