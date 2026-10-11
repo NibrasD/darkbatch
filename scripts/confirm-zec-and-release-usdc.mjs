@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
+import { Contract, JsonRpcProvider, Wallet, keccak256, Transaction, recoverAddress } from "ethers";
 
 const required = [
   "DARKBATCH_QUOTE_RPC_URL",
@@ -181,6 +181,32 @@ async function recoverSavedTransaction(stateKey, label) {
   const txHash = String(state[stateKey] || "");
   if (!txHash) throw new Error("Missing saved transaction hash for " + label);
   const rawKey = stateKey.replace("TxHash", "RawSignedTx");
+  const rawSigned = String(state[rawKey] || "");
+  if (!rawSigned || keccak256(rawSigned).toLowerCase() !== txHash.toLowerCase()) {
+    throw new Error(label + " has no matching saved signed transaction bytes; refusing to create a replacement.");
+  }
+  let parsed;
+  let recoveredSigner;
+  try {
+    parsed = Transaction.from(rawSigned);
+    if (!parsed.signature) throw new Error("missing transaction signature");
+    recoveredSigner = recoverAddress(parsed.unsignedHash, parsed.signature);
+  } catch (error) {
+    throw new Error(label + " saved signed transaction cannot be decoded or verified: " + String(error?.message || error));
+  }
+  const expectedData = stateKey === "attestationTxHash"
+    ? escrow.interface.encodeFunctionData("markZecConfirmed", [batchId, zecTxid, blockHash])
+    : escrow.interface.encodeFunctionData("releaseBatch", [batchId]);
+  if (
+    parsed.hash?.toLowerCase() !== txHash.toLowerCase() ||
+    String(recoveredSigner).toLowerCase() !== signer.address.toLowerCase() ||
+    String(parsed.to || "").toLowerCase() !== escrowAddress.toLowerCase() ||
+    BigInt(parsed.chainId) !== BigInt(network.chainId) ||
+    parsed.value !== 0n ||
+    String(parsed.data).toLowerCase() !== expectedData.toLowerCase()
+  ) {
+    throw new Error(label + " saved transaction does not match the expected signer, EVM chain, escrow, zero value, and exact call data.");
+  }
   const initialReceipt = await provider.getTransactionReceipt(txHash).catch(() => null);
   if (initialReceipt) {
     if (initialReceipt.status !== 1) throw new Error(label + " transaction reverted: " + txHash);
@@ -192,10 +218,6 @@ async function recoverSavedTransaction(stateKey, label) {
 
   const pendingTx = await provider.getTransaction(txHash).catch(() => null);
   if (!pendingTx) {
-    const rawSigned = state[rawKey];
-    if (!rawSigned || keccak256(rawSigned).toLowerCase() !== txHash.toLowerCase()) {
-      throw new Error(label + " is not visible on the EVM RPC and no matching signed transaction is saved; refusing to create a replacement.");
-    }
     try {
       const rebroadcast = await provider.broadcastTransaction(rawSigned);
       if (rebroadcast.hash.toLowerCase() !== txHash.toLowerCase()) {
