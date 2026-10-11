@@ -45,7 +45,6 @@ const escrow = new Contract(escrowAddress, [
 ], signer);
 
 if ((await escrow.usdc()).toLowerCase() !== tokenAddress.toLowerCase()) throw new Error("Escrow token differs from the configured USDC token");
-if (String(await escrowAddress).toLowerCase() !== (await escrow.getAddress()).toLowerCase()) throw new Error("Invalid escrow deployment");
 if (Number(await token.decimals()) !== 6) throw new Error("Configured USDC token must have six decimals");
 
 const batch = await escrow.getBatchStatus(batchId);
