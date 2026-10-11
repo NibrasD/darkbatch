@@ -246,7 +246,7 @@ def _load_transaction_state(path: Path, context: Dict[str, Any]) -> Dict[str, An
             state = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise OracleError("saved EVM transaction state is unreadable; do not create a replacement transaction") from exc
-        if not isinstance(state, dict) or state.get("schema") != "darkbatch.evm-signed-transactions.v1":
+        if not isinstance(state, dict) or state.get("schema") != "darkbatch.evm-signed-transactions.v2":
             raise OracleError("saved EVM transaction state has an unsupported schema")
         for key, expected in context.items():
             if state.get(key) != expected:
@@ -255,7 +255,7 @@ def _load_transaction_state(path: Path, context: Dict[str, Any]) -> Dict[str, An
             raise OracleError("saved EVM transaction state has no transaction map")
         return state
     state = {
-        "schema": "darkbatch.evm-signed-transactions.v1",
+        "schema": "darkbatch.evm-signed-transactions.v2",
         **context,
         "transactions": {},
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -312,11 +312,32 @@ def _recover_or_submit_signed_evm_transaction(
             "raw_transaction_hex": raw_hex,
             "status": "EVM_TRANSACTION_SIGNED",
             "stage": stage,
+            "from": account.address.lower(),
+            "to": cfg["escrow_address"].lower(),
+            "chain_id": actual_chain_id,
+            "nonce": nonce,
+            "calldata_hash": "0x" + _keccak256_hex(bytes.fromhex(calldata.removeprefix("0x"))),
             "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
         state["transactions"][stage] = record
         _write_transaction_state(state_path, state)
 
+    if not isinstance(record, dict) or record.get("stage") != stage:
+        raise OracleError("saved EVM transaction stage is malformed; refusing to create a replacement")
+    expected_calldata_hash = "0x" + _keccak256_hex(bytes.fromhex(calldata.removeprefix("0x")))
+    try:
+        saved_nonce = int(record.get("nonce", -1))
+        saved_chain_id = int(record.get("chain_id", -1))
+    except (TypeError, ValueError) as exc:
+        raise OracleError("saved EVM transaction has invalid nonce/chain metadata") from exc
+    if (
+        str(record.get("from", "")).lower() != account.address.lower()
+        or str(record.get("to", "")).lower() != cfg["escrow_address"].lower()
+        or saved_chain_id != actual_chain_id
+        or saved_nonce < 0
+        or str(record.get("calldata_hash", "")).lower() != expected_calldata_hash.lower()
+    ):
+        raise OracleError("saved EVM transaction signer, destination, chain, nonce, or call data do not match this settlement stage")
     tx_hash = "0x" + _hash32(record.get("transaction_hash", ""), stage + " transaction hash")
     raw_hex = str(record.get("raw_transaction_hex", ""))
     if not raw_hex.startswith("0x") or len(raw_hex) <= 2 or len(raw_hex[2:]) % 2:
@@ -327,6 +348,12 @@ def _recover_or_submit_signed_evm_transaction(
         raise OracleError("saved " + stage + " signed bytes are malformed") from exc
     if "0x" + _keccak256_hex(raw) != tx_hash:
         raise OracleError("saved " + stage + " signed bytes do not match their transaction hash")
+    try:
+        recovered_signer = Account.recover_transaction(raw)
+    except Exception as exc:
+        raise OracleError("saved " + stage + " signed transaction cannot be decoded/verified") from exc
+    if recovered_signer.lower() != account.address.lower():
+        raise OracleError("saved " + stage + " signed transaction was not signed by the configured oracle")
 
     receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", [tx_hash])
     if not isinstance(receipt, dict):
@@ -507,6 +534,9 @@ def run(
     except ImportError as exc:
         raise OracleError("EVM signing requires eth-account in the trusted local environment") from exc
     account = Account.from_key(private_key)
+    configured_oracle = _oracle_address_from_contract(cfg)
+    if account.address.lower() != configured_oracle.lower():
+        raise OracleError("local EVM signer is not the oracle address configured in the escrow contract")
     if transaction_state_path is not None:
         transaction_context = {
             "epoch_id": epoch_id,
@@ -515,14 +545,14 @@ def run(
             "zec_block_hash": zec["block_hash"],
             "plan_hash": expected_plan_hash,
             "escrow_data_hash": expected_data_hash,
+            "evm_chain_id": cfg["chain_id"],
+            "escrow_address": cfg["escrow_address"].lower(),
+            "oracle_address": account.address.lower(),
         }
         saved_state = _load_transaction_state(transaction_state_path, transaction_context)
     else:
         transaction_context = {}
         saved_state = None
-    configured_oracle = _oracle_address_from_contract(cfg)
-    if account.address.lower() != configured_oracle.lower():
-        raise OracleError("local EVM signer is not the oracle address configured in the escrow contract")
 
     if batch["status_code"] == STATUS_FUNDED:
         calldata = (
