@@ -34,7 +34,7 @@ const token = new Contract(configuredTokenAddress, [
 const escrow = new Contract(escrowAddress, [
   "function getBatchStatus(bytes32) view returns (uint8 status,bytes32 planHash,uint256 totalBuyerAmount,uint256 totalSellerAmount,uint256 buyerCount,uint256 paidBuyerCount,uint256 deadline,address quoteToken,bytes32 zcashTxid,bytes32 zcashBlockHash,bytes32 escrowDataHash)",
   "function buyerAt(bytes32,uint256) view returns (address recipient,uint256 amount,bool paid,bool refunded)",
-  "function deposit(bytes32)"
+  "function fundBuyer(bytes32,uint256)"
 ], signer);
 
 if (Number(await token.decimals()) !== 6) {
@@ -53,12 +53,14 @@ let due = 0n;
 let alreadyPaid = false;
 let alreadyRefunded = false;
 let foundBuyer = false;
+let foundBuyerIndex = -1;
 const count = Number(batch.buyerCount);
 for (let i = 0; i < count; i += 1) {
   const row = await escrow.buyerAt(batchId, i);
   if (String(row.recipient).toLowerCase() !== signer.address.toLowerCase()) continue;
   if (foundBuyer) throw new Error("Escrow unexpectedly contains duplicate rows for this buyer");
   foundBuyer = true;
+  foundBuyerIndex = i;
   due = BigInt(row.amount);
   alreadyPaid = Boolean(row.paid);
   alreadyRefunded = Boolean(row.refunded);
@@ -82,7 +84,7 @@ if (await token.allowance(signer.address, escrowAddressForAllowance) < due) {
   const receipt = await approval.wait();
   if (!receipt || receipt.status !== 1) throw new Error("USDC approval failed");
 }
-const tx = await escrow.deposit(batchId);
+const tx = await escrow.fundBuyer(batchId, foundBuyerIndex);
 console.log(JSON.stringify({
   status: "USDC_DEPOSIT_SUBMITTED",
   buyer: signer.address,
