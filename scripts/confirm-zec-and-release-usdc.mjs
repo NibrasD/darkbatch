@@ -156,6 +156,7 @@ async function signPersistThenBroadcast(methodName, args, stateKey, stage) {
   // If the RPC accepts the raw transaction but the response is lost, recovery polls this
   // same hash rather than constructing and broadcasting a duplicate payment.
   state[stateKey] = localHash;
+  state[stateKey.replace("TxHash", "RawSignedTx")] = rawSigned;
   state.stage = stage;
   saveState();
 
@@ -166,12 +167,55 @@ async function signPersistThenBroadcast(methodName, args, stateKey, stage) {
     }
     return { hash: localHash };
   } catch (error) {
+    const seen = await provider.getTransaction(localHash).catch(() => null);
+    if (seen) return { hash: localHash };
     throw new Error(
-      stage + " broadcast outcome is uncertain; saved transaction " + localHash +
-      ". Inspect on-chain state and rerun this command to poll the same hash. " +
+      stage + " broadcast outcome is uncertain; the exact signed transaction is saved as " + localHash +
+      ". Rerun to retry broadcasting the same signed bytes, never a new nonce. " +
       String(error?.message || error)
     );
   }
+}
+
+async function recoverSavedTransaction(stateKey, label) {
+  const txHash = String(state[stateKey] || "");
+  if (!txHash) throw new Error("Missing saved transaction hash for " + label);
+  const rawKey = stateKey.replace("TxHash", "RawSignedTx");
+  const initialReceipt = await provider.getTransactionReceipt(txHash).catch(() => null);
+  if (initialReceipt) {
+    if (initialReceipt.status !== 1) throw new Error(label + " transaction reverted: " + txHash);
+    const confirmed = await provider.waitForTransaction(txHash, minimumEvmConfirmations, 180_000);
+    if (!confirmed) throw new Error(label + " receipt exists but required EVM confirmation depth is pending; transaction hash is saved.");
+    if (confirmed.status !== 1) throw new Error(label + " transaction reverted: " + txHash);
+    return confirmed;
+  }
+
+  const pendingTx = await provider.getTransaction(txHash).catch(() => null);
+  if (!pendingTx) {
+    const rawSigned = state[rawKey];
+    if (!rawSigned || keccak256(rawSigned).toLowerCase() !== txHash.toLowerCase()) {
+      throw new Error(label + " is not visible on the EVM RPC and no matching signed transaction is saved; refusing to create a replacement.");
+    }
+    try {
+      const rebroadcast = await provider.broadcastTransaction(rawSigned);
+      if (rebroadcast.hash.toLowerCase() !== txHash.toLowerCase()) {
+        throw new Error("RPC returned a different hash for the saved signed transaction");
+      }
+    } catch (error) {
+      const afterError = await provider.getTransaction(txHash).catch(() => null);
+      if (!afterError) {
+        throw new Error(
+          label + " remains absent/pending. The same raw transaction is retained for safe recovery; " +
+          "no new transaction or nonce was created. " + String(error?.message || error)
+        );
+      }
+    }
+  }
+
+  const receipt = await provider.waitForTransaction(txHash, minimumEvmConfirmations, 180_000);
+  if (!receipt) throw new Error(label + " remains pending. Its exact signed transaction is saved; rerun to poll/rebroadcast the same bytes.");
+  if (receipt.status !== 1) throw new Error(label + " transaction reverted: " + txHash);
+  return receipt;
 }
 
 let batch = await escrow.getBatchStatus(batchId);
@@ -191,7 +235,7 @@ if (Number(batch.status) === 2) {
     throw new Error("Escrow deadline has passed; refusing to attest or release this batch");
   }
   if (state.attestationTxHash) {
-    const receipt = await waitForSuccessfulReceipt(state.attestationTxHash, "Saved ZEC attestation");
+    const receipt = await recoverSavedTransaction("attestationTxHash", "Saved ZEC attestation");
     console.log(JSON.stringify({ status: "ORACLE_ATTESTATION_CONFIRMED", batchId, txHash: receipt.hash, confirmationsRequired: minimumEvmConfirmations }, null, 2));
   } else {
     // Save the deterministic settlement context first. Once the wallet returns a tx hash,
@@ -214,7 +258,7 @@ if (Number(batch.status) >= 3) {
 }
 if (Number(batch.status) === 3) {
   if (state.releaseTxHash) {
-    const receipt = await waitForSuccessfulReceipt(state.releaseTxHash, "Saved USDC release");
+    const receipt = await recoverSavedTransaction("releaseTxHash", "Saved USDC release");
     console.log(JSON.stringify({ status: "USDC_RELEASE_CONFIRMED", batchId, txHash: receipt.hash, confirmationsRequired: minimumEvmConfirmations }, null, 2));
   } else {
     const tx = await signPersistThenBroadcast(
