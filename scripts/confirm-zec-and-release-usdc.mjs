@@ -8,7 +8,7 @@ const required = [
   "DARKBATCH_QUOTE_CHAIN_ID",
   "DARKBATCH_USDC_TOKEN_ADDRESS",
   "DARKBATCH_USDC_ESCROW_ADDRESS",
-  "DARKBATCH_SETTLEMENT_ORACLE_PRIVATE_KEY",
+  "DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY",
   "DARKBATCH_COORDINATOR_API_BASE",
   "DARKBATCH_SETTLEMENT_TOKEN",
   "DARKBATCH_USDC_BATCH_ID",
@@ -47,7 +47,7 @@ const network = await provider.getNetwork();
 if (Number(network.chainId) !== Number(process.env.DARKBATCH_QUOTE_CHAIN_ID)) {
   throw new Error("EVM RPC chain ID mismatch");
 }
-const signer = new Wallet(process.env.DARKBATCH_SETTLEMENT_ORACLE_PRIVATE_KEY, provider);
+const signer = new Wallet(process.env.DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY, provider);
 const escrowAddress = process.env.DARKBATCH_USDC_ESCROW_ADDRESS;
 const tokenAddress = process.env.DARKBATCH_USDC_TOKEN_ADDRESS;
 const apiBase = process.env.DARKBATCH_COORDINATOR_API_BASE.replace(/\/+$/, "");
