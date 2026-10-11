@@ -6,6 +6,7 @@ import { Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
 const required = [
   "DARKBATCH_QUOTE_RPC_URL",
   "DARKBATCH_QUOTE_CHAIN_ID",
+  "DARKBATCH_QUOTE_DEPLOYMENT_BLOCK",
   "DARKBATCH_USDC_ESCROW_ADDRESS",
   "DARKBATCH_USDC_TOKEN_ADDRESS",
   "DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY",
@@ -101,6 +102,7 @@ async function coordinatorRefundPreflight() {
 const escrow = new Contract(escrowAddress, [
   "function usdc() view returns (address)",
   "function oracle() view returns (address)",
+  "event BatchMarkedRefundable(bytes32 indexed batchId)",
   "function getBatchStatus(bytes32) view returns (uint8 status,bytes32 planHash,uint256 buyerTotalMicro,uint256 sellerTotalMicro,uint256 buyerCount,uint256 paidBuyerCount,uint256 deadline,address tokenAddress,bytes32 zecTxid,bytes32 zecBlockHash,bytes32 escrowDataHash)",
   "function markRefundable(bytes32 batchId)"
 ], signer);
@@ -156,6 +158,20 @@ if (fs.existsSync(statePath)) {
   }
 }
 
+async function waitForExistingRefundEvent() {
+  const deploymentBlock = Number(process.env.DARKBATCH_QUOTE_DEPLOYMENT_BLOCK);
+  if (!Number.isSafeInteger(deploymentBlock) || deploymentBlock < 0) {
+    throw new Error("DARKBATCH_QUOTE_DEPLOYMENT_BLOCK must be a confirmed non-negative block number");
+  }
+  const events = await escrow.queryFilter(escrow.filters.BatchMarkedRefundable(batchId), deploymentBlock);
+  const event = events.length ? events[events.length - 1] : null;
+  if (!event) throw new Error("Escrow reports a refundable state, but no BatchMarkedRefundable event was found from the configured deployment block");
+  const receipt = await provider.waitForTransaction(event.transactionHash, minimumEvmConfirmations, 180000);
+  if (!receipt) throw new Error("Refund transition exists but has not reached the required EVM confirmation depth");
+  if (receipt.status !== 1) throw new Error("Saved refund transition transaction reverted: " + event.transactionHash);
+  return receipt;
+}
+
 async function waitForRefundReceipt(txHash) {
   const receipt = await provider.waitForTransaction(txHash, minimumEvmConfirmations, 180000);
   if (!receipt) throw new Error("Refund attestation remains pending. Its exact signed bytes are saved; rerun to recover the same transaction.");
@@ -174,10 +190,21 @@ async function waitForRefundReceipt(txHash) {
 }
 
 if (status === 5 || status === 6) {
+  const receipt = state.txHash
+    ? await (async () => {
+        const raw = String(state.rawSignedTransaction || "");
+        if (!raw || keccak256(raw).toLowerCase() !== String(state.txHash).toLowerCase()) {
+          throw new Error("Saved refund state lacks matching signed bytes; inspect the original refund transaction");
+        }
+        return waitForRefundReceipt(state.txHash);
+      })()
+    : await waitForExistingRefundEvent();
   console.log(JSON.stringify({
     status: status === 6 ? "REFUNDED_NO_DEPOSITS" : "REFUNDABLE_BUYERS_CAN_CLAIM",
     batchId, epochId, planHash: preflight.quote_plan_hash,
-    note: "The oracle transition was already completed on-chain; no new transaction was sent."
+    txHash: receipt.hash,
+    evmConfirmationsRequired: minimumEvmConfirmations,
+    note: "The on-chain refund transition has reached the required EVM confirmation depth; no new transaction was sent."
   }, null, 2));
 } else {
   let txHash = String(state.txHash || "");
