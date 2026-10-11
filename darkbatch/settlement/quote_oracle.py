@@ -26,6 +26,7 @@ from darkbatch.settlement.quote_escrow import (
     _read_batch,
     _rpc,
     _selector,
+    _keccak256_hex,
     quote_escrow_data_hash,
     quote_plan_hash,
 )
@@ -175,12 +176,24 @@ def _oracle_address_from_contract(cfg: dict[str, Any]) -> str:
     return "0x" + result.removeprefix("0x")[-40:].lower()
 
 
+def _minimum_evm_confirmations() -> int:
+    try:
+        value = int(os.getenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2"))
+    except ValueError as exc:
+        raise OracleError("DARKBATCH_QUOTE_MIN_CONFIRMATIONS must be an integer >= 2") from exc
+    if value < 2:
+        raise OracleError("DARKBATCH_QUOTE_MIN_CONFIRMATIONS cannot be lower than two confirmations")
+    return value
+
+
 def _wait_for_evm_receipt(tx_hash: str, cfg: dict[str, Any], wait_seconds: int) -> dict[str, Any]:
-    """Poll one already-submitted transaction; never broadcasts or replaces it."""
+    """Poll one existing transaction until its successful receipt reaches the EVM finality policy."""
     normalized_hash = _hash32(tx_hash, "EVM transaction hash")
     if wait_seconds < 0:
         raise OracleError("EVM receipt wait timeout must not be negative")
+    minimum_confirmations = _minimum_evm_confirmations()
     deadline = time.monotonic() + wait_seconds
+    last_confirmations = 0
     while True:
         receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", ["0x" + normalized_hash])
         if isinstance(receipt, dict):
@@ -189,19 +202,173 @@ def _wait_for_evm_receipt(tx_hash: str, cfg: dict[str, Any], wait_seconds: int) 
                     f"EVM transaction mined but reverted: 0x{normalized_hash}; "
                     "inspect escrow state before submitting a replacement"
                 )
-            return {
-                "status": "EVM_TRANSACTION_CONFIRMED",
-                "transaction_hash": "0x" + normalized_hash,
-                "block_number": int(str(receipt.get("blockNumber", "0x0")), 16),
-            }
+            block_number = int(str(receipt.get("blockNumber", "0x0")), 16)
+            tip = int(_rpc(cfg["rpc_url"], "eth_blockNumber", []), 16)
+            last_confirmations = max(0, tip - block_number + 1)
+            if last_confirmations >= minimum_confirmations:
+                return {
+                    "status": "EVM_TRANSACTION_CONFIRMED",
+                    "transaction_hash": "0x" + normalized_hash,
+                    "block_number": block_number,
+                    "confirmations": last_confirmations,
+                    "required_confirmations": minimum_confirmations,
+                }
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return {
                 "status": "EVM_TRANSACTION_PENDING",
                 "transaction_hash": "0x" + normalized_hash,
-                "note": "The existing transaction is still without a receipt; no replacement was submitted.",
+                "confirmations": last_confirmations,
+                "required_confirmations": minimum_confirmations,
+                "note": "The existing transaction lacks a successful receipt at the required EVM confirmation depth; no replacement was submitted.",
             }
         time.sleep(min(2.0, remaining))
+
+
+def _write_transaction_state(path: Path, state: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    temporary.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _load_transaction_state(path: Path, context: Dict[str, Any]) -> Dict[str, Any]:
+    if path.is_file():
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise OracleError("saved EVM transaction state is unreadable; do not create a replacement transaction") from exc
+        if not isinstance(state, dict) or state.get("schema") != "darkbatch.evm-signed-transactions.v1":
+            raise OracleError("saved EVM transaction state has an unsupported schema")
+        for key, expected in context.items():
+            if state.get(key) != expected:
+                raise OracleError("saved EVM transaction state belongs to a different " + key)
+        if not isinstance(state.get("transactions"), dict):
+            raise OracleError("saved EVM transaction state has no transaction map")
+        return state
+    state = {
+        "schema": "darkbatch.evm-signed-transactions.v1",
+        **context,
+        "transactions": {},
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    _write_transaction_state(path, state)
+    return state
+
+
+def _recover_or_submit_signed_evm_transaction(
+    stage: str,
+    calldata: str,
+    private_key: str,
+    cfg: dict[str, Any],
+    wait_seconds: int,
+    state_path: Path,
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Persist exact signed bytes before broadcast and recover only that transaction on retry."""
+    try:
+        from eth_account import Account
+    except ImportError as exc:
+        raise OracleError("EVM signing requires eth-account; install it in the trusted local environment") from exc
+    account = Account.from_key(private_key)
+    actual_chain_id = int(_rpc(cfg["rpc_url"], "eth_chainId", []), 16)
+    if actual_chain_id != cfg["chain_id"]:
+        raise OracleError("EVM signer RPC is connected to a different chain ID than configured")
+
+    state = _load_transaction_state(state_path, context)
+    record = state["transactions"].get(stage)
+    if record is None:
+        nonce = int(_rpc(cfg["rpc_url"], "eth_getTransactionCount", [account.address, "pending"]), 16)
+        gas_price = int(_rpc(cfg["rpc_url"], "eth_gasPrice", []), 16)
+        call = {"from": account.address, "to": cfg["escrow_address"], "data": calldata, "value": "0x0"}
+        gas_estimate = int(_rpc(cfg["rpc_url"], "eth_estimateGas", [call]), 16)
+        transaction = {
+            "chainId": actual_chain_id,
+            "nonce": nonce,
+            "to": cfg["escrow_address"],
+            "value": 0,
+            "data": bytes.fromhex(calldata.removeprefix("0x")),
+            "gas": (gas_estimate * 130) // 100 + 10_000,
+            "gasPrice": gas_price,
+        }
+        signed = Account.sign_transaction(transaction, private_key)
+        raw = getattr(signed, "raw_transaction", None)
+        if raw is None:
+            raw = getattr(signed, "rawTransaction", None)
+        if raw is None:
+            raise OracleError("eth-account did not return signed raw transaction bytes")
+        raw_hex = "0x" + bytes(raw).hex()
+        tx_hash = "0x" + _keccak256_hex(bytes(raw))
+        record = {
+            "transaction_hash": tx_hash,
+            "raw_transaction_hex": raw_hex,
+            "status": "EVM_TRANSACTION_SIGNED",
+            "stage": stage,
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        state["transactions"][stage] = record
+        _write_transaction_state(state_path, state)
+
+    tx_hash = "0x" + _hash32(record.get("transaction_hash", ""), stage + " transaction hash")
+    raw_hex = str(record.get("raw_transaction_hex", ""))
+    if not raw_hex.startswith("0x") or len(raw_hex) <= 2 or len(raw_hex[2:]) % 2:
+        raise OracleError("saved " + stage + " transaction has no valid signed bytes; refusing to create a replacement")
+    try:
+        raw = bytes.fromhex(raw_hex[2:])
+    except ValueError as exc:
+        raise OracleError("saved " + stage + " signed bytes are malformed") from exc
+    if "0x" + _keccak256_hex(raw) != tx_hash:
+        raise OracleError("saved " + stage + " signed bytes do not match their transaction hash")
+
+    receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", [tx_hash])
+    if not isinstance(receipt, dict):
+        pending = _rpc(cfg["rpc_url"], "eth_getTransactionByHash", [tx_hash])
+        if not isinstance(pending, dict):
+            try:
+                broadcast_hash = _hash32(
+                    str(_rpc(cfg["rpc_url"], "eth_sendRawTransaction", [raw_hex])),
+                    "rebroadcast transaction hash",
+                )
+                if "0x" + broadcast_hash != tx_hash:
+                    raise OracleError("RPC returned a different hash for the saved signed bytes")
+                record["last_broadcast_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                record["status"] = "EVM_TRANSACTION_SUBMITTED"
+                _write_transaction_state(state_path, state)
+            except OracleError:
+                # RPCs can answer "already known" or time out even when accepted. Inspect the
+                # exact saved hash again; never rebuild with a new nonce as a recovery strategy.
+                pending = _rpc(cfg["rpc_url"], "eth_getTransactionByHash", [tx_hash])
+                receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", [tx_hash])
+                if not isinstance(pending, dict) and not isinstance(receipt, dict):
+                    record["status"] = "EVM_TRANSACTION_PENDING"
+                    record["last_error_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                    _write_transaction_state(state_path, state)
+                    return {
+                        "status": "EVM_TRANSACTION_PENDING",
+                        "transaction_hash": tx_hash,
+                        "note": "The exact signed transaction remains saved but is not yet visible; no new nonce or replacement was created.",
+                    }
+        receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", [tx_hash])
+
+    result = _wait_for_evm_receipt(tx_hash, cfg, wait_seconds)
+    record["status"] = result["status"]
+    record["last_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    record["confirmations"] = result.get("confirmations", 0)
+    _write_transaction_state(state_path, state)
+    return {
+        **result,
+        "from": account.address,
+        "to": cfg["escrow_address"],
+        "chain_id": actual_chain_id,
+    }
 
 
 def _send_evm_transaction(
@@ -275,6 +442,7 @@ def run(
     release_usdc: bool,
     wait_seconds: int,
     resume_result: dict[str, Any] | None = None,
+    transaction_state_path: Path | None = None,
 ) -> dict[str, Any]:
     token = os.getenv("DARKBATCH_SETTLEMENT_TOKEN", "").strip()
     if not token:
@@ -339,6 +507,19 @@ def run(
     except ImportError as exc:
         raise OracleError("EVM signing requires eth-account in the trusted local environment") from exc
     account = Account.from_key(private_key)
+    if transaction_state_path is not None:
+        transaction_context = {
+            "epoch_id": epoch_id,
+            "batch_id": "0x" + _batch_id_hex(batch_id),
+            "zec_txid": zec["txid"],
+            "zec_block_hash": zec["block_hash"],
+            "plan_hash": expected_plan_hash,
+            "escrow_data_hash": expected_data_hash,
+        }
+        saved_state = _load_transaction_state(transaction_state_path, transaction_context)
+    else:
+        transaction_context = {}
+        saved_state = None
     configured_oracle = _oracle_address_from_contract(cfg)
     if account.address.lower() != configured_oracle.lower():
         raise OracleError("local EVM signer is not the oracle address configured in the escrow contract")
@@ -360,11 +541,35 @@ def run(
             )
         if (
             isinstance(prior_attestation, dict)
-            and prior_attestation.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
+            and prior_attestation.get("status") == "EVM_TRANSACTION_CONFIRMED"
             and prior_attestation.get("transaction_hash")
         ):
-            # Crucial recovery property: poll the persisted TX hash. Do not obtain a new
-            # nonce or submit another markZecConfirmed transaction while this one is pending.
+            raise OracleError(
+                "saved attestation receipt is confirmed but escrow still reports FUNDED; "
+                "inspect the contract and saved TX before any retry"
+            )
+        if (
+            isinstance(prior_attestation, dict)
+            and prior_attestation.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
+            and prior_attestation.get("transaction_hash")
+            and transaction_state_path is None
+        ):
+            # Legacy recovery without the signed-byte state can only poll; it must never create a replacement.
+            receipt_result = _wait_for_evm_receipt(
+                str(prior_attestation["transaction_hash"]), cfg, wait_seconds
+            )
+            result["attestation_transaction"] = {**prior_attestation, **receipt_result}
+        elif transaction_state_path is not None:
+            saved = saved_state["transactions"].get("attestation")
+            if isinstance(prior_attestation, dict) and prior_attestation.get("transaction_hash") and saved:
+                if str(saved.get("transaction_hash", "")).lower() != str(prior_attestation["transaction_hash"]).lower():
+                    raise OracleError("saved attestation hash differs between result and signed-byte state")
+            result["attestation_transaction"] = _recover_or_submit_signed_evm_transaction(
+                "attestation", calldata, private_key, cfg, wait_seconds,
+                transaction_state_path, transaction_context,
+            )
+        elif isinstance(prior_attestation, dict) and prior_attestation.get("transaction_hash"):
+            # Without signed bytes, recover only the known hash; never create another transaction.
             receipt_result = _wait_for_evm_receipt(
                 str(prior_attestation["transaction_hash"]), cfg, wait_seconds
             )
@@ -397,15 +602,37 @@ def run(
             )
         if (
             isinstance(prior_release, dict)
-            and prior_release.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
+            and prior_release.get("status") == "EVM_TRANSACTION_CONFIRMED"
             and prior_release.get("transaction_hash")
         ):
-            # Same protection for a pending release: polling is safe; a second release TX
-            # with another nonce is not an acceptable recovery strategy.
+            raise OracleError(
+                "saved release receipt is confirmed but escrow does not report RELEASED; "
+                "inspect the contract and saved TX before any retry"
+            )
+        if (
+            isinstance(prior_release, dict)
+            and prior_release.get("status") in {"EVM_TRANSACTION_PENDING", "EVM_TRANSACTION_SUBMITTED"}
+            and prior_release.get("transaction_hash")
+            and transaction_state_path is None
+        ):
             receipt_result = _wait_for_evm_receipt(
                 str(prior_release["transaction_hash"]), cfg, wait_seconds
             )
             result["release_transaction"] = {**prior_release, **receipt_result}
+        elif transaction_state_path is not None:
+            saved = saved_state["transactions"].get("release")
+            if isinstance(prior_release, dict) and prior_release.get("transaction_hash") and saved:
+                if str(saved.get("transaction_hash", "")).lower() != str(prior_release["transaction_hash"]).lower():
+                    raise OracleError("saved release hash differs between result and signed-byte state")
+            result["release_transaction"] = _recover_or_submit_signed_evm_transaction(
+                "release", release_data, private_key, cfg, wait_seconds,
+                transaction_state_path, transaction_context,
+            )
+        elif isinstance(prior_release, dict) and prior_release.get("transaction_hash"):
+            result["release_transaction"] = {
+                **prior_release,
+                **_wait_for_evm_receipt(str(prior_release["transaction_hash"]), cfg, wait_seconds),
+            }
         else:
             result["release_transaction"] = _send_evm_transaction(
                 release_data, private_key, cfg, wait_seconds
@@ -443,7 +670,11 @@ def main() -> int:
     parser.add_argument("--release-usdc", action="store_true", help="After attestation, also call releaseBatch; requires --submit")
     parser.add_argument(
         "--resume-result-json", type=Path, default=None,
-        help="Private previous oracle result used to poll existing pending EVM transaction hashes without rebroadcasting",
+        help="Private previous oracle result used to recover a pending EVM transaction",
+    )
+    parser.add_argument(
+        "--transaction-state-json", type=Path, default=None,
+        help="Private state file storing exact signed EVM transaction bytes and recovery hashes; required for rebroadcasting the same signed transaction",
     )
     args = parser.parse_args()
 
@@ -468,6 +699,7 @@ def main() -> int:
             args.release_usdc,
             args.wait_seconds,
             resume_result=resume_result,
+            transaction_state_path=args.transaction_state_json,
         )
     except (OSError, json.JSONDecodeError, ValueError, QuoteEscrowError, OracleError) as exc:
         parser.error(str(exc))
