@@ -227,6 +227,10 @@ def _wait_for_evm_receipt(tx_hash: str, cfg: dict[str, Any], wait_seconds: int) 
 
 def _write_transaction_state(path: Path, state: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
     try:
@@ -253,6 +257,10 @@ def _load_transaction_state(path: Path, context: Dict[str, Any]) -> Dict[str, An
                 raise OracleError("saved EVM transaction state belongs to a different " + key)
         if not isinstance(state.get("transactions"), dict):
             raise OracleError("saved EVM transaction state has no transaction map")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         return state
     state = {
         "schema": "darkbatch.evm-signed-transactions.v2",
