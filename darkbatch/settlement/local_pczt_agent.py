@@ -644,13 +644,14 @@ def _settle_usdc_after_zec_confirmation(
         "--plan-json", str(plan_path),
         "--minimum-zec-confirmations", str(minimum_zec_confirmations),
         "--wait-seconds", str(evm_wait_seconds),
+        "--transaction-state-json", str(plan_path.parent / "usdc-oracle-signed-txs.json"),
         "--submit", "--release-usdc",
     ]
     oracle_artifact = plan_path.parent / "usdc-oracle-result.json"
     if oracle_artifact.is_file():
-        # The oracle validates this file against the epoch, confirmed ZEC TXID, and both
-        # escrow commitments, then polls any saved pending EVM TX hashes instead of sending
-        # another transaction with a new nonce.
+        # The oracle binds the result to this epoch, ZEC TXID, and both escrow commitments.
+        # The signed-byte state is passed independently, so a missing/old result file cannot
+        # trigger a duplicate transaction with a new nonce.
         command.extend(["--resume-result-json", str(oracle_artifact)])
     try:
         completed = subprocess.run(
@@ -669,7 +670,7 @@ def _settle_usdc_after_zec_confirmation(
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or f"exit code {completed.returncode}").strip()
         raise AgentError(
-            "USDC oracle/release failed or its final state is uncertain; inspect the escrow before retrying: "
+            "USDC oracle/release failed or its final state is uncertain; the saved signed-byte state supports same-transaction recovery, but inspect escrow state before manual intervention: "
             + detail[-1200:]
         )
     try:
