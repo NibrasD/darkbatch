@@ -22,7 +22,7 @@ DarkBatch explores a frequent batch auction (FBA) where orders are matched off-c
 | Wallet scanning | Zebra Testnet RPC scanner, Ironwood note tracking, Merkle witness refresh, private inventory export | Run against a funded synced wallet with real notes |
 | PCZT settlement | Rust V6 construction, participant redaction/signing, combination, Halo 2 proof and extraction | Successful build/prove and real transaction acceptance on a live Testnet |
 | USDC escrow | Solidity escrow state machine, payout-plan commitment checks, EVM read/preflight | Deploy/configure escrow and fund a test batch |
-| Cross-chain completion | Confirmation-gated oracle, release, coordinator finalization, pending-transaction recovery | Execute and archive an end-to-end ZEC+USDC Testnet evidence bundle |
+| Cross-chain completion | Confirmation-gated oracle, release, coordinator finalization, pending-transaction recovery, guarded USDC expiry/refund and buyer claims | Execute and archive an end-to-end ZEC+USDC Testnet evidence bundle |
 | Automated validation | Python, Rust and Solidity test suites/workflows | The latest GitHub Actions attempts did not start any step because no runner was assigned; they are **not passing test runs** |
 
 The repository is not independently audited, and this software is not a production DEX or trustless atomic swap. The EVM oracle is an explicit trust boundary: the contract relies on the configured oracle to attest to Zebra's observed confirmation. Any committee evaluation should distinguish a working code path from a verified live-chain execution.
@@ -122,7 +122,8 @@ Use a Zebra **Testnet** node and a funded, correctly configured test escrow only
 - No automatic simulation fallback for a failed real-network submission.
 - No status of **CLEARED** until the coordinator validates the confirmed ZEC transaction and matching USDC release receipt.
 - Wallet inventory, note openings, witnesses, PCZTs, and keys are local-only artifacts.
-- Pending EVM transaction hashes are persisted locally and polled during recovery rather than replaced automatically.
+- Pending EVM transaction hashes and exact signed bytes are persisted locally for recovery rather than silently replaced.
+- Expired USDC refunds require a 24-hour grace period, an active epoch with no tracked ZEC transaction, and an explicit operator attestation; buyers claim only their own deposits.
 - No mainnet deployment is recommended before independent protocol, cryptographic, wallet, contract, and economic review.
 
 ## License
