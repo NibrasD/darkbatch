@@ -44,8 +44,14 @@ def test_escrow_refund_transition_is_oracle_gated_and_expiry_tooling_is_availabl
     contract = _read("contracts/src/DarkBatchQuoteEscrow.sol")
     docs = _read("contracts/README.md")
     scripts = _read("scripts/refund-expired-usdc-batch.mjs")
+    claims = _read("scripts/claim-usdc-refund.mjs")
 
     assert "function markRefundable(bytes32 batchId) external onlyOracle" in contract
-    assert "refund-expired-usdc-batch.mjs" in docs
+    assert "escrow:refund:attest" in docs
+    assert "escrow:refund:claim" in docs
     assert "markRefundable" in scripts
     assert "DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY" in scripts
+    assert "DARKBATCH_USDC_REFUND_GRACE_SECONDS" in scripts
+    assert "--confirm-no-zec-broadcast" in scripts
+    assert "refundBuyer(bytes32 batchId,uint256 buyerIndex)" in claims
+    assert "USDC_REFUND_CONFIRMED" in claims
