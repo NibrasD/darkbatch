@@ -402,7 +402,7 @@ def verify_released_quote_batch_by_hash(
 
     # Require a configurable number of EVM confirmations to reduce release-receipt reorg risk.
     try:
-        minimum_confirmations = int(os.getenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "1"))
+        minimum_confirmations = int(os.getenv("DARKBATCH_QUOTE_MIN_CONFIRMATIONS", "2"))
         receipt_height = int(str(receipt.get("blockNumber", "0x0")), 16)
         chain_tip = int(_rpc(cfg["rpc_url"], "eth_blockNumber", []), 16)
     except (ValueError, TypeError):
