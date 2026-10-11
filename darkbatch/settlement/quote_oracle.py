@@ -359,10 +359,29 @@ def _recover_or_submit_signed_evm_transaction(
         raise OracleError("saved " + stage + " signed bytes do not match their transaction hash")
     try:
         recovered_signer = Account.recover_transaction(raw)
+        import rlp
+        fields = rlp.decode(raw, strict=True)
+        if not isinstance(fields, list) or len(fields) != 9:
+            raise ValueError("expected a legacy EIP-155 signed transaction")
+        nonce_bytes, gas_price_bytes, gas_bytes, to_bytes, value_bytes, data_bytes, v_bytes, _r_bytes, _s_bytes = fields
+        nonce_in_raw = int.from_bytes(nonce_bytes, "big")
+        chain_v = int.from_bytes(v_bytes, "big")
+        chain_in_raw = (chain_v - 35) // 2 if chain_v >= 35 else -1
+        to_in_raw = "0x" + to_bytes.hex()
+        value_in_raw = int.from_bytes(value_bytes, "big")
+        data_in_raw = "0x" + data_bytes.hex()
     except Exception as exc:
         raise OracleError("saved " + stage + " signed transaction cannot be decoded/verified") from exc
     if recovered_signer.lower() != account.address.lower():
         raise OracleError("saved " + stage + " signed transaction was not signed by the configured oracle")
+    if (
+        nonce_in_raw != saved_nonce
+        or chain_in_raw != actual_chain_id
+        or to_in_raw.lower() != cfg["escrow_address"].lower()
+        or value_in_raw != 0
+        or data_in_raw.lower() != calldata.lower()
+    ):
+        raise OracleError("saved signed transaction bytes do not match the expected nonce, EVM chain, escrow destination, zero value, or call data")
 
     receipt = _rpc(cfg["rpc_url"], "eth_getTransactionReceipt", [tx_hash])
     if not isinstance(receipt, dict):
