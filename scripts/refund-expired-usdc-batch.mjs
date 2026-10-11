@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
+import { Contract, JsonRpcProvider, Wallet, keccak256, Transaction, recoverAddress } from "ethers";
 
 const required = [
   "DARKBATCH_QUOTE_RPC_URL",
@@ -158,6 +158,33 @@ if (fs.existsSync(statePath)) {
   }
 }
 
+function validateSavedRefundTransaction(rawSigned, txHash) {
+  if (!rawSigned || keccak256(rawSigned).toLowerCase() !== String(txHash).toLowerCase()) {
+    throw new Error("Saved refund state has no matching signed transaction bytes");
+  }
+  let parsed;
+  let from;
+  try {
+    parsed = Transaction.from(rawSigned);
+    if (!parsed.signature) throw new Error("missing signature");
+    from = recoverAddress(parsed.unsignedHash, parsed.signature);
+  } catch (error) {
+    throw new Error("Saved refund transaction cannot be decoded or verified: " + String(error?.message || error));
+  }
+  const expectedData = escrow.interface.encodeFunctionData("markRefundable", [batchId]);
+  if (
+    parsed.hash?.toLowerCase() !== String(txHash).toLowerCase() ||
+    String(from).toLowerCase() !== signer.address.toLowerCase() ||
+    String(parsed.to || "").toLowerCase() !== escrowAddress.toLowerCase() ||
+    BigInt(parsed.chainId) !== BigInt(network.chainId) ||
+    parsed.value !== 0n ||
+    String(parsed.data).toLowerCase() !== expectedData.toLowerCase()
+  ) {
+    throw new Error("Saved refund transaction does not match the expected oracle signer, chain, escrow, zero value, and batch calldata");
+  }
+  return parsed;
+}
+
 async function waitForExistingRefundEvent() {
   const deploymentBlock = Number(process.env.DARKBATCH_QUOTE_DEPLOYMENT_BLOCK);
   if (!Number.isSafeInteger(deploymentBlock) || deploymentBlock < 0) {
@@ -192,10 +219,7 @@ async function waitForRefundReceipt(txHash) {
 if (status === 5 || status === 6) {
   const receipt = state.txHash
     ? await (async () => {
-        const raw = String(state.rawSignedTransaction || "");
-        if (!raw || keccak256(raw).toLowerCase() !== String(state.txHash).toLowerCase()) {
-          throw new Error("Saved refund state lacks matching signed bytes; inspect the original refund transaction");
-        }
+        validateSavedRefundTransaction(String(state.rawSignedTransaction || ""), state.txHash);
         return waitForRefundReceipt(state.txHash);
       })()
     : await waitForExistingRefundEvent();
@@ -210,9 +234,7 @@ if (status === 5 || status === 6) {
   let txHash = String(state.txHash || "");
   let rawSigned = String(state.rawSignedTransaction || "");
   if (txHash) {
-    if (!rawSigned || keccak256(rawSigned).toLowerCase() !== txHash.toLowerCase()) {
-      throw new Error("Saved refund hash has no matching signed transaction bytes; refusing to create a replacement");
-    }
+    validateSavedRefundTransaction(rawSigned, txHash);
     const receipt = await provider.getTransactionReceipt(txHash).catch(() => null);
     if (receipt) {
       if (receipt.status !== 1) throw new Error("Saved refund transaction reverted: " + txHash);
@@ -239,6 +261,7 @@ if (status === 5 || status === 6) {
     const populated = await signer.populateTransaction(request);
     rawSigned = await signer.signTransaction(populated);
     txHash = keccak256(rawSigned).toLowerCase();
+    validateSavedRefundTransaction(rawSigned, txHash);
     state = {
       batchId, epochId,
       quotePlanHash: bytes32(preflight.quote_plan_hash, "Coordinator plan hash"),
