@@ -113,7 +113,10 @@ The real-wallet workflow is intentionally explicit and runs beside the user's sy
 - [PCZT settlement implementation notes](docs/LOCAL_PCZT_SETTLEMENT.md)
 - [Submission brief for reviewers](docs/SUBMISSION_BRIEF.md)
 - [Configuration and environment variables](docs/CONFIGURATION.md)
+- [USDC escrow operations and refund commands](contracts/README.md)
 - [Safe environment template](.env.example)
+
+For the EVM operator tools, from `scripts/` run `npm install`. The commands are `npm run escrow:open`, `npm run escrow:deposit`, `npm run escrow:release`, `npm run escrow:refund:attest -- --confirm-no-zec-broadcast`, and `npm run escrow:refund:claim`. Refund attestation is trust-sensitive and must only be used after independently verifying that no ZEC transaction was broadcast or remains unresolved.
 
 Use a Zebra **Testnet** node and a funded, correctly configured test escrow only. Keep spending keys and private inventory out of Git, logs, screenshots, and the public coordinator. The **--settle-usdc** switch is an irreversible action: use it only after reviewing the epoch, batch ID, payout commitments, and preflight result.
 
