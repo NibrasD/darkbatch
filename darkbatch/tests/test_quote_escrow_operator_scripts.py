@@ -25,7 +25,9 @@ def test_operator_scripts_match_the_canonical_escrow_contract_abi():
     assert "buyerAt(bytes32,uint256)" in deposit
     assert "buyerDue(bytes32,address)" not in deposit
     assert "buyerPaid(bytes32,address)" not in deposit
-    assert "function deposit(bytes32)" in deposit
+    assert "function fundBuyer(bytes32,uint256)" in deposit
+    assert "function deposit(bytes32)" not in deposit
+    assert "escrow.fundBuyer(batchId, foundBuyerIndex)" in deposit
 
     assert '"function markZecConfirmed(bytes32 batchId,bytes32 zecTxid,bytes32 zecBlockHash)"' in release
     assert "confirmZecSettlement" not in release
@@ -38,9 +40,12 @@ def test_operator_scripts_match_the_canonical_escrow_contract_abi():
     assert "DARKBATCH_SETTLEMENT_ORACLE_PRIVATE_KEY" not in release
 
 
-def test_escrow_refund_transition_is_oracle_gated_and_limitation_is_documented():
+def test_escrow_refund_transition_is_oracle_gated_and_expiry_tooling_is_available():
     contract = _read("contracts/src/DarkBatchQuoteEscrow.sol")
     docs = _read("contracts/README.md")
+    scripts = _read("scripts/refund-expired-usdc-batch.mjs")
 
     assert "function markRefundable(bytes32 batchId) external onlyOracle" in contract
-    assert "does **not** currently provide an automated expiry/refund attestation command" in docs
+    assert "refund-expired-usdc-batch.mjs" in docs
+    assert "markRefundable" in scripts
+    assert "DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY" in scripts
