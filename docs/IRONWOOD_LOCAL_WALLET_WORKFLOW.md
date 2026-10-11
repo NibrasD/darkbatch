@@ -84,7 +84,7 @@ To explicitly request the complete Testnet flow — wait for at least two ZEC co
 python -m darkbatch.settlement.local_pczt_agent --epoch-id <epoch-id> --wallet-inventory private/wallet_inventory.json --workdir private/pczt-<epoch-id> --broadcast --quote-batch-id <bytes32-batch-id> --wait-for-confirmation 300 --minimum-zec-confirmations 2 --settle-usdc
 ```
 
-This option requires `DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY`, `DARKBATCH_SETTLEMENT_TOKEN`, and the existing Zebra/EVM RPC and escrow configuration. It is opt-in and does not run in the default build/prove or broadcast path. If either the EVM receipt or coordinator finalization is pending, the command reports a pending state and does **not** label the epoch `CLEARED`.
+This option requires `DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY`, `DARKBATCH_SETTLEMENT_TOKEN`, and the existing Zebra/EVM RPC and escrow configuration. For the escrow, configure `DARKBATCH_QUOTE_DEPLOYMENT_BLOCK` to the confirmed block where the canonical `DarkBatchQuoteEscrow` was deployed. The coordinator verifies the matching `BatchFullyFunded` event has at least two EVM confirmations before allowing ZEC broadcast; release receipts also require at least two EVM confirmations by default. This is opt-in and does not run in the default build/prove or broadcast path. If either EVM receipt or coordinator finalization is pending, the command reports a pending state and does **not** label the epoch `CLEARED`.
 
 If ZEC was already broadcast but USDC release/finalization needs recovery, use the saved private work directory and explicitly run the USDC-only recovery mode. It checks the previously extracted TXID against the coordinator and requires the minimum real ZEC confirmations; it never rebroadcasts the ZEC transaction:
 
