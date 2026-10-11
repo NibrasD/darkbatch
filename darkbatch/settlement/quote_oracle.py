@@ -342,7 +342,7 @@ def _recover_or_submit_signed_evm_transaction(
                 record["last_broadcast_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
                 record["status"] = "EVM_TRANSACTION_SUBMITTED"
                 _write_transaction_state(state_path, state)
-            except OracleError:
+            except (OracleError, QuoteEscrowError):
                 # RPCs can answer "already known" or time out even when accepted. Inspect the
                 # exact saved hash again; never rebuild with a new nonce as a recovery strategy.
                 pending = _rpc(cfg["rpc_url"], "eth_getTransactionByHash", [tx_hash])
