@@ -392,3 +392,27 @@ def test_oracle_refuses_new_evm_broadcast_without_durable_signed_state(monkeypat
         quote_oracle.run(
             "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20
         )
+
+
+
+def test_signed_evm_recovery_rejects_changed_call_before_rpc_broadcast(tmp_path, monkeypatch):
+    from eth_account import Account
+
+    state_path, context, _tx_hash, _raw_hex = _signed_state_fixture(tmp_path)
+    signer = Account.from_key("0x" + "00" * 31 + "01").address
+    monkeypatch.setattr(Account, "recover_transaction", lambda _raw: signer)
+    calls = []
+    monkeypatch.setattr(
+        quote_oracle, "_rpc",
+        lambda _url, method, _params: (
+            calls.append(method) or "0x1"
+        ) if method == "eth_chainId" else pytest.fail("mismatched call must fail before any broadcast"),
+    )
+    with pytest.raises(quote_oracle.OracleError, match="call data"):
+        quote_oracle._recover_or_submit_signed_evm_transaction(
+            "release", "0xdeadbeef", "0x" + "00" * 31 + "01",
+            {"rpc_url": "https://evm.invalid", "chain_id": 1,
+             "escrow_address": "0x00000000000000000000000000000000000000ee"},
+            5, state_path, context,
+        )
+    assert calls == ["eth_chainId"]
