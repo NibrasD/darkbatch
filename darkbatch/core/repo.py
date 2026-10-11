@@ -333,6 +333,26 @@ def get_epoch_by_txid(tx_id: str) -> Optional[Dict[str, Any]]:
     return record
 
 
+def get_epoch_by_id(epoch_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch the persisted lifecycle row for one exact epoch."""
+    if isinstance(epoch_id, bool) or int(epoch_id) < 0:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM epochs WHERE epoch_id = ? LIMIT 1", (int(epoch_id),))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    record = dict(row)
+    try:
+        record["intent_ids"] = json.loads(record.get("intent_ids_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        record["intent_ids"] = []
+    record["txid"] = str(record.get("tx_id") or "").lower()
+    return record
+
+
 def get_epoch_history() -> List[Dict[str, Any]]:
     conn = get_connection()
     cur = conn.cursor()
