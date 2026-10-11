@@ -526,6 +526,9 @@ def preflight_quote_batch(
         "quote_total_micro": int(plan["quote_total_micro"]),
         "chain_id": int(quote_lock["chain_id"]),
         "deadline": int(quote_lock["deadline"]),
+        "funding_event_block": int(quote_lock["funding_event_block"]),
+        "funding_event_confirmations": int(quote_lock["funding_event_confirmations"]),
+        "minimum_evm_confirmations": int(quote_lock["minimum_evm_confirmations"]),
         "note": "Read-only check only. This route does not send or release USDC."
     }
 
