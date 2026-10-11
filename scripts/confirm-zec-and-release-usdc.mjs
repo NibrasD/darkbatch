@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
 
 const required = [
@@ -95,9 +96,10 @@ const quoteTokenAddress = await (async () => {
   if (Number(await tokenCheck.decimals()) !== 6) throw new Error("Configured USDC token must have six decimals");
   return tokenAddress.toLowerCase();
 })();
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const statePath = path.resolve(
   process.env.DARKBATCH_RELEASE_STATE_PATH ||
-  path.join("private-work", "quote-release-" + batchId.slice(2) + ".json")
+  path.join(repoRoot, "private-work", "quote-release-" + batchId.slice(2) + ".json")
 );
 fs.mkdirSync(path.dirname(statePath), { recursive: true });
 if (process.platform !== "win32") {
