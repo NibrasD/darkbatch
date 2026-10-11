@@ -5,7 +5,9 @@
   "scripts": {
     "escrow:open": "node register-usdc-batch.mjs",
     "escrow:deposit": "node deposit-usdc-batch.mjs",
-    "escrow:release": "node confirm-zec-and-release-usdc.mjs"
+    "escrow:release": "node confirm-zec-and-release-usdc.mjs",
+    "escrow:refund:attest": "node refund-expired-usdc-batch.mjs",
+    "escrow:refund:claim": "node claim-usdc-refund.mjs"
   },
   "dependencies": { "ethers": "^6.15.0" }
 }
