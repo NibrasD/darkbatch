@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { AbiCoder, Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
 
-const required = ["DARKBATCH_QUOTE_RPC_URL","DARKBATCH_QUOTE_CHAIN_ID","DARKBATCH_USDC_ESCROW_ADDRESS","DARKBATCH_QUOTE_COORDINATOR_PRIVATE_KEY","DARKBATCH_USDC_BATCH_DEADLINE_SECONDS"];
+const required = ["DARKBATCH_QUOTE_RPC_URL","DARKBATCH_QUOTE_CHAIN_ID","DARKBATCH_USDC_TOKEN_ADDRESS","DARKBATCH_USDC_ESCROW_ADDRESS","DARKBATCH_QUOTE_COORDINATOR_PRIVATE_KEY","DARKBATCH_USDC_BATCH_DEADLINE_SECONDS"];
 for (const key of required) if (!process.env[key]) throw new Error("Missing environment variable " + key);
 const planPath = process.argv[2] || "../private-work/fba-plan.json";
 const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
@@ -56,5 +56,9 @@ if (Number(existing.status) !== 0) {
   const receipt = await tx.wait();
   if (!receipt || receipt.status !== 1) throw new Error("openBatch was not confirmed successfully");
   const status = await escrow.getBatchStatus(batchId);
-  console.log(JSON.stringify({status:"BATCH_OPEN",batchId,planHash,statusCode:Number(status.status),deadline:Number(status.deadline),openBatchTx:receipt.hash},null,2));
+  if (Number(status.status) !== 1) throw new Error("Escrow batch did not enter OPEN status after openBatch");
+  if (String(status.planHash).toLowerCase() !== planHash.toLowerCase()) throw new Error("On-chain plan hash differs after batch registration");
+  if (String(status.escrowDataHash).toLowerCase() !== escrowDataHash.toLowerCase()) throw new Error("On-chain payout hash differs after batch registration");
+  if (String(status.quoteToken).toLowerCase() !== process.env.DARKBATCH_USDC_TOKEN_ADDRESS.toLowerCase()) throw new Error("Deployed escrow uses a different quote token");
+  console.log(JSON.stringify({status:"BATCH_OPEN",batchId,planHash,escrowDataHash,statusCode:Number(status.status),deadline:Number(status.deadline),openBatchTx:receipt.hash},null,2));
 }
