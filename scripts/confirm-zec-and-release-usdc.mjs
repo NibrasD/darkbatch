@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Contract, JsonRpcProvider, Wallet } from "ethers";
+import { Contract, JsonRpcProvider, Wallet, keccak256 } from "ethers";
 
 const required = [
   "DARKBATCH_QUOTE_RPC_URL",
@@ -144,6 +144,34 @@ async function waitForSuccessfulReceipt(txHash, label) {
   return receipt;
 }
 
+async function signPersistThenBroadcast(methodName, args, stateKey, stage) {
+  const transactionRequest = await escrow[methodName].populateTransaction(...args);
+  const populated = await signer.populateTransaction(transactionRequest);
+  const rawSigned = await signer.signTransaction(populated);
+  const localHash = keccak256(rawSigned).toLowerCase();
+
+  // Persist the locally derived Ethereum transaction hash before contacting the RPC.
+  // If the RPC accepts the raw transaction but the response is lost, recovery polls this
+  // same hash rather than constructing and broadcasting a duplicate payment.
+  state[stateKey] = localHash;
+  state.stage = stage;
+  saveState();
+
+  try {
+    const submitted = await provider.broadcastTransaction(rawSigned);
+    if (submitted.hash.toLowerCase() !== localHash) {
+      throw new Error("RPC transaction hash differs from the locally derived signed transaction hash");
+    }
+    return { hash: localHash };
+  } catch (error) {
+    throw new Error(
+      stage + " broadcast outcome is uncertain; saved transaction " + localHash +
+      ". Inspect on-chain state and rerun this command to poll the same hash. " +
+      String(error?.message || error)
+    );
+  }
+}
+
 let batch = await escrow.getBatchStatus(batchId);
 if (Number(batch.status) < 2 || Number(batch.status) > 4) {
   throw new Error("Escrow status must be FUNDED, ZEC_CONFIRMED, or RELEASED (found " + Number(batch.status) + ")");
@@ -166,12 +194,10 @@ if (Number(batch.status) === 2) {
   } else {
     // Save the deterministic settlement context first. Once the wallet returns a tx hash,
     // persist that hash before waiting for its receipt so a timeout can be resumed safely.
-    state.stage = "ATTESTATION_SUBMISSION";
-    saveState();
-    const tx = await escrow.markZecConfirmed(batchId, zecTxid, blockHash);
-    state.attestationTxHash = tx.hash;
-    state.stage = "ATTESTATION_PENDING";
-    saveState();
+    const tx = await signPersistThenBroadcast(
+      "markZecConfirmed", [batchId, zecTxid, blockHash],
+      "attestationTxHash", "ATTESTATION_PENDING"
+    );
     console.log(JSON.stringify({ status: "ORACLE_ATTESTATION_SUBMITTED", batchId, zecTxid, blockHash, txHash: tx.hash }, null, 2));
     const receipt = await waitForSuccessfulReceipt(tx.hash, "ZEC attestation");
     console.log(JSON.stringify({ status: "ORACLE_ATTESTATION_CONFIRMED", batchId, txHash: receipt.hash, confirmationsRequired: minimumEvmConfirmations }, null, 2));
@@ -189,12 +215,9 @@ if (Number(batch.status) === 3) {
     const receipt = await waitForSuccessfulReceipt(state.releaseTxHash, "Saved USDC release");
     console.log(JSON.stringify({ status: "USDC_RELEASE_CONFIRMED", batchId, txHash: receipt.hash, confirmationsRequired: minimumEvmConfirmations }, null, 2));
   } else {
-    state.stage = "RELEASE_SUBMISSION";
-    saveState();
-    const tx = await escrow.releaseBatch(batchId);
-    state.releaseTxHash = tx.hash;
-    state.stage = "RELEASE_PENDING";
-    saveState();
+    const tx = await signPersistThenBroadcast(
+      "releaseBatch", [batchId], "releaseTxHash", "RELEASE_PENDING"
+    );
     console.log(JSON.stringify({ status: "USDC_RELEASE_SUBMITTED", batchId, txHash: tx.hash }, null, 2));
     const receipt = await waitForSuccessfulReceipt(tx.hash, "USDC release");
     console.log(JSON.stringify({ status: "USDC_RELEASE_CONFIRMED", batchId, txHash: receipt.hash, confirmationsRequired: minimumEvmConfirmations }, null, 2));
