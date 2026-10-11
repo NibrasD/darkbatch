@@ -600,8 +600,9 @@ def run(
                 transaction_state_path, transaction_context,
             )
         else:
-            result["attestation_transaction"] = _send_evm_transaction(
-                calldata, private_key, cfg, wait_seconds
+            raise OracleError(
+                "--submit requires --transaction-state-json before sending a new EVM attestation; "
+                "no transaction was created"
             )
         result["broadcast"] = True
         if result["attestation_transaction"]["status"] != "EVM_TRANSACTION_CONFIRMED":
@@ -665,8 +666,9 @@ def run(
                 transaction_state_path, transaction_context,
             )
         else:
-            result["release_transaction"] = _send_evm_transaction(
-                release_data, private_key, cfg, wait_seconds
+            raise OracleError(
+                "--submit --release-usdc requires --transaction-state-json before sending a new EVM release; "
+                "no transaction was created"
             )
         result["broadcast"] = True
         if result["release_transaction"]["status"] != "EVM_TRANSACTION_CONFIRMED":
