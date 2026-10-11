@@ -68,6 +68,12 @@ python darkbatch/cli/darkbatch_cli.py epoch clear
 
 Open the local dashboard at http://127.0.0.1:8000. This demonstrates the matching prototype and fail-closed API behaviour; it does **not** make live ZEC or USDC transfers.
 
+### Expired-batch refund
+
+- `scripts/refund-expired-usdc-batch.mjs` is the explicit oracle-side refund attestation command; `scripts/claim-usdc-refund.mjs` lets each buyer recover only their own deposit.
+- The command requires the confirmed escrow deployment block, two EVM confirmations, exact active-epoch batch/plan/payout commitments, and a 24-hour post-deadline grace period.
+- This is not proof of global Zcash non-inclusion. An operator must independently establish that no ZEC transaction was broadcast or remains unresolved before attesting a refund.
+
 ### Component validation
 
 ~~~bash
@@ -101,7 +107,7 @@ Do not include API tokens, EVM private keys, spending keys, wallet inventory, no
 - **Not an audited protocol.** The FBA design, PCZT participant coordination, wallet implementation and contract require independent review before any mainnet use.
 - **Oracle trust.** The configured oracle can attest to Zcash observations; the EVM contract does not independently verify Zebra consensus or shielded transaction validity.
 - **Trusted local workflow.** The current local agent orchestrates private PCZT files and reads local key files. The participant-redaction flow is not a claim of a fully decentralized, independently audited multi-party signing service.
-- **Refund tooling gap.** The contract restricts the refund transition to the configured oracle, but the bundled oracle CLI does not yet provide the expiry/refund-attestation path. Expired batches are not automatically refundable through the current tooling.
+- **Guarded refund tooling exists, but remains trust-based.** The repository provides an expiry-attestation command and a buyer claim command. Attestation requires the active epoch to have no coordinator-tracked ZEC TX, matching plan/escrow commitments, a 24-hour grace period, and an explicit `--confirm-no-zec-broadcast` operator acknowledgement. The coordinator/EVM cannot prove global Zcash transaction non-inclusion; a wrong attestation could refund USDC even if ZEC is later broadcast or confirmed.
 - **No mainnet funds.** Do not use this prototype to custody or exchange real assets.
 
 ## Source and workflow
