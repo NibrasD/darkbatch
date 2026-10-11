@@ -47,7 +47,12 @@ Values below two are rejected. EVM confirmation counts do not replace checking t
 - `DARKBATCH_USDC_BATCH_ID`: 32-byte batch ID for operator workflows.
 - `DARKBATCH_USDC_BATCH_DEADLINE_SECONDS`: registration helper duration, between 30 minutes and seven days.
 - `DARKBATCH_EPOCH_ID`, `DARKBATCH_ZEC_TXID`: epoch and confirmed TXID used by the explicit operator release script.
-- `DARKBATCH_RELEASE_STATE_PATH`: optional release-recovery state path. Keep it private; by default it is stored under ignored `private-work/`.
+- `DARKBATCH_RELEASE_STATE_PATH`: optional Node release-recovery state path. Keep it private; by default it is stored under ignored `private-work/`.
+- `DARKBATCH_REFUND_STATE_PATH`: optional refund-attestation recovery file; it contains raw signed EVM transaction bytes and must remain private.
+- `DARKBATCH_COORDINATOR_API_BASE`: coordinator API URL used by the explicit refund-attestation command (local HTTP or remote HTTPS).
+- `DARKBATCH_USDC_REFUND_GRACE_SECONDS`: refund delay after the escrow deadline; the command enforces a minimum of 86,400 seconds (24 hours).
+- `DARKBATCH_QUOTE_DEPLOYMENT_BLOCK`: confirmed deployment block used to locate the funding and refund finality events.
+- `usdc-oracle-signed-txs.json`: by default the Python oracle writes this file next to the private FBA plan when `--submit` is used. It contains raw signed EVM transactions and must never be uploaded or committed.
 
 See [IRONWOOD_LOCAL_WALLET_WORKFLOW.md](IRONWOOD_LOCAL_WALLET_WORKFLOW.md) for scanning real notes, creating the private wallet inventory, building/proving the PCZT, broadcasting to Zebra, and optionally settling USDC.
 
