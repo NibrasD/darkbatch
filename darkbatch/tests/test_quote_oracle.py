@@ -403,16 +403,21 @@ def test_oracle_refuses_new_evm_broadcast_without_durable_signed_state(monkeypat
 
 
 
-def test_signed_evm_recovery_rejects_changed_call_before_rpc_broadcast(tmp_path, monkeypatch):
+def test_signed_evm_recovery_rejects_raw_transaction_with_different_call_data(tmp_path, monkeypatch):
     state_path, context, _tx_hash, _raw_hex = _signed_state_fixture(tmp_path)
+    state = quote_oracle.json.loads(state_path.read_text(encoding="utf-8"))
+    state["transactions"]["release"]["calldata_hash"] = (
+        "0x" + quote_oracle._keccak256_hex(bytes.fromhex("deadbeef"))
+    )
+    quote_oracle._write_transaction_state(state_path, state)
     calls = []
     monkeypatch.setattr(
         quote_oracle, "_rpc",
         lambda _url, method, _params: (
             calls.append(method) or "0x1"
-        ) if method == "eth_chainId" else pytest.fail("mismatched call must fail before any broadcast"),
+        ) if method == "eth_chainId" else pytest.fail("mismatched signed payload must fail before a broadcast"),
     )
-    with pytest.raises(quote_oracle.OracleError, match="call data"):
+    with pytest.raises(quote_oracle.OracleError, match="signed transaction bytes"):
         quote_oracle._recover_or_submit_signed_evm_transaction(
             "release", "0xdeadbeef", "0x" + "00" * 31 + "01",
             {"rpc_url": "https://evm.invalid", "chain_id": 1,
