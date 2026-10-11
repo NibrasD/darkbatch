@@ -376,3 +376,19 @@ def test_signed_evm_recovery_rebroadcasts_only_the_exact_saved_bytes(tmp_path, m
     assert sent == [[raw_hex]]
     assert not any(method == "eth_getTransactionCount" for method, _ in calls)
     assert not any(method == "eth_estimateGas" for method, _ in calls)
+
+
+
+def test_oracle_refuses_new_evm_broadcast_without_durable_signed_state(monkeypatch):
+    plan, batch_id, txid, _resume = _install_oracle_resume_mocks(
+        monkeypatch, batch_status=quote_oracle.STATUS_FUNDED
+    )
+    monkeypatch.setattr(
+        quote_oracle, "_send_evm_transaction",
+        lambda *_args, **_kwargs: pytest.fail("broadcast must not happen without durable signed state"),
+    )
+
+    with pytest.raises(quote_oracle.OracleError, match="--transaction-state-json"):
+        quote_oracle.run(
+            "http://127.0.0.1:8000", 17, batch_id, txid, plan, 2, True, True, 20
+        )
