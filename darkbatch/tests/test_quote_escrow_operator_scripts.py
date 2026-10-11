@@ -56,6 +56,8 @@ def test_escrow_refund_transition_is_oracle_gated_and_expiry_tooling_is_availabl
     assert "--confirm-no-zec-broadcast" in scripts
     assert "DARKBATCH_QUOTE_DEPLOYMENT_BLOCK" in scripts
     assert "BatchMarkedRefundable" in scripts
+    assert "USDC_REFUNDS_COMPLETE" in scripts
+    assert "REFUNDED_NO_DEPOSITS" not in scripts
     assert "refundBuyer(bytes32 batchId,uint256 buyerIndex)" in claims
     assert "DARKBATCH_QUOTE_DEPLOYMENT_BLOCK" in claims
     assert "BatchMarkedRefundable" in claims
