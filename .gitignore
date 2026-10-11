@@ -49,3 +49,8 @@ target/
 **/proof-report.json
 **/participant-*-redacted.pczt
 **/participant-*-signed-redacted.pczt
+
+# Locally signed EVM transactions are secrets/evidence and must never be committed
+**/usdc-oracle-signed-txs.json
+**/*signed-txs.json
+**/quote-refund-*.json
