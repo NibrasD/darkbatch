@@ -112,6 +112,8 @@ The real-wallet workflow is intentionally explicit and runs beside the user's sy
 - [Ironwood wallet scan → private inventory → PCZT → optional Zebra/USDC settlement](docs/IRONWOOD_LOCAL_WALLET_WORKFLOW.md)
 - [PCZT settlement implementation notes](docs/LOCAL_PCZT_SETTLEMENT.md)
 - [Submission brief for reviewers](docs/SUBMISSION_BRIEF.md)
+- [Configuration and environment variables](docs/CONFIGURATION.md)
+- [Safe environment template](.env.example)
 
 Use a Zebra **Testnet** node and a funded, correctly configured test escrow only. Keep spending keys and private inventory out of Git, logs, screenshots, and the public coordinator. The **--settle-usdc** switch is an irreversible action: use it only after reviewing the epoch, batch ID, payout commitments, and preflight result.
 
