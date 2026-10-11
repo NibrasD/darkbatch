@@ -58,3 +58,22 @@ def test_escrow_data_hash_rejects_unbalanced_plan():
     plan["sell_fills"][0]["quote_amount_micro"] = 199
     with pytest.raises(QuoteEscrowError, match="quote totals do not balance"):
         quote_escrow_data_hash(plan)
+
+
+
+def test_escrow_arrays_aggregate_multiple_fills_for_the_same_evm_wallet():
+    plan = _plan()
+    shared_buyer = "0x0000000000000000000000000000000000000011"
+    shared_seller = "0x0000000000000000000000000000000000000033"
+    plan["buy_fills"][0]["quote_address"] = shared_buyer
+    plan["buy_fills"][1]["quote_address"] = shared_buyer
+    plan["sell_fills"][0]["quote_address"] = shared_seller
+    plan["sell_fills"][1]["quote_address"] = shared_seller
+
+    arrays = quote_escrow_batch_arrays(plan)
+
+    assert arrays["buyer_addresses"] == [shared_buyer]
+    assert arrays["buyer_amounts_micro"] == [300]
+    assert arrays["seller_addresses"] == [shared_seller]
+    assert arrays["seller_amounts_micro"] == [300]
+    assert len(quote_escrow_data_hash(plan)) == 64
