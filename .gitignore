@@ -38,3 +38,13 @@ target/
 **/*wallet-state*.json
 **/*.pczt
 **/raw-transaction.hex
+
+# Local settlement artifacts and operator state (never commit secrets or transaction workdirs)
+/private-work/
+/private/
+**/usdc-oracle-result.json
+**/fba-plan.json
+**/build-report.json
+**/proof-report.json
+**/participant-*-redacted.pczt
+**/participant-*-signed-redacted.pczt
