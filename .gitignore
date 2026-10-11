@@ -41,6 +41,7 @@ target/
 
 # Local settlement artifacts and operator state (never commit secrets or transaction workdirs)
 /private-work/
+**/private-work/
 /private/
 **/usdc-oracle-result.json
 **/fba-plan.json
