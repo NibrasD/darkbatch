@@ -36,6 +36,8 @@ def test_operator_scripts_match_the_canonical_escrow_contract_abi():
     assert "minimumZecConfirmations < 2" in release
     assert "minimumEvmConfirmations < 2" in release
     assert "signPersistThenBroadcast" in release
+    assert "Transaction.from(rawSigned)" in release
+    assert "recoverAddress(parsed.unsignedHash, parsed.signature)" in release
     assert "DARKBATCH_QUOTE_ORACLE_PRIVATE_KEY" in release
     assert "DARKBATCH_SETTLEMENT_ORACLE_PRIVATE_KEY" not in release
 
@@ -56,6 +58,9 @@ def test_escrow_refund_transition_is_oracle_gated_and_expiry_tooling_is_availabl
     assert "--confirm-no-zec-broadcast" in scripts
     assert "DARKBATCH_QUOTE_DEPLOYMENT_BLOCK" in scripts
     assert "BatchMarkedRefundable" in scripts
+    assert "validateSavedRefundTransaction" in scripts
+    assert "Transaction.from(rawSigned)" in scripts
+    assert "recoverAddress(parsed.unsignedHash, parsed.signature)" in scripts
     assert "USDC_REFUNDS_COMPLETE" in scripts
     assert "REFUNDED_NO_DEPOSITS" not in scripts
     assert "refundBuyer(bytes32 batchId,uint256 buyerIndex)" in claims
