@@ -405,24 +405,81 @@
 
         async function submitIntent(e) {
             e.preventDefault();
+            const btn = e.submitter || document.querySelector('button[type=submit]');
             const zec = parseFloat(document.getElementById('input-amount').value);
             const price = parseFloat(document.getElementById('input-price').value);
-            const addr = document.getElementById('input-address').value;
+            const addr = document.getElementById('input-address').value.trim();
             const quoteAddress = document.getElementById('input-quote-address').value.trim();
 
-            await fetch('/api/v1/intent', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    direction: currentDirection,
-                    zec_amount: zec,
-                    limit_price_usd: price,
-                    shielded_address: addr,
-                    quote_address: quoteAddress || null
-                })
-            });
-            fetchEpoch();
-            fetchWallets();
+            // Validate
+            if (!addr) {
+                showIntentStatus('error', 'No shielded address — select a wallet first.');
+                return;
+            }
+            if (!zec || zec <= 0) {
+                showIntentStatus('error', 'Enter a valid ZEC amount.');
+                return;
+            }
+            if (!price || price <= 0) {
+                showIntentStatus('error', 'Enter a valid limit price.');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = 'Signing…';
+            showIntentStatus('pending', 'Committing sealed intent to epoch…');
+
+            try {
+                const res = await fetch('/api/v1/intent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        direction: currentDirection,
+                        zec_amount: zec,
+                        limit_price_usd: price,
+                        shielded_address: addr,
+                        quote_address: quoteAddress || null
+                    })
+                });
+                const data = await res.json();
+                if (res.ok && data.status === 'SEALED_AND_COMMITTED') {
+                    showIntentStatus('success',
+                        `✅ Sealed & Committed!\n` +
+                        `Intent ID: ${data.intent_id}\n` +
+                        `Commitment: ${data.commitment}\n` +
+                        `Epoch: #${data.epoch}  |  Expires block #${data.expiry_height}`
+                    );
+                    // Update Pallas commitment display
+                    document.querySelector('.mono.text-amber-400').innerText = data.commitment.slice(0,16) + '…';
+                } else {
+                    const msg = data.detail || data.message || JSON.stringify(data);
+                    showIntentStatus('error', 'Rejected: ' + msg);
+                }
+            } catch (err) {
+                showIntentStatus('error', 'Network error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Sign & Commit Sealed Intent';
+                fetchEpoch();
+                fetchWallets();
+            }
+        }
+
+        function showIntentStatus(type, msg) {
+            let box = document.getElementById('intent-status-box');
+            if (!box) {
+                box = document.createElement('div');
+                box.id = 'intent-status-box';
+                const form = document.querySelector('form[onsubmit]');
+                form.appendChild(box);
+            }
+            const styles = {
+                success: 'p-3 mt-3 rounded-xl border border-emerald-500/40 bg-emerald-500/5 text-xs text-emerald-300 whitespace-pre-wrap mono',
+                error:   'p-3 mt-3 rounded-xl border border-rose-500/40 bg-rose-500/5 text-xs text-rose-300',
+                pending: 'p-3 mt-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-200'
+            };
+            box.className = styles[type] || styles.pending;
+            box.innerText = msg;
         }
 
         async function seedDemoLiquidity() {
