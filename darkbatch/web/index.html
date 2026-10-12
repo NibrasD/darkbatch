@@ -527,7 +527,6 @@
                     } catch (h2Err) {
                         statusBox.innerText = 'Halo 2 Prover notice: ' + h2Err.message;
                     }
-                }
                 } else if (state === 'SETTLEMENT_BLOCKED') {
                     statusBox.innerText = 'SETTLEMENT BLOCKED — no transaction was broadcast. ' + (result.reason || 'Check the local Testnet PCZT agent and Zebra status.');
                     statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
