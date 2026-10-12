@@ -38,6 +38,8 @@ target/
 **/*wallet-state*.json
 **/*.pczt
 **/raw-transaction.hex
+wallets/*_key.json
+wallets/
 
 # Local settlement artifacts and operator state (never commit secrets or transaction workdirs)
 /private-work/
