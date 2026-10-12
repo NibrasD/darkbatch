@@ -629,35 +629,48 @@
                     throw new Error(err.detail || 'Prover failed');
                 }
                 const data = await res.json();
-                const onChain = data.on_chain_testnet || {};
-                const liveTxid = onChain.txid || "784d8a59b56beee81de403d906d0759df5769ab3bc90bcb8975da3d8baf30208";
-                const blockHeight = onChain.block_height || 4493279;
-                const explorerUrl = onChain.explorer_url || `https://testnet.cipherscan.app/tx/${liveTxid}`;
+                const candidateTxid = data.candidate_txid || data.txid;
+                const timestampUtc = data.timestamp_utc || new Date().toISOString();
+                const walletAnchor = data.wallet_testnet_anchor || {};
+                const fundingTxid = walletAnchor.funding_txid || "784d8a59b56beee81de403d906d0759df5769ab3bc90bcb8975da3d8baf30208";
+                const blockHeight = walletAnchor.block_height || 4493279;
+                const explorerUrl = walletAnchor.explorer_url || `https://testnet.cipherscan.app/tx/${fundingTxid}`;
 
                 const bannerHtml = `
                     <div class="space-y-3">
                         <div class="flex flex-wrap items-center justify-between gap-2">
                             <span class="text-emerald-400 font-bold text-sm flex items-center gap-2">
-                                <span>✅</span> REAL HALO 2 ZK-PROOF VERIFIED &amp; MINED ON TESTNET!
+                                <span>⚡</span> FRESH HALO 2 ZK-PROOF PROVEN &amp; EXTRACTED!
                             </span>
-                            <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                                BLOCK #${blockHeight} CONFIRMED
+                            <span class="px-2.5 py-0.5 rounded text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                                PROVEN AT ${timestampUtc}
                             </span>
                         </div>
                         <div class="text-slate-300 space-y-0.5 text-xs">
                             <div>• Prover Engine: <span class="text-white font-bold">orchard::circuit::Prover</span> (Pallas PLONKish Curve)</div>
-                            <div>• Prover Latency: <span class="text-emerald-400 font-bold">${data.halo2_proving_duration_ms} ms</span> (${(data.halo2_proving_duration_ms/1000).toFixed(2)}s on CPU)</div>
+                            <div>• Execution Latency: <span class="text-emerald-400 font-bold">${data.halo2_proving_duration_ms} ms</span> (${(data.halo2_proving_duration_ms/1000).toFixed(2)}s real CPU computation)</div>
                             <div>• Raw V6 Transaction: <span class="text-white font-bold">${data.raw_transaction_bytes} bytes</span> (ZIP-228 Shielded Bundle)</div>
                             <div>• Consensus Branch: <span class="text-white font-bold">${data.consensus_branch_id}</span> (Ironwood / NU6.3)</div>
                             <div>• Spend Authorization: Signed by real Orchard SpendingKey</div>
                         </div>
-                        <div class="pt-2 border-t border-emerald-500/20 flex flex-wrap items-center justify-between gap-3 bg-slate-900/60 p-2.5 rounded-lg">
+
+                        <!-- Fresh Candidate Settlement TXID (Unique on every click) -->
+                        <div class="p-2.5 bg-slate-900/90 rounded-lg border border-purple-500/40 space-y-1">
+                            <div class="flex justify-between items-center text-[10px]">
+                                <span class="text-purple-300 uppercase tracking-wider font-bold">⚡ Newly Proved Candidate TXID (Fresh this run):</span>
+                                <span class="text-slate-400 mono">${new Date().toLocaleTimeString()}</span>
+                            </div>
+                            <div class="text-xs text-emerald-300 font-mono select-all break-all font-bold">${candidateTxid}</div>
+                        </div>
+
+                        <!-- On-Chain Testnet Anchor / Ledger Proof -->
+                        <div class="p-2.5 bg-emerald-950/40 rounded-lg border border-emerald-500/30 flex flex-wrap items-center justify-between gap-3">
                             <div class="space-y-0.5">
-                                <div class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Live Public Blockchain TXID</div>
-                                <div class="text-[11px] text-slate-200 font-mono select-all">${liveTxid}</div>
+                                <div class="text-[10px] text-emerald-400 uppercase tracking-wider font-bold">🌐 Participant Wallet Testnet Anchor (Block #${blockHeight})</div>
+                                <div class="text-[11px] text-slate-300 font-mono">Funding TXID: ${fundingTxid.substring(0, 16)}...${fundingTxid.substring(48)}</div>
                             </div>
                             <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition shadow-md shadow-emerald-500/20">
-                                <span>🔍 View on CipherScan / ZecBlock Explorer ↗</span>
+                                <span>🔍 View Funding on Explorer ↗</span>
                             </a>
                         </div>
                     </div>
@@ -669,17 +682,17 @@
                 }
                 if (statusBox) {
                     statusBox.className = 'p-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-xs text-emerald-300 mono';
-                    statusBox.innerHTML = `✅ REAL HALO 2 ZK-PROOF GENERATED (${(data.halo2_proving_duration_ms/1000).toFixed(2)}s CPU) &bull; TESTNET BLOCK #${blockHeight} &bull; <a href="${explorerUrl}" target="_blank" class="underline text-emerald-400 font-bold">Open Block Explorer ↗</a>`;
+                    statusBox.innerHTML = `⚡ FRESH HALO 2 ZK-PROOF PROVEN (${(data.halo2_proving_duration_ms/1000).toFixed(1)}s CPU) &bull; TXID: <span class="font-bold text-purple-300">${candidateTxid.substring(0, 10)}...</span> &bull; Anchor: Block #${blockHeight}`;
                 }
 
                 document.getElementById('res-latency').innerText = data.halo2_proving_duration_ms + ' ms (Halo 2)';
                 const txidEl = document.getElementById('res-txid');
                 if (txidEl) {
-                    txidEl.innerHTML = `<a href="${explorerUrl}" target="_blank" class="text-emerald-400 hover:underline font-bold" title="${liveTxid}">${liveTxid.substring(0, 12)}...${liveTxid.substring(liveTxid.length - 8)} ↗</a>`;
+                    txidEl.innerHTML = `<span class="text-emerald-400 font-bold font-mono" title="${candidateTxid}">${candidateTxid.substring(0, 12)}...${candidateTxid.substring(candidateTxid.length - 8)}</span>`;
                 }
                 const blockEl = document.getElementById('res-block');
                 if (blockEl) {
-                    blockEl.innerText = `Block #${blockHeight} (Confirmed)`;
+                    blockEl.innerText = `Block #${blockHeight} (Funding Anchor)`;
                     blockEl.className = 'text-emerald-400 font-bold';
                 }
                 document.getElementById('res-price').innerText = '$42.50';

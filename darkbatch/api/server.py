@@ -947,17 +947,19 @@ def run_direct_halo2_settlement():
         raise HTTPException(status_code=500, detail=f"Prover failed: {err}")
     
     res_data = json.loads(res_proc.stdout.decode("utf-8", errors="replace"))
-    res_data["on_chain_testnet"] = {
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    res_data["timestamp_utc"] = now_utc
+    res_data["candidate_txid"] = res_data["txid"]
+    res_data["wallet_testnet_anchor"] = {
+        "status": "FUNDED_AND_CONFIRMED",
+        "description": "Participant 1 Shielded Testnet Funding (Proves wallet existence on public ledger)",
         "network": "Zcash Testnet (Ironwood / NU6.3)",
         "block_height": 4493279,
         "block_hash": "00000d696d5e1215c2cf97b919d7d9341c2c8f1f7d5442571212c40c98e6be6e",
-        "txid": "784d8a59b56beee81de403d906d0759df5769ab3bc90bcb8975da3d8baf30208",
+        "funding_txid": "784d8a59b56beee81de403d906d0759df5769ab3bc90bcb8975da3d8baf30208",
         "explorer_url": "https://testnet.cipherscan.app/tx/784d8a59b56beee81de403d906d0759df5769ab3bc90bcb8975da3d8baf30208",
-        "status": "CONFIRMED",
-        "confirmations": 1,
-        "raw_bytes": 9166,
-        "fee_taz": 0.0001,
-        "pool": "Ironwood (NU6.3)",
+        "funded_amount_taz": 0.125,
     }
     return res_data
 

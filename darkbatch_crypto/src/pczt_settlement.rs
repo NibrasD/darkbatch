@@ -871,9 +871,14 @@ pub fn execute_direct_halo2_settlement(
     .map(|u| u.encode(&Network::TestNetwork))
     .unwrap_or_else(|| "testnet_ua".to_string());
 
-    let rho_bytes = [42u8; 32];
+    use rand::Rng;
+    let mut rho_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut rho_bytes);
+    rho_bytes[31] &= 0x3f;
     let rho = Rho::from_bytes(&rho_bytes).into_option().expect("valid rho");
-    let rseed_bytes = [77u8; 32];
+    let mut rseed_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut rseed_bytes);
+    rseed_bytes[31] &= 0x3f;
     let rseed = RandomSeed::from_bytes(rseed_bytes, &rho).into_option().expect("valid rseed");
     let note = Note::from_parts(address.clone(), NoteValue::from_raw(amount_zat), rho, rseed, NoteVersion::V3)
         .into_option().ok_or_else(|| "Could not construct note".to_string())?;
@@ -882,7 +887,17 @@ pub fn execute_direct_halo2_settlement(
     let anchor = path.root(note.commitment().into());
 
     let recipient_zat = amount_zat / 2; // 0.5 TAZ to recipient, 0.5 TAZ change back to owner
-    let height = if target_height > 0 { target_height } else { TESTNET_NU7_HEIGHT + 100 };
+    let height = if target_height >= TESTNET_NU6_3_HEIGHT && target_height < TESTNET_NU7_HEIGHT {
+        target_height
+    } else {
+        TESTNET_NU6_3_HEIGHT + 100
+    };
+
+    let now_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let memo_str = format!("DarkBatch Real Halo 2 Cross-Chain Settlement Receipt @ {now_sec}");
 
     let request = PcztBuildRequest {
         target_height: height,
@@ -899,7 +914,7 @@ pub fn execute_direct_halo2_settlement(
         outputs: vec![PcztRecipient {
             address_raw_hex: hex::encode(address_raw),
             value_zat: recipient_zat,
-            memo_hex: hex::encode(b"DarkBatch Real Halo 2 Cross-Chain Settlement Receipt: 1.0 TAZ"),
+            memo_hex: hex::encode(memo_str.as_bytes()),
         }],
         solver_fee_output_zat: 0,
         solver_fee_output_index: None,
