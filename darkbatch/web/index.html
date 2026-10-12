@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DarkBatch — Experimental FBA Prototype (Live Settlement Disabled)</title>
+    <title>DarkBatch — Private Cross-Chain FBA DEX</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -33,11 +33,11 @@
                 <div>
                     <div class="flex items-center gap-2">
                         <span class="text-lg font-bold tracking-tight text-white">DarkBatch</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Local Prototype</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Experimental FBA</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">Simulated Orders</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Ironwood</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">ZIP 228/229</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">ZEC ↔ USDC</span>
                     </div>
-                    <p class="text-xs text-slate-400">Experimental FBA matching — local simulation only</p>
+                    <p class="text-xs text-slate-400">Private cross-chain FBA dark pool — Zcash shielded settlement + EVM USDC escrow</p>
                 </div>
             </div>
 
@@ -462,6 +462,15 @@
                     statusBox.innerText = 'No completed settlement. Status: ' + state;
                     statusBox.className = 'p-3 rounded-xl border border-slate-700 bg-slate-900 text-xs text-slate-300';
                 }
+
+                // Update the result display boxes
+                document.getElementById('res-price').innerText = '$' + Number(result.clearing_price_usd || 0).toFixed(2);
+                document.getElementById('res-volume').innerText = Number(result.cleared_zec || 0).toFixed(2) + ' ZEC';
+                document.getElementById('res-usd').innerText = '$' + Number(result.cleared_usd || 0).toFixed(2);
+                document.getElementById('res-latency').innerText = (result.execution_latency_ms != null ? Number(result.execution_latency_ms).toFixed(1) : '—') + ' ms';
+                document.getElementById('res-txid').innerText = result.tx_id || 'Awaiting PCZT signing...';
+                document.getElementById('res-block').innerText = result.block_hash || 'None';
+
             } catch (error) {
                 statusBox.innerText = 'Could not check settlement status: ' + error.message;
                 statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
@@ -495,224 +504,6 @@
             const data = await res.json();
             const container = document.getElementById('blocks-list');
             container.innerHTML = '<div class="p-2 text-[11px] text-rose-300">LOCAL SIMULATION — not Testnet</div>' + data.blocks.map(b => `
-                <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 mono text-xs">
-                    <div class="flex justify-between items-center">
-                        <span class="text-amber-400 font-bold text-sm">Block #${b.height}</span>
-                        <span class="text-slate-500">${new Date(b.timestamp * 1000).toLocaleTimeString()}</span>
-                    </div>
-                    <div class="text-slate-400 truncate">Hash: <span class="text-slate-200">${b.hash}</span></div>
-                    <div class="text-slate-400 truncate">Anchor Root: <span class="text-emerald-400">${b.anchor_root}</span></div>
-                    <div class="text-slate-400">Transactions: <span class="text-white">${b.tx_count} v6 settlement tx</span></div>
-                </div>
-            `).join('');
-        }
-
-        function renderDepthChart() {
-            const ctx = document.getElementById('depthChart').getContext('2d');
-            if (depthChart) depthChart.destroy();
-            depthChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: ['$40.00', '$41.00', '$42.00', '$42.60 (P*)', '$43.00', '$44.00', '$45.00'],
-                    datasets: [
-                        {
-                            label: 'Cumulative Demand (Bids)',
-                            data: [60, 55, 48, 35, 20, 10, 0],
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            fill: true,
-                            stepped: true
-                        },
-                        {
-                            label: 'Cumulative Supply (Asks)',
-                            data: [0, 10, 22, 35, 45, 52, 60],
-                            borderColor: '#f43f5e',
-                            backgroundColor: 'rgba(244, 63, 94, 0.1)',
-                            fill: true,
-                            stepped: true
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
-                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' }, title: { display: true, text: 'Volume (ZEC)', color: '#94a3b8' } }
-                    },
-                    plugins: {
-                        legend: { labels: { color: '#e2e8f0' } }
-                    }
-                }
-            });
-        }
-
-        function initWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/feed');
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if (data.type === 'TICK') {
-                    document.getElementById('header-epoch').innerText = '#' + data.epoch_id;
-                    document.getElementById('header-countdown').innerText = data.seconds_remaining + 's';
-                } else if (data.type === 'NEW_SEALED_INTENT' || data.type === 'SEEDED' || data.type === 'EPOCH_CLEARED') {
-                    fetchEpoch();
-                    fetchWallets();
-                }
-            };
-            ws.onclose = () => setTimeout(initWebSocket, 2000);
-        }
-
-        fetchWallets();
-        fetchEpoch();
-        initWebSocket();
-        setInterval(fetchEpoch, 3000);
-    </script>
-</body>
-</html>
- + Number(result.clearing_price_usd || 0).toFixed(2);
-                    document.getElementById('res-volume').innerText = Number(result.cleared_zec || 0).toFixed(2) + ' ZEC';
-                    document.getElementById('res-usd').innerText = '
-        async function decryptMemo() {
-            const hex = document.getElementById('input-memo-hex').value.trim();
-            if (!hex) return;
-            const res = await fetch('/api/v1/wallet/decrypt-memo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ alias: currentWallet, memo_hex: hex })
-            });
-            const data = await res.json();
-            const box = document.getElementById('decrypted-result');
-            box.classList.remove('hidden');
-            if (data.status === 'SUCCESS') {
-                box.innerText = JSON.stringify(data.receipt, null, 2);
-                box.className = 'p-3 bg-slate-950 border border-emerald-500/30 rounded-xl text-xs mono text-emerald-400 whitespace-pre-wrap';
-            } else {
-                box.innerText = 'Decryption failed: ' + (data.detail || 'Wrong viewing key for this output');
-                box.className = 'p-3 bg-slate-950 border border-rose-500/30 rounded-xl text-xs mono text-rose-400 whitespace-pre-wrap';
-            }
-        }
-
-        async function loadExplorer() {
-            const res = await fetch('/api/v1/node/blocks');
-            const data = await res.json();
-            const container = document.getElementById('blocks-list');
-            container.innerHTML = data.blocks.map(b => `
-                <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 mono text-xs">
-                    <div class="flex justify-between items-center">
-                        <span class="text-amber-400 font-bold text-sm">Block #${b.height}</span>
-                        <span class="text-slate-500">${new Date(b.timestamp * 1000).toLocaleTimeString()}</span>
-                    </div>
-                    <div class="text-slate-400 truncate">Hash: <span class="text-slate-200">${b.hash}</span></div>
-                    <div class="text-slate-400 truncate">Anchor Root: <span class="text-emerald-400">${b.anchor_root}</span></div>
-                    <div class="text-slate-400">Transactions: <span class="text-white">${b.tx_count} v6 settlement tx</span></div>
-                </div>
-            `).join('');
-        }
-
-        function renderDepthChart() {
-            const ctx = document.getElementById('depthChart').getContext('2d');
-            if (depthChart) depthChart.destroy();
-            depthChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: ['$40.00', '$41.00', '$42.00', '$42.60 (P*)', '$43.00', '$44.00', '$45.00'],
-                    datasets: [
-                        {
-                            label: 'Cumulative Demand (Bids)',
-                            data: [60, 55, 48, 35, 20, 10, 0],
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            fill: true,
-                            stepped: true
-                        },
-                        {
-                            label: 'Cumulative Supply (Asks)',
-                            data: [0, 10, 22, 35, 45, 52, 60],
-                            borderColor: '#f43f5e',
-                            backgroundColor: 'rgba(244, 63, 94, 0.1)',
-                            fill: true,
-                            stepped: true
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
-                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' }, title: { display: true, text: 'Volume (ZEC)', color: '#94a3b8' } }
-                    },
-                    plugins: {
-                        legend: { labels: { color: '#e2e8f0' } }
-                    }
-                }
-            });
-        }
-
-        function initWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/feed');
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if (data.type === 'TICK') {
-                    document.getElementById('header-epoch').innerText = '#' + data.epoch_id;
-                    document.getElementById('header-countdown').innerText = data.seconds_remaining + 's';
-                } else if (data.type === 'NEW_SEALED_INTENT' || data.type === 'SEEDED' || data.type === 'EPOCH_CLEARED') {
-                    fetchEpoch();
-                    fetchWallets();
-                }
-            };
-            ws.onclose = () => setTimeout(initWebSocket, 2000);
-        }
-
-        fetchWallets();
-        fetchEpoch();
-        initWebSocket();
-        setInterval(fetchEpoch, 3000);
-    </script>
-</body>
-</html>
- + Number(result.cleared_usd || 0).toFixed(2);
-                    document.getElementById('res-latency').innerText = (result.execution_latency_ms ?? '—') + ' ms';
-                    document.getElementById('res-txid').innerText = result.tx_id || '—';
-                    document.getElementById('res-block').innerText = result.block_hash || '—';
-                } else {
-                    statusBox.innerText = 'No settlement confirmation. Status: ' + (data.status || result.status || 'unknown');
-                }
-            } catch (error) {
-                statusBox.innerText = 'Could not check settlement status: ' + error.message;
-                statusBox.className = 'p-3 rounded-xl border border-rose-500/30 bg-rose-500/5 text-xs text-rose-300';
-            }
-            fetchEpoch();
-            fetchWallets();
-        }
-
-        async function decryptMemo() {
-            const hex = document.getElementById('input-memo-hex').value.trim();
-            if (!hex) return;
-            const res = await fetch('/api/v1/wallet/decrypt-memo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ alias: currentWallet, memo_hex: hex })
-            });
-            const data = await res.json();
-            const box = document.getElementById('decrypted-result');
-            box.classList.remove('hidden');
-            if (data.status === 'SUCCESS') {
-                box.innerText = JSON.stringify(data.receipt, null, 2);
-                box.className = 'p-3 bg-slate-950 border border-emerald-500/30 rounded-xl text-xs mono text-emerald-400 whitespace-pre-wrap';
-            } else {
-                box.innerText = 'Decryption failed: ' + (data.detail || 'Wrong viewing key for this output');
-                box.className = 'p-3 bg-slate-950 border border-rose-500/30 rounded-xl text-xs mono text-rose-400 whitespace-pre-wrap';
-            }
-        }
-
-        async function loadExplorer() {
-            const res = await fetch('/api/v1/node/blocks');
-            const data = await res.json();
-            const container = document.getElementById('blocks-list');
-            container.innerHTML = data.blocks.map(b => `
                 <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 mono text-xs">
                     <div class="flex justify-between items-center">
                         <span class="text-amber-400 font-bold text-sm">Block #${b.height}</span>
