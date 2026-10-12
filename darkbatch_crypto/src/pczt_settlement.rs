@@ -968,7 +968,7 @@ mod tests {
         assert!(!report.broadcast_ready);
         let encoded = pczt.clone().serialize().expect("serialize PCZT");
         let decoded = Pczt::parse(&encoded).expect("parse PCZT");
-        assert_eq!(encoded, decoded.serialize().expect("reserialize PCZT"));
+        assert_eq!(encoded, decoded.clone().serialize().expect("reserialize PCZT"));
         let action_index = report.ironwood_spend_action_indexes[0];
         let participant_pczt = redact_pczt_for_participant_value(pczt.clone(), action_index)
             .expect("make participant-specific redacted PCZT");
