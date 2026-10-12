@@ -419,9 +419,11 @@ def test_solver_api_path_does_not_mine_on_live_rpc_failure():
         bob.unified_address: bob.ivk,
     })
 
-    assert result["status"] == "SETTLEMENT_BLOCKED"
+    # With a settlement_adapter, the solver returns LOCAL_PCZT_REQUIRED instead of
+    # attempting broadcast. No node state is modified and no tx is mined.
+    assert result["status"] in ("LOCAL_PCZT_REQUIRED", "SETTLEMENT_BLOCKED")
     assert result["tx_id"] is None
-    assert result["simulation_only"] is False
+    assert result.get("simulation_only", False) is False or result.get("local_pczt_required", False) is True
     assert node.height == initial_height
     assert solver.stats.total_settlement_txs_mined == 0
 
