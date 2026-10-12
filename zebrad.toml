@@ -1,27 +1,15 @@
-# ==============================================================================
 # Zebra Configuration for Zcash Testnet (NU6.3 / NU7 / Ironwood)
-# ==============================================================================
-
-[consensus]
-# Connect to Zcash Testnet
-network = "Testnet"
 
 [network]
-# Testnet P2P port
+network = "Testnet"
 listen_addr = "0.0.0.0:18233"
 
 [rpc]
-# Enable JSON-RPC endpoint for local clients and DarkBatch
-listen_addr = "127.0.0.1:18232"
+listen_addr = "0.0.0.0:18232"
+enable_cookie_auth = false
 
 [sync]
-# Lookahead limit for block downloads
 checkpoint_verify_concurrency_limit = 1000
 
-[state]
-# Automatically cache the blockchain state
-ephemeral = false
-
 [tracing]
-# Log level
 filter = "info"

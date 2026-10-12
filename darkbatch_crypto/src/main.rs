@@ -551,6 +551,19 @@ fn main() {
                 Err(e) => { eprintln!("PCZT proof/extraction failed: {e}"); std::process::exit(1); }
             }
         }
+        "execute-real-halo2-settlement" => {
+            let key_path = args.get(2).map(String::as_str).unwrap_or("");
+            let target_height: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4_465_126);
+            let amount_zat: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);
+            if key_path.is_empty() {
+                eprintln!("Usage: darkbatch_crypto execute-real-halo2-settlement <wallet-key.json> [target_height] [amount_zat]");
+                std::process::exit(2);
+            }
+            match darkbatch_crypto::pczt_settlement::execute_direct_halo2_settlement(key_path, target_height, amount_zat) {
+                Ok(val) => println!("{}", serde_json::to_string_pretty(&val).unwrap()),
+                Err(e) => { eprintln!("Real Halo 2 settlement failed: {e}"); std::process::exit(1); }
+            }
+        }
         "generate-ironwood-proof" => {
             let addr_hex = args.get(2).cloned().unwrap_or_default();
             let val_zat: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(100_000_000);

@@ -920,6 +920,34 @@ def get_testnet_tx(txid: str):
             tx["epoch_finalization_error"] = str(exc)
     return tx
 
+@app.post("/api/v1/settlement/halo2-direct")
+def run_direct_halo2_settlement():
+    """
+    Executes the REAL official Halo 2 zk-SNARK prover using darkbatch_crypto
+    and the real participant wallet key file.
+    Takes ~8 seconds of intensive cryptographic proving on the Pallas curve.
+    """
+    import subprocess
+    import json
+    wallet_key_path = os.path.join(os.path.dirname(__file__), "..", "..", "wallets", "participant_1_key.json")
+    if not os.path.exists(wallet_key_path):
+        raise HTTPException(status_code=404, detail="participant_1_key.json not found")
+    
+    bin_path = os.path.join(os.path.dirname(__file__), "..", "..", "darkbatch_crypto", "target", "release", "darkbatch_crypto.exe")
+    if not os.path.exists(bin_path):
+        bin_path = os.path.join(os.path.dirname(__file__), "..", "..", "darkbatch_crypto", "target", "release", "darkbatch_crypto")
+    
+    res_proc = subprocess.run(
+        [bin_path, "execute-real-halo2-settlement", wallet_key_path, "4135000", "100000000"],
+        capture_output=True,
+        timeout=120
+    )
+    if res_proc.returncode != 0:
+        err = res_proc.stderr.decode("utf-8", errors="replace")
+        raise HTTPException(status_code=500, detail=f"Prover failed: {err}")
+    
+    return json.loads(res_proc.stdout.decode("utf-8", errors="replace"))
+
 @app.get("/", response_class=HTMLResponse)
 def serve_dashboard():
     html_path = os.path.join(os.path.dirname(__file__), "..", "web", "index.html")
