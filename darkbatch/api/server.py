@@ -13,7 +13,7 @@ import time
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from darkbatch.core.repo import (
@@ -948,8 +948,20 @@ def run_direct_halo2_settlement():
     
     return json.loads(res_proc.stdout.decode("utf-8", errors="replace"))
 
+@app.get("/favicon.ico")
+def favicon():
+    return Response(content=b"", media_type="image/x-icon")
+
 @app.get("/", response_class=HTMLResponse)
 def serve_dashboard():
     html_path = os.path.join(os.path.dirname(__file__), "..", "web", "index.html")
     with open(html_path, "r", encoding="utf-8") as f:
-        return f.read()
+        content = f.read()
+    return HTMLResponse(
+        content=content,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+    )

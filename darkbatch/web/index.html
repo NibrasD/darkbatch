@@ -727,6 +727,23 @@
             ws.onclose = () => setTimeout(initWebSocket, 2000);
         }
 
+        window.runRealHalo2Prover = runRealHalo2Prover;
+        window.clearEpochNow = clearEpochNow;
+        window.seedDemoLiquidity = seedDemoLiquidity;
+        window.decryptMemo = decryptMemo;
+        window.switchTab = switchTab;
+        window.setDirection = setDirection;
+        window.onWalletChange = onWalletChange;
+        window.submitIntent = submitIntent;
+
+        const h2Btn = document.getElementById('btn-halo2');
+        if (h2Btn) {
+            h2Btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                runRealHalo2Prover();
+            });
+        }
+
         fetchWallets();
         fetchEpoch();
         initWebSocket();
